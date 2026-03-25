@@ -1,0 +1,441 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  // Отдельная БД для shadow (migrate dev), если у роли нет права CREATEDB (ошибка P3014).
+  // Создай вручную: CREATE DATABASE tournament_shadow;
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+model Tenant {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  blocked     Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  users       User[]
+  tournaments Tournament[]
+  teams       Team[]
+  teamCategories TeamCategory[]
+  teamCategoryRules TeamCategoryRule[]
+  refreshTokens RefreshToken[]
+  matches     Match[]
+  tournamentTeams TournamentTeam[]
+  tournamentMembers TournamentMember[]
+  tournamentGroups TournamentGroup[]
+  tournamentTableRows TournamentTableRow[]
+  players     Player[]
+}
+
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  username    String
+  password    String
+  name        String
+  lastName    String   @default("")
+  role        UserRole @default(USER)
+  tenantId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  blocked     Boolean  @default(false)
+  /** Настройки админ-интерфейса: themeMode, locale, accent (JSON) */
+  uiSettings  Json?
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tournamentMemberships TournamentMember[]
+  teamAdminOf TeamAdmin[]
+  refreshTokens RefreshToken[]
+
+  @@unique([tenantId, username])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+}
+
+model Tournament {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String
+  description String?
+  category    String?
+  logoUrl     String?
+  format      TournamentFormat @default(SINGLE_GROUP)
+  groupCount  Int      @default(1)
+  playoffQualifiersPerGroup Int @default(2)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  status      TournamentStatus @default(DRAFT)
+  intervalDays Int     @default(7)
+  allowedDays  Int[]   @default([])
+  matchDurationMinutes Int @default(50)
+  matchBreakMinutes    Int @default(10)
+  simultaneousMatches  Int @default(1)
+  dayStartTimeDefault  String @default("12:00") // HH:mm
+  dayStartTimeOverrides Json?                   // { "0": "10:00", "6": "12:00" }
+  minTeams    Int      @default(2)
+  pointsWin   Int      @default(3)
+  pointsDraw  Int      @default(1)
+  pointsLoss  Int      @default(0)
+  tenantId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  teams       Team[]              // legacy связь (пока не выпиливаем)
+  tournamentTeams TournamentTeam[]
+  groups      TournamentGroup[]
+  members     TournamentMember[]
+  matches     Match[]
+  tableRows   TournamentTableRow[]
+
+  @@unique([tenantId, slug])
+}
+
+model Team {
+  id           String       @id @default(cuid())
+  tenantId     String
+  name         String
+  // Base strength rating for seed heuristics (1..5), used as default in tournaments.
+  rating       Int          @default(3)
+  slug         String?      // "spartak-2008" для URL (позже сделаем NOT NULL)
+  logoUrl      String?
+  category     String?      // "U12", "Adult", "Amateur"
+  coachName    String?
+  coachPhone   String?
+  coachEmail   String?
+  contactName  String?
+  contactPhone String?
+  description  String?
+
+  // legacy поле (пока не выпиливаем)
+  tournamentId String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  tournament   Tournament?  @relation(fields: [tournamentId], references: [id])
+  admins       TeamAdmin[]
+  players      TeamPlayer[]
+  tournamentTeams TournamentTeam[]
+  homeMatches  Match[]      @relation("HomeTeam")
+  awayMatches  Match[]      @relation("AwayTeam")
+  tableRows    TournamentTableRow[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, name])
+}
+
+model TeamCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  slug      String?
+  /// Minimal allowed birth year for the category (e.g. 2018).
+  /// Players born earlier than this year are not allowed.
+  minBirthYear Int?
+  /// Maximal allowed birth year for the category.
+  /// Players born later than this year are not allowed.
+  maxBirthYear Int?
+  /// If true, player must have birthDate to be added into team of this category.
+  requireBirthDate Boolean @default(false)
+  /// Allowed player genders for this category; empty array means "any".
+  allowedGenders PlayerGender[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rules TeamCategoryRule[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, name])
+}
+
+model TeamCategoryRule {
+  id         String   @id @default(cuid())
+  tenantId   String
+  categoryId String
+  type       TeamCategoryType
+  minBirthYear Int?
+  maxBirthYear Int?
+  requireBirthDate Boolean @default(false)
+  allowedGenders PlayerGender[] @default([])
+  createdAt  DateTime @default(now())
+
+  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category TeamCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, categoryId])
+}
+
+model TournamentTeam {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  teamId       String
+  groupId      String?
+  // Rating of the team inside this tournament context (1..5).
+  // Used for better scheduling: strong teams are placed to meet later.
+  rating      Int      @default(3)
+  /// Order within the group (0 = first in admin «Составы» column); tie-breaker in standings when stats match.
+  groupSortOrder Int   @default(0)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  team         Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  group        TournamentGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@unique([tournamentId, teamId])
+  @@index([tenantId, tournamentId])
+  @@index([tournamentId, groupId])
+}
+
+model TournamentGroup {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  name         String
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  teams        TournamentTeam[]
+  matches      Match[]
+
+  @@unique([tournamentId, name])
+  @@index([tenantId, tournamentId])
+}
+
+model TournamentMember {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  userId       String
+  role         TournamentMemberRole
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, userId, role])
+  @@index([tenantId, tournamentId])
+}
+
+model Match {
+  id           String       @id @default(cuid())
+  tenantId     String
+  /** null — матч создан без турнира (общий список), позже можно прикрепить к MANUAL. */
+  tournamentId String?
+  homeTeamId   String
+  awayTeamId   String
+  stage        MatchStage   @default(GROUP)
+  roundNumber  Int          @default(1)
+  groupId      String?
+  playoffRound PlayoffRound?
+  startTime    DateTime
+  status       MatchStatus  @default(SCHEDULED)
+  homeScore    Int?
+  awayScore    Int?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  tournament   Tournament?  @relation(fields: [tournamentId], references: [id], onDelete: SetNull)
+  homeTeam     Team         @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam     Team         @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  group        TournamentGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  events       MatchEvent[]
+
+  @@index([tournamentId, startTime])
+  @@index([tenantId, tournamentId])
+}
+
+model MatchEvent {
+  id        String        @id @default(cuid())
+  matchId   String
+  type      MatchEventType
+  minute    Int?
+  playerId  String?
+  teamSide  MatchTeamSide?
+  payload   Json?
+  createdAt DateTime      @default(now())
+
+  match     Match         @relation(fields: [matchId], references: [id])
+}
+
+model TournamentTableRow {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  teamId       String
+
+  position     Int
+  played       Int
+  wins         Int
+  draws        Int
+  losses       Int
+  goalsFor     Int
+  goalsAgainst Int
+  goalDiff     Int
+  points       Int
+
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id])
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  team         Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, teamId])
+  @@index([tenantId, tournamentId])
+  @@index([tournamentId, updatedAt])
+}
+
+model TeamAdmin {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model TeamPlayer {
+  id           String   @id @default(cuid())
+  teamId       String
+  playerId     String
+  jerseyNumber Int?
+  position     String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, playerId])
+  @@unique([playerId])
+  @@index([teamId, isActive])
+  @@index([playerId])
+}
+
+model Player {
+  id        String   @id @default(cuid())
+  tenantId  String
+  firstName String
+  lastName  String
+  birthDate DateTime?
+  gender    PlayerGender?
+  bioNumber String?
+  biography String?
+  position  String?
+  phone     String?
+  photoUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
+  teamPlayers TeamPlayer[]
+
+  @@index([tenantId, firstName, lastName])
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  TOURNAMENT_ADMIN
+  TEAM_ADMIN
+  MODERATOR
+  USER
+  REFEREE
+}
+
+/// Формат турнира. MANUAL — только ручные матчи, без автогенерации расписания.
+enum TournamentFormat {
+  SINGLE_GROUP
+  GROUPS_2
+  GROUPS_3
+  GROUPS_4
+  PLAYOFF
+  GROUPS_PLUS_PLAYOFF
+  MANUAL
+}
+
+enum TournamentStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum TournamentMemberRole {
+  TOURNAMENT_ADMIN
+  MODERATOR
+  REFEREE
+}
+
+enum PlayerGender {
+  MALE
+  FEMALE
+}
+
+enum TeamCategoryType {
+  AGE
+  GENDER
+}
+
+enum MatchTeamSide {
+  HOME
+  AWAY
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  CANCELED
+  PLAYED
+}
+
+enum MatchEventType {
+  GOAL
+  CARD
+  SUBSTITUTION
+  CUSTOM
+}
+
+enum MatchStage {
+  GROUP
+  PLAYOFF
+}
+
+/// Стадии плей-офф (в т.ч. ROUND_OF_16 / QUARTERFINAL для больших сеток)
+enum PlayoffRound {
+  SEMIFINAL
+  FINAL
+  THIRD_PLACE
+  ROUND_OF_16
+  QUARTERFINAL
+}

@@ -1,0 +1,32 @@
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
+import { JwtPayload } from './jwt.strategy';
+
+@Injectable()
+export class TenantParamConsistencyGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const req = context
+      .switchToHttp()
+      .getRequest<{ user?: JwtPayload; params?: Record<string, unknown> }>();
+
+    const user = req.user;
+    const tenantIdFromJwt = user?.tenantId;
+    if (!tenantIdFromJwt) return true;
+
+    const tenantIdFromParams = req.params?.tenantId;
+    if (!tenantIdFromParams || typeof tenantIdFromParams !== 'string') {
+      return true;
+    }
+
+    if (tenantIdFromParams !== tenantIdFromJwt) {
+      throw new ForbiddenException('Tenant mismatch');
+    }
+
+    return true;
+  }
+}
+

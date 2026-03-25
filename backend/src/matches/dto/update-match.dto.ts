@@ -1,0 +1,35 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsDateString, IsInt, IsOptional, IsString, Min } from 'class-validator';
+
+export class UpdateMatchDto {
+  @ApiPropertyOptional({ example: '2026-03-21T12:00:00.000Z' })
+  @IsOptional()
+  @IsDateString()
+  startTime?: string;
+
+  /** Только для турниров `MANUAL`; иначе игнорируется или 400 при попытке смены. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  homeTeamId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  awayTeamId?: string;
+
+  /** Номер тура (круг). Только `MANUAL`. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  roundNumber?: number;
+
+  /** Группа турнира. Только `MANUAL`; `null` — без группы. */
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @IsString()
+  groupId?: string | null;
+}
