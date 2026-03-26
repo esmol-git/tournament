@@ -36,6 +36,7 @@ jobs:
           cd frontend
           npm ci --include=dev
           export NODE_OPTIONS="--max-old-space-size=4096"
+          export NUXT_PUBLIC_API_BASE="${NUXT_PUBLIC_API_BASE:-https://api.tournament-platform.ru}"
           npm run build
 
       - name: Pack release archive
@@ -91,6 +92,10 @@ jobs:
               pm2 delete "$PROCESS_NAME"
             fi
 
-            HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME"
+            set -a
+            # shellcheck disable=SC1090
+            source "$SHARED_DIR/.env"
+            set +a
+            HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf
