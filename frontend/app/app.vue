@@ -10,6 +10,18 @@ import {
 const route = useRoute()
 const adminSettingsCookie = useCookie<string | null>(ADMIN_SETTINGS_COOKIE_KEY)
 
+const accentPrimaryVars: Record<
+  AdminSettingsPersisted['accent'],
+  { color: string; hover: string; active: string; contrast: string }
+> = {
+  emerald: { color: '#10b981', hover: '#059669', active: '#047857', contrast: '#ffffff' },
+  blue: { color: '#3b82f6', hover: '#2563eb', active: '#1d4ed8', contrast: '#ffffff' },
+  violet: { color: '#8b5cf6', hover: '#7c3aed', active: '#6d28d9', contrast: '#ffffff' },
+  rose: { color: '#f43f5e', hover: '#e11d48', active: '#be123c', contrast: '#ffffff' },
+  amber: { color: '#f59e0b', hover: '#d97706', active: '#b45309', contrast: '#1c1917' },
+  cyan: { color: '#06b6d4', hover: '#0891b2', active: '#0e7490', contrast: '#ffffff' },
+}
+
 function parseSettings(raw: string | null | undefined): AdminSettingsPersisted {
   if (!raw) return { ...defaultAdminSettings }
   try {
@@ -43,12 +55,20 @@ const adminHtmlClass = computed(() =>
 const adminAccent = computed(() =>
   isAdminRoute.value ? cookieSettings.value.accent : undefined,
 )
+const adminAccentInlineStyle = computed(() => {
+  if (!isAdminRoute.value) return undefined
+  const v = accentPrimaryVars[cookieSettings.value.accent]
+  return `html[data-accent="${cookieSettings.value.accent}"]{--p-primary-color:${v.color};--p-primary-hover-color:${v.hover};--p-primary-active-color:${v.active};--p-primary-contrast-color:${v.contrast};}`
+})
 
 useHead(() => ({
   htmlAttrs: {
     class: adminHtmlClass.value,
     'data-accent': adminAccent.value,
   },
+  style: adminAccentInlineStyle.value
+    ? [{ key: 'admin-accent-inline', textContent: adminAccentInlineStyle.value }]
+    : [],
 }))
 </script>
 

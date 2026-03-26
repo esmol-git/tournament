@@ -33,8 +33,13 @@ export class AuthController {
   @Post('login')
   @Throttle({ default: { limit: 5, ttl: seconds(60) } })
   @HttpCode(HttpStatus.OK)
-  async login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: { headers: { host?: string } },
+  ) {
+    const originalHost = (req.headers as Record<string, unknown>)['x-original-host'];
+    const host = typeof originalHost === 'string' ? originalHost : req.headers.host;
+    return this.authService.loginFromHost(dto, host);
   }
 
   @Post('platform/login')
@@ -42,6 +47,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async platformLogin(@Body() dto: PlatformLoginDto) {
     return this.authService.platformLogin(dto);
+  }
+
+  @Get('tenant/resolve')
+  @HttpCode(HttpStatus.OK)
+  async resolveTenant(@Req() req: { headers: { host?: string } }) {
+    const originalHost = (req.headers as Record<string, unknown>)['x-original-host'];
+    const host = typeof originalHost === 'string' ? originalHost : req.headers.host;
+    return this.authService.resolveTenantFromHost(host);
   }
 
   @Post('logout')

@@ -82,6 +82,8 @@ async function bootstrap() {
       'Accept',
       'X-Requested-With',
       'X-Request-Id',
+      // Прокидываем оригинальный Host с фронта для определения tenant-поддомена.
+      'X-Original-Host',
     ],
     exposedHeaders: ['X-Request-Id'],
   });

@@ -15,6 +15,37 @@ export const useAuthStore = defineStore('auth', () => {
 
   const loggedIn = computed(() => !!token.value)
 
+  function getCookie(name: string): string | null {
+    if (!process.client) return null
+    const v = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`))
+    return v ? decodeURIComponent(v[1]!) : null
+  }
+
+  function cookieDomainForCurrentHost(hostname?: string): string | undefined {
+    if (!process.client) return undefined
+    const h = (hostname ?? window.location.hostname).toLowerCase()
+    // cookie Domain подходит для любых поддоменов того же registrable domain.
+    // Например: impuls.lvh.me -> .lvh.me; tenant.localhost -> .localhost
+    const parts = h.split('.').filter(Boolean)
+    if (parts.length < 2) return undefined
+    return `.${parts.slice(-2).join('.')}`
+  }
+
+  function setAuthCookie(name: string, value: string) {
+    if (!process.client) return
+    const domain = cookieDomainForCurrentHost()
+    const secure = window.location.protocol === 'https:'
+    const domainAttr = domain ? `; Domain=${domain}` : ''
+    document.cookie = `${name}=${encodeURIComponent(value)}; Path=/${domainAttr}; SameSite=Lax${secure ? '; Secure' : ''}`
+  }
+
+  function clearAuthCookie(name: string) {
+    if (!process.client) return
+    const domain = cookieDomainForCurrentHost()
+    const domainAttr = domain ? `; Domain=${domain}` : ''
+    document.cookie = `${name}=; Path=/${domainAttr}; SameSite=Lax; Max-Age=0`
+  }
+
   function setSession(accessToken: string, refresh: string, u: unknown) {
     token.value = accessToken
     refreshToken.value = refresh
@@ -23,6 +54,12 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem('auth_token', accessToken)
       localStorage.setItem('auth_refresh_token', refresh)
       localStorage.setItem('auth_user', JSON.stringify(u))
+
+      // Чтобы сессия сохранялась при редиректе между поддоменами (root -> tenant.*).
+      // localStorage изолирован по origin, а cookie — может шариться по Domain.
+      setAuthCookie('auth_token', accessToken)
+      setAuthCookie('auth_refresh_token', refresh)
+      setAuthCookie('auth_user', JSON.stringify(u))
     }
   }
 
@@ -34,14 +71,22 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_refresh_token')
       localStorage.removeItem('auth_user')
+
+      clearAuthCookie('auth_token')
+      clearAuthCookie('auth_refresh_token')
+      clearAuthCookie('auth_user')
     }
   }
 
   function syncWithStorage() {
     if (!process.client) return
-    const storedToken = localStorage.getItem('auth_token')
-    const storedRefresh = localStorage.getItem('auth_refresh_token')
-    const storedUser = localStorage.getItem('auth_user')
+
+    // Предпочитаем cookie (между поддоменами), а localStorage — fallback.
+    const storedToken = getCookie('auth_token') ?? localStorage.getItem('auth_token')
+    const storedRefresh =
+      getCookie('auth_refresh_token') ?? localStorage.getItem('auth_refresh_token')
+    const storedUser = getCookie('auth_user') ?? localStorage.getItem('auth_user')
+
     token.value = storedToken || null
     refreshToken.value = storedRefresh || null
     user.value = storedUser ? JSON.parse(storedUser) : null

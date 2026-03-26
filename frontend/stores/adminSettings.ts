@@ -27,7 +27,9 @@ function readFromCookieRaw(): string | null {
 function readPersisted(): AdminSettingsPersisted {
   if (typeof localStorage === 'undefined') return { ...defaultAdminSettings }
   try {
-    const raw = localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY) || readFromCookieRaw()
+    // SSR читает тему из cookie, поэтому на клиенте используем тот же приоритет,
+    // чтобы не было двойного переключения темы при гидрации.
+    const raw = readFromCookieRaw() || localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY)
     if (!raw) return { ...defaultAdminSettings }
     const parsed = JSON.parse(raw) as Partial<AdminSettingsPersisted>
     return {
@@ -48,7 +50,18 @@ function savePersisted(s: AdminSettingsPersisted) {
     const raw = JSON.stringify(s)
     localStorage.setItem(ADMIN_SETTINGS_STORAGE_KEY, raw)
     const secure = typeof window !== 'undefined' && window.location.protocol === 'https:'
-    document.cookie = `${ADMIN_SETTINGS_COOKIE_KEY}=${encodeURIComponent(raw)}; Path=/; Max-Age=31536000; SameSite=Lax${secure ? '; Secure' : ''}`
+    const host = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : ''
+    const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1'
+    let domainPart = ''
+    if (host && !isIp && !isLocalhost) {
+      const parts = host.split('.').filter(Boolean)
+      if (parts.length >= 2) {
+        const apex = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`
+        domainPart = `; Domain=${apex}`
+      }
+    }
+    document.cookie = `${ADMIN_SETTINGS_COOKIE_KEY}=${encodeURIComponent(raw)}; Path=/; Max-Age=31536000; SameSite=Lax${domainPart}${secure ? '; Secure' : ''}`
   } catch {
     /* ignore */
   }

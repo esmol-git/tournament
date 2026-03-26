@@ -6,6 +6,13 @@ function tenantFromHost(hostHeader?: string): string | null {
     return null
   }
 
+  // Dev: tenant.localhost -> tenant
+  // (у нас `.localhost` даёт всего 2 части, а текущая логика требует >= 3)
+  if (host.endsWith('.localhost')) {
+    const parts = host.split('.')
+    return parts.length === 2 ? parts[0]! : null
+  }
+
   // tenant.example.com / tenant.lvh.me -> tenant
   const parts = host.split('.')
   if (parts.length < 3) return null
@@ -34,7 +41,12 @@ export default defineNuxtRouteMiddleware((to) => {
 
   // Прод-домены: админка доступна только с tenant-поддомена.
   // На root-домене (tournament-platform.ru/admin/...) не тянем tenant-данные.
-  if (isAdminRoute && !tenantFromSubdomain && !isLocalHost(hostHeader)) {
+  if (
+    isAdminRoute &&
+    !to.path.startsWith('/admin/login') &&
+    !tenantFromSubdomain &&
+    !isLocalHost(hostHeader)
+  ) {
     return navigateTo('/')
   }
 

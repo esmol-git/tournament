@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
@@ -137,14 +137,18 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const { username, password, tenantSlug } = dto;
+    const { username, password } = dto;
+    const tenantSlug = dto.tenantSlug?.trim();
+    if (!tenantSlug) {
+      throw new BadRequestException('Tenant slug is required for login');
+    }
     const normalizedUsername = username.trim().toLowerCase();
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { slug: tenantSlug },
     });
     if (!tenant) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Tenant not found');
     }
     if (tenant.blocked) {
       throw new UnauthorizedException('Tenant is blocked');
@@ -187,6 +191,57 @@ export class AuthService {
         tenantId: tenant.id,
       },
     };
+  }
+
+  private tenantSlugFromHost(hostname?: string): string | null {
+    if (!hostname) return null
+
+    const host = hostname.split(':')[0]?.toLowerCase()
+    if (!host) return null
+
+    // Dev: localhost (без subdomain) не даёт tenantSlug.
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return null
+
+    // Dev: tenant.localhost -> tenant
+    if (host.endsWith('.localhost')) {
+      const parts = host.split('.')
+      // [tenant, localhost]
+      return parts.length === 2 ? parts[0]! : null
+    }
+
+    const parts = host.split('.')
+    if (parts.length < 3) return null
+
+    const sub = parts[0]!
+    if (!sub || sub === 'www') return null
+    return sub
+  }
+
+  async resolveTenantFromHost(hostname?: string): Promise<{
+    tenantSlug: string | null
+    blocked: boolean
+  }> {
+    const slug = this.tenantSlugFromHost(hostname)
+    if (!slug) return { tenantSlug: null, blocked: false }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { slug },
+      select: { slug: true, blocked: true },
+    })
+
+    if (!tenant) return { tenantSlug: null, blocked: false }
+    return { tenantSlug: tenant.slug, blocked: tenant.blocked }
+  }
+
+  async loginFromHost(dto: LoginDto, hostname?: string) {
+    const dtoTenantSlug = dto.tenantSlug?.trim()
+    const hostResolved = await this.resolveTenantFromHost(hostname)
+    const tenantSlug = dtoTenantSlug || hostResolved.tenantSlug
+
+    if (!tenantSlug) throw new BadRequestException('Tenant slug is required for login')
+    if (!dtoTenantSlug && hostResolved.blocked) throw new UnauthorizedException('Tenant is blocked')
+
+    return this.login({ ...dto, tenantSlug })
   }
 
   async platformLogin(dto: PlatformLoginDto) {

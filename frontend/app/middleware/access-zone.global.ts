@@ -9,11 +9,23 @@ function readRole(user: unknown): string | null {
 function tenantFromHost(hostname: string): string | null {
   const host = hostname.toLowerCase()
   if (host === 'localhost' || host === '127.0.0.1') return null
+
+  // Dev: tenant.localhost -> tenant
+  if (host.endsWith('.localhost')) {
+    const parts = host.split('.')
+    return parts.length === 2 ? parts[0]! : null
+  }
+
   const parts = host.split('.')
   if (parts.length < 3) return null
   const sub = parts[0]
   if (!sub || sub === 'www') return null
   return sub
+}
+
+function isLocalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return host === 'localhost' || host === '127.0.0.1'
 }
 
 export default defineNuxtRouteMiddleware((to) => {
@@ -27,11 +39,12 @@ export default defineNuxtRouteMiddleware((to) => {
   const isAdminRoute = to.path.startsWith('/admin')
   const isPlatformLogin = to.path === '/platform/login'
   const isAdminLogin = to.path === '/admin/login'
-  const hostTenant = tenantFromHost(window.location.hostname)
+  const hostName = window.location.hostname
+  const hostTenant = tenantFromHost(hostName)
 
-  // На production-домене админка доступна только с tenant-поддомена.
-  // На root-домене нельзя показывать tenant-данные даже из сохранённой сессии.
-  if (isAdminRoute && !hostTenant) {
+  // На production root-домене закрытые /admin/* доступны только с tenant-поддомена.
+  // Но /admin/login всегда разрешаем (вход/регистрация), а на localhost разрешаем весь /admin.
+  if (isAdminRoute && !isAdminLogin && !hostTenant && !isLocalHost(hostName)) {
     return navigateTo('/')
   }
 
