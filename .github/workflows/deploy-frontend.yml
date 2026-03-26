@@ -1,12 +1,11 @@
-name: Deploy backend
+name: Deploy frontend
 
 on:
   push:
     branches: [main]
     paths:
-      - "backend/**"
-      - ".github/workflows/deploy-backend.yml"
-      - "scripts/deploy-backend-server.sh"
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
 
 jobs:
@@ -16,9 +15,11 @@ jobs:
       run:
         shell: bash
     env:
-      RELEASE_ARCHIVE: /tmp/tournament-backend-release.tgz
-      REMOTE_ARCHIVE: /tmp/tournament-backend-release.tgz
-      DEPLOY_PATH: /opt/tournament/api
+      RELEASE_ARCHIVE: /tmp/tournament-frontend-release.tgz
+      REMOTE_ARCHIVE: /tmp/tournament-frontend-release.tgz
+      DEPLOY_PATH: /opt/tournament/frontend
+      FRONTEND_PORT: "3000"
+      FRONTEND_HOST: "127.0.0.1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,24 +29,22 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Build backend
+      - name: Build frontend
         run: |
-          cd backend
+          cd frontend
           npm ci --include=dev
+          export NODE_OPTIONS="--max-old-space-size=4096"
           npm run build
 
       - name: Pack release archive
         run: |
-          mkdir -p /tmp/backend-release
-          cp backend/package.json /tmp/backend-release/
-          cp backend/package-lock.json /tmp/backend-release/
-          cp -R backend/dist /tmp/backend-release/dist
-          if [[ -d backend/prisma ]]; then
-            cp -R backend/prisma /tmp/backend-release/prisma
-          fi
-          tar -czf "$RELEASE_ARCHIVE" -C /tmp/backend-release .
+          mkdir -p /tmp/frontend-release
+          cp frontend/package.json /tmp/frontend-release/
+          cp frontend/package-lock.json /tmp/frontend-release/
+          cp -R frontend/.output /tmp/frontend-release/.output
+          tar -czf "$RELEASE_ARCHIVE" -C /tmp/frontend-release .
 
       - name: Upload release archive
         uses: appleboy/scp-action@v0.1.7
@@ -58,7 +57,7 @@ jobs:
           target: /tmp/
           strip_components: 1
 
-      - name: Run deploy script on server
+      - name: Deploy release on server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -66,14 +65,14 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
-          envs: DEPLOY_PATH,REMOTE_ARCHIVE
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE,FRONTEND_PORT,FRONTEND_HOST
           script: |
             set -euo pipefail
             APP_ROOT="${DEPLOY_PATH}"
             RELEASES_DIR="$APP_ROOT/releases"
             SHARED_DIR="$APP_ROOT/shared"
             CURRENT_LINK="$APP_ROOT/current"
-            PROCESS_NAME="api"
+            PROCESS_NAME="frontend"
             STAMP="$(date +%Y%m%d%H%M%S)"
             NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
 
@@ -86,19 +85,12 @@ jobs:
             mkdir -p "$NEW_RELEASE_DIR"
             tar -xzf "$REMOTE_ARCHIVE" -C "$NEW_RELEASE_DIR"
             ln -sfn "$SHARED_DIR/.env" "$NEW_RELEASE_DIR/.env"
-
-            cd "$NEW_RELEASE_DIR"
-            npm ci --omit=dev
-            if [[ -f "prisma/schema.prisma" ]]; then
-              npx prisma migrate deploy
-            fi
-
             ln -sfn "$NEW_RELEASE_DIR" "$CURRENT_LINK"
-            cd "$CURRENT_LINK"
+
             if pm2 describe "$PROCESS_NAME" >/dev/null 2>&1; then
-              pm2 restart "$PROCESS_NAME" --update-env
-            else
-              pm2 start dist/main.js --name "$PROCESS_NAME"
+              pm2 delete "$PROCESS_NAME"
             fi
+
+            HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME"
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf

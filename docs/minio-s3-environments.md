@@ -113,6 +113,42 @@ ssh root@46.8.78.207 "pm2 list"
 \
 
 
+Деплой API
+cd /opt/tournament/api/releases
+STAMP=$(date +%Y%m%d%H%M%S)
+mkdir -p "$STAMP"
+rsync -az --delete --exclude node_modules /var/www/tournament-platform1/backend/ "/opt/tournament/api/releases/$STAMP/"
+cd "/opt/tournament/api/releases/$STAMP"
+npm ci --include=dev
+npm run build
+npx prisma migrate deploy
+ln -sfn "/opt/tournament/api/releases/$STAMP" /opt/tournament/api/current
+pm2 restart api --update-env
+Деплой Frontend
+(с твоим VPS лучше собирать не на сервере, а локально/CI; но если срочно на сервере:)
+
+cd /opt/tournament/frontend/releases
+STAMP=$(date +%Y%m%d%H%M%S)
+mkdir -p "$STAMP"
+rsync -az --delete --exclude node_modules --exclude .nuxt --exclude .output /var/www/tournament-platform1/frontend/ "/opt/tournament/frontend/releases/$STAMP/"
+cd "/opt/tournament/frontend/releases/$STAMP"
+npm ci --include=dev
+export NODE_OPTIONS="--max-old-space-size=3072"
+npm run build
+ln -sfn "/opt/tournament/frontend/releases/$STAMP" /opt/tournament/frontend/current
+pm2 restart frontend --update-env
+Откат за минуту
+
+# API
+ls -1dt /opt/tournament/api/releases/* | head
+ln -sfn /opt/tournament/api/releases/<PREVIOUS_STAMP> /opt/tournament/api/current
+pm2 restart api
+# Frontend
+ls -1dt /opt/tournament/frontend/releases/* | head
+ln -sfn /opt/tournament/frontend/releases/<PREVIOUS_STAMP> /opt/tournament/frontend/current
+pm2 restart frontend
+
+
 cd /Users/esmolyakov/Projects/tournament-platform/frontend
 npm run build
 rsync -az --delete .output/ root@46.8.78.207:/var/www/tournament-platform1/frontend/.output/

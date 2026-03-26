@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/tournament/backend}"
+APP_ROOT="${APP_ROOT:-/opt/tournament/api}"
 RELEASE_ARCHIVE="${1:-/tmp/tournament-backend-release.tgz}"
-PROCESS_NAME="${PROCESS_NAME:-tournament-backend}"
+PROCESS_NAME="${PROCESS_NAME:-api}"
 
 if [[ ! -f "$RELEASE_ARCHIVE" ]]; then
   echo "Release archive not found: $RELEASE_ARCHIVE" >&2
