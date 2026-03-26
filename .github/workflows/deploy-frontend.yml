@@ -15,7 +15,7 @@ jobs:
       run:
         shell: bash
     env:
-      RELEASE_ARCHIVE: /tmp/tournament-frontend-release.tgz
+      RELEASE_ARCHIVE: tournament-frontend-release.tgz
       REMOTE_ARCHIVE: /tmp/tournament-frontend-release.tgz
       DEPLOY_PATH: /opt/tournament/frontend
       FRONTEND_PORT: "3000"
@@ -44,7 +44,8 @@ jobs:
           cp frontend/package.json /tmp/frontend-release/
           cp frontend/package-lock.json /tmp/frontend-release/
           cp -R frontend/.output /tmp/frontend-release/.output
-          tar -czf "$RELEASE_ARCHIVE" -C /tmp/frontend-release .
+          tar -czf "/tmp/$RELEASE_ARCHIVE" -C /tmp/frontend-release .
+          cp "/tmp/$RELEASE_ARCHIVE" "./$RELEASE_ARCHIVE"
 
       - name: Upload release archive
         uses: appleboy/scp-action@v0.1.7
@@ -55,7 +56,6 @@ jobs:
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           source: ${{ env.RELEASE_ARCHIVE }}
           target: /tmp/
-          strip_components: 1
 
       - name: Deploy release on server
         uses: appleboy/ssh-action@v1.2.0
