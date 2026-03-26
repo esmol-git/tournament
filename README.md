@@ -10,5 +10,8 @@
 ## Прод деплой
 
 - Регламент и структура сервера: [`docs/backend-deploy-runbook.md`](docs/backend-deploy-runbook.md)
+- Короткий ops-чеклист: [`docs/ops-runbook-short.md`](docs/ops-runbook-short.md)
+- Надежность сервера: [`docs/server-reliability-setup.md`](docs/server-reliability-setup.md)
+- Hardening checklist: [`docs/server-hardening-checklist.md`](docs/server-hardening-checklist.md)
 - API workflow: [`.github/workflows/deploy-backend.yml`](.github/workflows/deploy-backend.yml)
 - Frontend workflow: [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml)
