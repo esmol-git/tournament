@@ -110,3 +110,10 @@ ssh root@46.8.78.207 "cd /var/www/tournament-platform1/frontend && npm ci --omit
 # 4) (опционально) проверить статус
 ssh root@46.8.78.207 "pm2 list"
 Если у вас имя процесса не 1, замените на frontend или ваш id/name из pm2 list.
+\
+
+
+cd /Users/esmolyakov/Projects/tournament-platform/frontend
+npm run build
+rsync -az --delete .output/ root@46.8.78.207:/var/www/tournament-platform1/frontend/.output/
+ssh root@46.8.78.207 "pm2 restart 1"

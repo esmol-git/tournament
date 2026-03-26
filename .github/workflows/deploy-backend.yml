@@ -1,0 +1,104 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+      - "scripts/deploy-backend-server.sh"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_ARCHIVE: /tmp/tournament-backend-release.tgz
+      REMOTE_ARCHIVE: /tmp/tournament-backend-release.tgz
+      DEPLOY_PATH: /opt/tournament/backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Build backend
+        run: |
+          cd backend
+          npm ci --include=dev
+          npm run build
+
+      - name: Pack release archive
+        run: |
+          mkdir -p /tmp/backend-release
+          cp backend/package.json /tmp/backend-release/
+          cp backend/package-lock.json /tmp/backend-release/
+          cp -R backend/dist /tmp/backend-release/dist
+          if [[ -d backend/prisma ]]; then
+            cp -R backend/prisma /tmp/backend-release/prisma
+          fi
+          tar -czf "$RELEASE_ARCHIVE" -C /tmp/backend-release .
+
+      - name: Upload release archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: ${{ env.RELEASE_ARCHIVE }}
+          target: /tmp/
+          strip_components: 1
+
+      - name: Run deploy script on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE
+          script: |
+            set -euo pipefail
+            APP_ROOT="${DEPLOY_PATH}"
+            RELEASES_DIR="$APP_ROOT/releases"
+            SHARED_DIR="$APP_ROOT/shared"
+            CURRENT_LINK="$APP_ROOT/current"
+            PROCESS_NAME="tournament-backend"
+            STAMP="$(date +%Y%m%d%H%M%S)"
+            NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
+
+            mkdir -p "$RELEASES_DIR" "$SHARED_DIR"
+            if [[ ! -f "$SHARED_DIR/.env" ]]; then
+              echo "Missing $SHARED_DIR/.env" >&2
+              exit 1
+            fi
+
+            mkdir -p "$NEW_RELEASE_DIR"
+            tar -xzf "$REMOTE_ARCHIVE" -C "$NEW_RELEASE_DIR"
+            ln -sfn "$SHARED_DIR/.env" "$NEW_RELEASE_DIR/.env"
+
+            cd "$NEW_RELEASE_DIR"
+            npm ci --omit=dev
+            if [[ -f "prisma/schema.prisma" ]]; then
+              npx prisma migrate deploy
+            fi
+
+            ln -sfn "$NEW_RELEASE_DIR" "$CURRENT_LINK"
+            cd "$CURRENT_LINK"
+            if pm2 describe "$PROCESS_NAME" >/dev/null 2>&1; then
+              pm2 restart "$PROCESS_NAME" --update-env
+            else
+              pm2 start dist/main.js --name "$PROCESS_NAME"
+            fi
+            pm2 save
+            ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf
