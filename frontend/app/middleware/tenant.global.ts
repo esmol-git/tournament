@@ -14,14 +14,33 @@ function tenantFromHost(hostHeader?: string): string | null {
   return sub
 }
 
+function currentHost(): string | undefined {
+  if (import.meta.client) {
+    return window.location.host
+  }
+  return useRequestHeaders(['host']).host
+}
+
+function isLocalHost(hostHeader?: string): boolean {
+  const host = hostHeader?.split(':')[0]?.toLowerCase()
+  return host === 'localhost' || host === '127.0.0.1'
+}
+
 export default defineNuxtRouteMiddleware((to) => {
   const tenantStore = useTenantStore()
-  const hostHeader = useRequestHeaders(['host']).host
+  const hostHeader = currentHost()
   const tenantFromSubdomain = tenantFromHost(hostHeader)
+  const isAdminRoute = to.path.startsWith('/admin')
+
+  // Прод-домены: админка доступна только с tenant-поддомена.
+  // На root-домене (tournament-platform.ru/admin/...) не тянем tenant-данные.
+  if (isAdminRoute && !tenantFromSubdomain && !isLocalHost(hostHeader)) {
+    return navigateTo('/')
+  }
 
   // Для админки на localhost оставляем явный tenantSlug/дефолт.
   // Для поддоменов (acme.lvh.me/admin) сохраняем tenant из host.
-  if (to.path.startsWith('/admin') && !to.path.startsWith('/admin/login')) {
+  if (isAdminRoute && !to.path.startsWith('/admin/login')) {
     tenantStore.setTenant(tenantFromSubdomain)
     return
   }

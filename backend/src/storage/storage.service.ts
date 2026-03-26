@@ -1,4 +1,5 @@
 import {
+  HttpException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -67,6 +68,41 @@ function isNoSuchBucketError(e: unknown): boolean {
     $fault?: string;
   };
   return x?.name === 'NoSuchBucket' || x?.Code === 'NoSuchBucket';
+}
+
+/** Добавить схему, если в .env указан только host:port */
+function hrefWithScheme(raw: string): string {
+  const t = raw.trim().replace(/\/$/, '');
+  if (!t) return t;
+  return /^https?:\/\//i.test(t) ? t : `http://${t}`;
+}
+
+function tryParseOrigin(raw: string | undefined): string | null {
+  if (!raw?.trim()) return null;
+  try {
+    return new URL(hrefWithScheme(raw)).origin;
+  } catch {
+    return null;
+  }
+}
+
+function s3ErrorMeta(e: unknown): { code: string; message: string } {
+  const x = e as {
+    name?: string;
+    Code?: string;
+    message?: string;
+    cause?: { code?: string; message?: string };
+  };
+  const code =
+    x.Code ??
+    x.name ??
+    (typeof x.cause?.code === 'string' ? x.cause.code : '') ??
+    '';
+  const message =
+    (typeof x.message === 'string' && x.message) ||
+    (typeof x.cause?.message === 'string' ? x.cause.message : '') ||
+    (e instanceof Error ? e.message : String(e));
+  return { code, message };
 }
 
 /** JSON политики для MinIO / S3: анонимный GetObject. */
@@ -267,33 +303,75 @@ export class StorageService implements OnModuleInit {
       );
     }
 
-    const autoBucket = shouldAutoCreateBucket(this.config);
-    if (autoBucket) {
-      await this.ensureBucket(bucket);
-    }
-
-    await this.ensurePublicReadPolicy(bucket);
-
-    const input = this.buildPutObjectInput(bucket, key, file, contentType);
-
     try {
-      await this.client.send(new PutObjectCommand(input));
-    } catch (e: unknown) {
-      if (isNoSuchBucketError(e) && autoBucket) {
+      const autoBucket = shouldAutoCreateBucket(this.config);
+      if (autoBucket) {
         await this.ensureBucket(bucket);
-        await this.ensurePublicReadPolicy(bucket, true);
+      }
+
+      await this.ensurePublicReadPolicy(bucket);
+
+      const input = this.buildPutObjectInput(bucket, key, file, contentType);
+
+      try {
         await this.client.send(new PutObjectCommand(input));
-      } else {
+      } catch (e: unknown) {
+        if (isNoSuchBucketError(e) && autoBucket) {
+          await this.ensureBucket(bucket);
+          await this.ensurePublicReadPolicy(bucket, true);
+          await this.client.send(new PutObjectCommand(input));
+        } else {
+          throw e;
+        }
+      }
+
+      const publicBase =
+        this.config.get<string>('S3_PUBLIC_BASE_URL')?.trim() || endpoint;
+      const base = publicBase.replace(/\/$/, '');
+      return `${base}/${bucket}/${key}`;
+    } catch (e: unknown) {
+      if (e instanceof HttpException) {
         throw e;
       }
+      const { code, message } = s3ErrorMeta(e);
+      this.logger.error(
+        `S3 upload failed (key=${key}): ${code} ${message}`,
+        e instanceof Error ? e.stack : undefined,
+      );
+      let hint =
+        'Не удалось сохранить файл в хранилище. Проверьте S3/MinIO, переменные S3_* и логи сервера.';
+      const combined = `${message} ${code}`.toLowerCase();
+      if (
+        combined.includes('econnrefused') ||
+        code === 'ECONNREFUSED' ||
+        code === 'NetworkingError'
+      ) {
+        hint =
+          'Хранилище S3 недоступно (нет соединения). Проверьте, что MinIO запущен; S3_ENDPOINT должен указывать на API (порт 9000), не на веб-консоль (9001).';
+      }
+      if (code === 'InvalidAccessKeyId' || code === 'SignatureDoesNotMatch') {
+        hint =
+          'Неверные ключи S3 (S3_ACCESS_KEY / S3_SECRET_KEY).';
+      }
+      if (code === 'AccessDenied') {
+        hint =
+          'Доступ к S3 запрещён. Проверьте права ключа и политику бакета.';
+      }
+      if (code === 'NoSuchBucket') {
+        hint =
+          'Бакет не найден. Создайте бакет в MinIO или задайте S3_CREATE_BUCKET_IF_MISSING=true (если допустимо для среды).';
+      }
+      if (/acl|access control/i.test(message) || code === 'AccessControlListNotSupported') {
+        hint =
+          'PutObject отклонён из‑за ACL. Задайте S3_OBJECT_ACL=none в .env и публичное чтение через политику бакета.';
+      }
+      throw new InternalServerErrorException(hint);
     }
-
-    const base = endpoint.replace(/\/$/, '');
-    return `${base}/${bucket}/${key}`;
   }
 
   /**
-   * Удалить объект в нашем bucket, если publicUrl совпадает с S3_ENDPOINT (path-style).
+   * Удалить объект в нашем bucket, если publicUrl совпадает с S3_ENDPOINT
+   * или с S3_PUBLIC_BASE_URL (path-style: /bucket/key).
    * Ошибки не пробрасываются — чтобы сбой хранилища не ломал бизнес-операцию.
    */
   async tryDeletePublicUrl(
@@ -307,11 +385,6 @@ export class StorageService implements OnModuleInit {
     const secretAccessKey = this.config.get<string>('S3_SECRET_KEY')?.trim();
     if (!endpointRaw || !bucket || !accessKeyId || !secretAccessKey) return;
 
-    const endpointNorm = endpointRaw.replace(/\/$/, '');
-    const endpointHref = /^https?:\/\//i.test(endpointNorm)
-      ? endpointNorm
-      : `http://${endpointNorm}`;
-
     let objectUrl: URL;
     try {
       objectUrl = new URL(publicUrl.trim());
@@ -319,14 +392,15 @@ export class StorageService implements OnModuleInit {
       return;
     }
 
-    let epUrl: URL;
-    try {
-      epUrl = new URL(endpointHref);
-    } catch {
-      return;
-    }
+    const allowedOrigins = new Set<string>();
+    const epO = tryParseOrigin(endpointRaw);
+    if (epO) allowedOrigins.add(epO);
+    const pubO = tryParseOrigin(
+      this.config.get<string>('S3_PUBLIC_BASE_URL') ?? undefined,
+    );
+    if (pubO) allowedOrigins.add(pubO);
 
-    if (objectUrl.origin !== epUrl.origin) {
+    if (!allowedOrigins.has(objectUrl.origin)) {
       return;
     }
 

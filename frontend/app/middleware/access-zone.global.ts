@@ -6,6 +6,16 @@ function readRole(user: unknown): string | null {
   return typeof role === 'string' ? role : null
 }
 
+function tenantFromHost(hostname: string): string | null {
+  const host = hostname.toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1') return null
+  const parts = host.split('.')
+  if (parts.length < 3) return null
+  const sub = parts[0]
+  if (!sub || sub === 'www') return null
+  return sub
+}
+
 export default defineNuxtRouteMiddleware((to) => {
   if (!process.client) return
   const auth = useAuthStore()
@@ -17,6 +27,13 @@ export default defineNuxtRouteMiddleware((to) => {
   const isAdminRoute = to.path.startsWith('/admin')
   const isPlatformLogin = to.path === '/platform/login'
   const isAdminLogin = to.path === '/admin/login'
+  const hostTenant = tenantFromHost(window.location.hostname)
+
+  // На production-домене админка доступна только с tenant-поддомена.
+  // На root-домене нельзя показывать tenant-данные даже из сохранённой сессии.
+  if (isAdminRoute && !hostTenant) {
+    return navigateTo('/')
+  }
 
   if (isPlatformRoute) {
     if (isPlatformLogin) {

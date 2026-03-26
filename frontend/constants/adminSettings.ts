@@ -3,6 +3,7 @@ export type AdminLocaleCode = 'ru' | 'en'
 export type AdminAccentId = 'emerald' | 'blue' | 'violet' | 'rose' | 'amber' | 'cyan'
 
 export const ADMIN_SETTINGS_STORAGE_KEY = 'admin-settings-v1'
+export const ADMIN_SETTINGS_COOKIE_KEY = 'admin-settings-v1'
 
 export interface AdminSettingsPersisted {
   themeMode: AdminThemeMode
@@ -11,7 +12,7 @@ export interface AdminSettingsPersisted {
 }
 
 export const defaultAdminSettings: AdminSettingsPersisted = {
-  themeMode: 'system',
+  themeMode: 'light',
   locale: 'ru',
   accent: 'emerald',
 }

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApiUrl } from '~/composables/useApiUrl'
 import {
+  ADMIN_SETTINGS_COOKIE_KEY,
   ADMIN_SETTINGS_STORAGE_KEY,
   defaultAdminSettings,
   type AdminAccentId,
@@ -11,10 +12,22 @@ import {
 } from '~/constants/adminSettings'
 import { useAuthStore } from '~/stores/auth'
 
+function readFromCookieRaw(): string | null {
+  if (typeof document === 'undefined') return null
+  const escaped = ADMIN_SETTINGS_COOKIE_KEY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`))
+  if (!match?.[1]) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+}
+
 function readPersisted(): AdminSettingsPersisted {
   if (typeof localStorage === 'undefined') return { ...defaultAdminSettings }
   try {
-    const raw = localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY)
+    const raw = localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY) || readFromCookieRaw()
     if (!raw) return { ...defaultAdminSettings }
     const parsed = JSON.parse(raw) as Partial<AdminSettingsPersisted>
     return {
@@ -32,7 +45,10 @@ function readPersisted(): AdminSettingsPersisted {
 function savePersisted(s: AdminSettingsPersisted) {
   if (typeof localStorage === 'undefined') return
   try {
-    localStorage.setItem(ADMIN_SETTINGS_STORAGE_KEY, JSON.stringify(s))
+    const raw = JSON.stringify(s)
+    localStorage.setItem(ADMIN_SETTINGS_STORAGE_KEY, raw)
+    const secure = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    document.cookie = `${ADMIN_SETTINGS_COOKIE_KEY}=${encodeURIComponent(raw)}; Path=/; Max-Age=31536000; SameSite=Lax${secure ? '; Secure' : ''}`
   } catch {
     /* ignore */
   }
@@ -87,6 +103,8 @@ export const useAdminSettingsStore = defineStore('adminSettings', () => {
     themeMode.value = p.themeMode
     locale.value = p.locale
     accent.value = p.accent
+    // Держим cookie синхронной с localStorage, чтобы SSR сразу рендерил нужную тему.
+    persist()
   }
 
   function persist() {
