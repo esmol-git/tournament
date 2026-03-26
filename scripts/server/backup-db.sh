@@ -31,10 +31,12 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
+DATABASE_URL_PG="${DATABASE_URL%%\?*}"
+
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_FILE="$BACKUP_DIR/tournament-db-$STAMP.sql.gz"
 
-if pg_dump "$DATABASE_URL" | gzip > "$OUT_FILE"; then
+if pg_dump "$DATABASE_URL_PG" | gzip > "$OUT_FILE"; then
   echo "Backup created: $OUT_FILE"
 else
   echo "Backup failed" >&2
