@@ -2,3 +2,173 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --public-accent-primary: #123c67;
+  --public-accent-secondary: #c80a48;
+  --public-accent-tertiary: #4f6b8c;
+}
+
+@layer components {
+  .public-shell {
+    @apply min-h-screen flex flex-col;
+    background: linear-gradient(180deg, #edf3fb 0%, #f7f9fd 35%, #f8fafc 100%);
+  }
+
+  .public-grid {
+    @apply mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[1fr_22rem];
+  }
+
+  .public-container {
+    @apply mx-auto w-full max-w-6xl px-4 py-8;
+  }
+
+  .public-stage {
+    min-height: 24rem;
+  }
+
+  .public-fade-enter-active,
+  .public-fade-leave-active {
+    transition: opacity 0.2s ease;
+  }
+
+  .public-fade-enter-from,
+  .public-fade-leave-to {
+    opacity: 0;
+  }
+
+  .public-card {
+    @apply rounded-2xl bg-white p-4 shadow-sm transition-shadow duration-200 hover:shadow-md;
+    border-color: #b7c7dd;
+  }
+
+  .public-hero {
+    @apply rounded-2xl bg-white p-6 shadow-sm;
+    border-color: #b7c7dd;
+  }
+
+  .public-title {
+    @apply text-2xl font-semibold;
+    color: var(--public-accent-primary);
+  }
+
+  .public-subtitle {
+    @apply mt-1 text-sm;
+    color: var(--public-accent-tertiary);
+  }
+
+  .public-section-title {
+    @apply text-lg font-semibold;
+    color: var(--public-accent-primary);
+  }
+
+  .public-empty {
+    @apply rounded-2xl bg-white p-6 text-center;
+    border-color: #b7c7dd;
+    color: var(--public-accent-tertiary);
+  }
+
+  .public-error {
+    @apply rounded-2xl border border-red-300 bg-red-50 p-5 text-red-900;
+  }
+
+  .public-table-wrap {
+    @apply overflow-x-auto rounded-2xl bg-white;
+    border-color: #b7c7dd;
+  }
+
+  .public-table {
+    @apply w-full text-sm;
+  }
+
+  .public-table thead tr {
+    @apply border-b text-xs font-semibold uppercase;
+    border-color: #d6e0ee;
+    color: #4f6b8c;
+    background-color: #f4f7fc;
+  }
+
+  .public-table th {
+    @apply px-3 py-2;
+  }
+
+  .public-table td {
+    @apply px-3 py-2;
+  }
+
+  .public-table tbody tr {
+    @apply border-b transition-colors;
+    border-color: #e1e8f2;
+    background-color: white;
+  }
+
+  .public-table tbody tr:nth-child(even) {
+    background-color: #f9fbff;
+  }
+
+  .public-table tbody tr:hover {
+    background-color: #fff2f7;
+  }
+
+  .public-link {
+    @apply transition-colors focus-visible:outline-none focus-visible:ring-2 rounded;
+    color: var(--public-accent-secondary);
+    --tw-ring-color: rgb(200 10 72 / 0.3);
+  }
+
+  .public-link:hover {
+    color: #9f083a;
+  }
+
+  .public-shell .p-inputtext:enabled:focus,
+  .public-shell .p-select:not(.p-disabled).p-focus,
+  .public-shell .p-datepicker:not(.p-disabled).p-focus,
+  .public-shell .p-multiselect:not(.p-disabled).p-focus {
+    border-color: #b7c7dd;
+    box-shadow: 0 0 0 0.2rem rgb(18 60 103 / 0.18);
+  }
+
+  .public-shell .p-select-option.p-select-option-selected,
+  .public-shell .p-multiselect-option.p-multiselect-option-selected,
+  .p-select-overlay .p-select-option.p-select-option-selected,
+  .p-multiselect-overlay .p-multiselect-option.p-multiselect-option-selected {
+    background: #eef5ff !important;
+    color: #123c67 !important;
+  }
+
+  .public-shell .p-select-option.p-focus,
+  .public-shell .p-select-option:hover,
+  .public-shell .p-multiselect-option.p-focus,
+  .public-shell .p-multiselect-option:hover,
+  .p-select-overlay .p-select-option.p-focus,
+  .p-select-overlay .p-select-option:hover,
+  .p-multiselect-overlay .p-multiselect-option.p-focus,
+  .p-multiselect-overlay .p-multiselect-option:hover {
+    background: #f4f7fc !important;
+    color: #123c67 !important;
+  }
+
+  .public-shell .p-button.p-button-outlined:not(:disabled):hover {
+    background: #fff2f7;
+    border-color: #f4c8d8;
+    color: #c80a48;
+  }
+
+  .public-shell .p-button.p-button-text:not(:disabled):hover {
+    background: #eef5ff;
+    color: #123c67;
+  }
+
+  .public-shell .p-button:focus-visible {
+    box-shadow: 0 0 0 0.2rem rgb(200 10 72 / 0.22);
+  }
+
+  .public-shell .p-floatlabel label,
+  .public-shell .p-floatlabel:has(.p-inputwrapper-filled) label,
+  .public-shell .p-floatlabel:has(.p-inputwrapper-focus) label,
+  .public-shell .p-floatlabel:has(.p-filled) label,
+  .public-shell .p-floatlabel:has(input:focus) label,
+  .public-shell .p-floatlabel:has(textarea:focus) label {
+    color: #4f6b8c;
+  }
+}
+

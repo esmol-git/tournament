@@ -19,12 +19,16 @@ function setView(v: 'table' | 'chessboard' | 'progress' | 'playoff') {
 </script>
 
 <template>
-  <div class="flex items-center gap-2 rounded-xl bg-surface-200/30 p-1 border border-surface-200">
+  <div class="flex items-center gap-2 rounded-xl border border-[#b7c7dd] bg-[#eaf1fb] p-1">
     <button
       v-if="props.capabilities?.showTable !== false"
       type="button"
       class="flex-1 text-center px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-      :class="modelValue === 'table' ? 'bg-primary/90 text-white' : 'text-surface-700 hover:bg-surface-0'"
+      :class="
+        modelValue === 'table'
+          ? 'bg-[#c80a48] text-white shadow-sm'
+          : 'text-[#123c67] hover:bg-white'
+      "
       @click="setView('table')"
     >
       ТАБЛИЦА
@@ -34,7 +38,11 @@ function setView(v: 'table' | 'chessboard' | 'progress' | 'playoff') {
       v-if="props.capabilities?.showChessboard !== false"
       type="button"
       class="flex-1 text-center px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-      :class="modelValue === 'chessboard' ? 'bg-primary/90 text-white' : 'text-surface-700 hover:bg-surface-0'"
+      :class="
+        modelValue === 'chessboard'
+          ? 'bg-[#c80a48] text-white shadow-sm'
+          : 'text-[#123c67] hover:bg-white'
+      "
       @click="setView('chessboard')"
     >
       ШАХМАТКА
@@ -44,7 +52,11 @@ function setView(v: 'table' | 'chessboard' | 'progress' | 'playoff') {
       v-if="props.capabilities?.showProgress !== false"
       type="button"
       class="flex-1 text-center px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-      :class="modelValue === 'progress' ? 'bg-primary/90 text-white' : 'text-surface-700 hover:bg-surface-0'"
+      :class="
+        modelValue === 'progress'
+          ? 'bg-[#c80a48] text-white shadow-sm'
+          : 'text-[#123c67] hover:bg-white'
+      "
       @click="setView('progress')"
     >
       ПРОГРЕСС
@@ -54,7 +66,11 @@ function setView(v: 'table' | 'chessboard' | 'progress' | 'playoff') {
       v-if="props.capabilities?.showPlayoff !== false"
       type="button"
       class="flex-1 text-center px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-      :class="modelValue === 'playoff' ? 'bg-primary/90 text-white' : 'text-surface-700 hover:bg-surface-0'"
+      :class="
+        modelValue === 'playoff'
+          ? 'bg-[#c80a48] text-white shadow-sm'
+          : 'text-[#123c67] hover:bg-white'
+      "
       @click="setView('playoff')"
     >
       ПЛЕЙ-ОФФ

@@ -13,6 +13,9 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { MatchesService } from './matches.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { UpdateProtocolDto } from './dto/update-protocol.dto';
@@ -32,7 +35,12 @@ function assertTenant(req: Request & { user: JwtPayload }, tenantId: string) {
 }
 
 @ApiTags('matches')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller()
 export class MatchesController {
   constructor(private readonly matchesService: MatchesService) {}
@@ -87,6 +95,8 @@ export class MatchesController {
       startTime: dto.startTime ? new Date(dto.startTime) : undefined,
       homeTeamId: dto.homeTeamId,
       awayTeamId: dto.awayTeamId,
+      scheduleChangeReasonId: dto.scheduleChangeReasonId,
+      scheduleChangeNote: dto.scheduleChangeNote,
     });
   }
 
@@ -193,6 +203,8 @@ export class MatchesController {
         awayTeamId: dto.awayTeamId,
         roundNumber: dto.roundNumber,
         groupId: dto.groupId,
+        scheduleChangeReasonId: dto.scheduleChangeReasonId,
+        scheduleChangeNote: dto.scheduleChangeNote,
       },
     );
   }

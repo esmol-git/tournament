@@ -1,5 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { PlayerGender, TeamCategoryType } from '@prisma/client';
+import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -7,62 +6,41 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  Max,
+  MaxLength,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { ValidateNested } from 'class-validator';
+import { PlayerGender } from '@prisma/client';
 
-class TeamCategoryRuleDto {
-  @ApiPropertyOptional({ enum: TeamCategoryType })
+export class UpdateTeamCategoryDto {
   @IsOptional()
-  @IsEnum(TeamCategoryType)
-  type?: TeamCategoryType;
+  @IsString()
+  @MaxLength(200)
+  name?: string;
 
-  @ApiPropertyOptional({ example: 2018 })
   @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  slug?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1900)
-  @Max(2100)
   minBirthYear?: number | null;
 
-  @ApiPropertyOptional({ example: 2020 })
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1900)
-  @Max(2100)
   maxBirthYear?: number | null;
 
-  @ApiPropertyOptional({ example: true })
   @IsOptional()
+  @Type(() => Boolean)
   @IsBoolean()
   requireBirthDate?: boolean;
 
-  @ApiPropertyOptional({ isArray: true, enum: PlayerGender })
   @IsOptional()
   @IsArray()
   @IsEnum(PlayerGender, { each: true })
   allowedGenders?: PlayerGender[];
-}
-
-export class UpdateTeamCategoryDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  name?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  slug?: string;
-
-  @ApiPropertyOptional({
-    type: [TeamCategoryRuleDto],
-    description: 'Multiple rules inside one category',
-  })
-  @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => TeamCategoryRuleDto)
-  rules?: TeamCategoryRuleDto[];
 }

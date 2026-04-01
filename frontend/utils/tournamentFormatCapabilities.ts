@@ -29,6 +29,30 @@ export function getTournamentCapabilities(
     }
   }
 
+  if (format === 'GROUPS_PLUS_PLAYOFF') {
+    return {
+      showTable: true,
+      showChessboard: true,
+      showProgress: true,
+      showPlayoff: true,
+    }
+  }
+
+  if (
+    format === 'SINGLE_GROUP' ||
+    format === 'GROUPS_2' ||
+    format === 'GROUPS_3' ||
+    format === 'GROUPS_4' ||
+    format === 'MANUAL'
+  ) {
+    return {
+      showTable: true,
+      showChessboard: true,
+      showProgress: true,
+      showPlayoff: false,
+    }
+  }
+
   return {
     showTable: true,
     showChessboard: true,

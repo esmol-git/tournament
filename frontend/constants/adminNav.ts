@@ -58,13 +58,22 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     labelKey: 'admin.nav.group_references',
     icon: 'pi pi-book',
     items: [
-      { to: '/admin/team-categories', labelKey: 'admin.nav.categories', icon: 'pi pi-tags' },
       {
         to: '/admin/references/competitions',
         labelKey: 'admin.nav.ref_competitions',
         icon: 'pi pi-flag',
       },
       { to: '/admin/references/seasons', labelKey: 'admin.nav.seasons', icon: 'pi pi-calendar' },
+      {
+        to: '/admin/references/age-groups',
+        labelKey: 'admin.nav.age_groups',
+        icon: 'pi pi-chart-bar',
+      },
+      {
+        to: '/admin/references/regions',
+        labelKey: 'admin.nav.regions',
+        icon: 'pi pi-map-marker',
+      },
       { to: '/admin/references/documents', labelKey: 'admin.nav.documents', icon: 'pi pi-file' },
       { to: '/admin/references/referees', labelKey: 'admin.nav.referees', icon: 'pi pi-user' },
       {
@@ -83,6 +92,21 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
         labelKey: 'admin.nav.management',
         icon: 'pi pi-users',
       },
+      {
+        to: '/admin/references/protocol-event-types',
+        labelKey: 'admin.nav.protocol_event_types',
+        icon: 'pi pi-list',
+      },
+      {
+        to: '/admin/references/match-schedule-reasons',
+        labelKey: 'admin.nav.match_schedule_reasons',
+        icon: 'pi pi-calendar-times',
+      },
+      {
+        to: '/admin/references/news-tags',
+        labelKey: 'admin.nav.news_tags',
+        icon: 'pi pi-tags',
+      },
     ],
   },
   {
@@ -91,9 +115,13 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     icon: 'pi pi-trophy',
     items: [
       { to: '/admin/tournaments', labelKey: 'admin.nav.tournaments', icon: 'pi pi-sitemap' },
+      { to: '/admin/news', labelKey: 'admin.nav.news', icon: 'pi pi-megaphone' },
+      { to: '/admin/gallery', labelKey: 'admin.nav.gallery', icon: 'pi pi-images' },
       { to: '/admin/matches', labelKey: 'admin.nav.matches', icon: 'pi pi-calendar' },
       { to: '/admin/calendar', labelKey: 'admin.nav.calendar', icon: 'pi pi-calendar-clock' },
     ],
   },
+  { to: '/admin/profile', labelKey: 'admin.nav.profile', icon: 'pi pi-user-edit' },
+  { to: '/admin/social-links', labelKey: 'admin.nav.social_links', icon: 'pi pi-share-alt' },
   { to: '/admin/settings', labelKey: 'admin.nav.settings', icon: 'pi pi-cog' },
 ]

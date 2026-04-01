@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import { useTenantTeamLogo } from '~/composables/useTenantTeamLogo'
 import { PLAYER_POSITION_OPTIONS } from '~/constants/playerPositions'
+import type { AgeGroupRow } from '~/types/admin/age-group'
+import type { RegionRow } from '~/types/admin/region'
 import type { TeamPlayerRow, TeamRow } from '~/types/admin/team'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { toYmdLocal as toYmd } from '~/utils/dateYmd'
@@ -17,6 +21,7 @@ const router = useRouter()
 const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
+const { t } = useI18n()
 const tenantId = useTenantId()
 
 /** true до первого завершённого запроса — иначе при F5 один кадр с пустым списком и «Нет команд». */
@@ -34,8 +39,10 @@ const currentPage = ref(1)
 const searchQuery = ref('')
 const sortField = ref<string | null>(null)
 const sortOrder = ref<number | null>(null)
-const teamCategoryOptions = ref<Array<{ label: string; value: string }>>([])
-const categoriesLoading = ref(false)
+const ageGroupsList = ref<AgeGroupRow[]>([])
+const regionsList = ref<RegionRow[]>([])
+const ageGroupsLoading = ref(false)
+const regionsLoading = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const showForm = ref(false)
@@ -46,7 +53,6 @@ const isEdit = computed(() => !!editing.value)
 const form = reactive({
   name: '',
   rating: 3,
-  category: '',
   logoUrl: '',
   coachName: '',
   coachPhone: '',
@@ -54,7 +60,21 @@ const form = reactive({
   contactName: '',
   contactPhone: '',
   description: '',
+  ageGroupId: '',
+  regionId: '',
 })
+const submitAttempted = ref(false)
+const teamRules = computed(() => ({
+  name: { required },
+}))
+const v$ = useVuelidate(teamRules, form, { $autoDirty: true })
+const teamFormErrors = computed(() => ({
+  name: form.name.trim() ? '' : t('admin.validation.required_name'),
+}))
+const canSaveTeam = computed(() => !v$.value.$invalid && !teamFormErrors.value.name)
+const showNameError = computed(
+  () => (submitAttempted.value || v$.value.name.$dirty) && !!teamFormErrors.value.name,
+)
 
 /** Slug в API всегда из названия (как на публичных URL). */
 const teamSlugGenerated = computed(() => slugifyFromTitle(form.name, 'team'))
@@ -113,28 +133,51 @@ const {
   },
 })
 
-const fetchTeamCategories = async () => {
+async function fetchAgeGroupsAndRegions() {
   if (!token.value) return
-  categoriesLoading.value = true
+  ageGroupsLoading.value = true
+  regionsLoading.value = true
   try {
-    const res = await authFetch<Array<{ id: string; name: string; slug?: string | null }>>(
-      apiUrl(`/tenants/${tenantId.value}/team-categories`),
-      {
+    const [ag, rg] = await Promise.all([
+      authFetch<AgeGroupRow[]>(apiUrl(`/tenants/${tenantId.value}/age-groups`), {
         headers: { Authorization: `Bearer ${token.value}` },
-      },
-    )
-    teamCategoryOptions.value = res.map((c) => ({ label: c.name, value: c.name }))
+      }),
+      authFetch<RegionRow[]>(apiUrl(`/tenants/${tenantId.value}/regions`), {
+        headers: { Authorization: `Bearer ${token.value}` },
+      }),
+    ])
+    ageGroupsList.value = ag
+    regionsList.value = rg
+  } catch {
+    ageGroupsList.value = []
+    regionsList.value = []
   } finally {
-    categoriesLoading.value = false
+    ageGroupsLoading.value = false
+    regionsLoading.value = false
   }
 }
 
-const teamCategorySelectOptions = computed(() => {
-  const value = form.category?.trim() || ''
-  if (!value) return teamCategoryOptions.value
-  if (teamCategoryOptions.value.some((o) => o.value === value)) return teamCategoryOptions.value
-  return [{ label: value, value }, ...teamCategoryOptions.value]
-})
+const ageGroupSelectOptions = computed(() => [
+  { label: 'Не указано', value: '' },
+  ...ageGroupsList.value
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+    .map((g) => ({
+      label: g.active ? g.name : `${g.name} (неактивна)`,
+      value: g.id,
+    })),
+])
+
+const regionSelectOptions = computed(() => [
+  { label: 'Не указано', value: '' },
+  ...regionsList.value
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+    .map((r) => ({
+      label: r.active ? r.name : `${r.name} (неактивен)`,
+      value: r.id,
+    })),
+])
 
 const positionOptions = [...PLAYER_POSITION_OPTIONS]
 
@@ -149,10 +192,10 @@ watch(searchQuery, (v) => {
 })
 
 const openCreate = () => {
+  submitAttempted.value = false
   editing.value = null
   form.name = ''
   form.rating = 3
-  form.category = ''
   form.logoUrl = ''
   form.coachName = ''
   form.coachPhone = ''
@@ -160,33 +203,47 @@ const openCreate = () => {
   form.contactName = ''
   form.contactPhone = ''
   form.description = ''
+  form.ageGroupId = ''
+  form.regionId = ''
+  v$.value.$reset()
   showForm.value = true
+  void fetchAgeGroupsAndRegions()
 }
 
 const openEdit = (t: TeamRow) => {
+  submitAttempted.value = false
   editing.value = t
   form.name = t.name
   form.rating = Math.min(5, Math.max(1, Number(t.rating ?? 3)))
-  form.category = t.category ?? ''
   form.logoUrl = t.logoUrl ?? ''
+  form.ageGroupId = t.ageGroupId ?? ''
+  form.regionId = t.regionId ?? ''
   form.coachName = t.coachName ?? ''
   form.coachPhone = ''
   form.coachEmail = ''
   form.contactName = ''
   form.contactPhone = ''
   form.description = ''
+  v$.value.$reset()
   showForm.value = true
+  void fetchAgeGroupsAndRegions()
 }
 
 const saveTeam = async () => {
   if (!token.value) return
+  submitAttempted.value = true
+  v$.value.$touch()
+  if (!canSaveTeam.value) {
+    return
+  }
   saving.value = true
   try {
+    const ag = form.ageGroupId.trim()
+    const rg = form.regionId.trim()
     const body: any = {
       name: form.name,
       rating: Math.min(5, Math.max(1, Number(form.rating || 3))),
       slug: teamSlugGenerated.value,
-      category: form.category || undefined,
       logoUrl: form.logoUrl || undefined,
       coachName: form.coachName || undefined,
       coachPhone: form.coachPhone || undefined,
@@ -194,6 +251,12 @@ const saveTeam = async () => {
       contactName: form.contactName || undefined,
       contactPhone: form.contactPhone || undefined,
       description: form.description || undefined,
+      ...(isEdit.value
+        ? { ageGroupId: ag || null, regionId: rg || null }
+        : {
+            ...(ag ? { ageGroupId: ag } : {}),
+            ...(rg ? { regionId: rg } : {}),
+          }),
     }
 
     if (isEdit.value) {
@@ -262,7 +325,6 @@ onMounted(() => {
     }
   }
   currentPage.value = 1
-  void fetchTeamCategories()
   void fetchTeams(1, pageSize.value, searchQuery.value)
 })
 
@@ -736,9 +798,14 @@ async function confirmDeleteRosterPlayer() {
           <Skeleton width="2rem" height="1rem" class="rounded-md" />
         </template>
       </Column>
-      <Column header="Категория">
+      <Column header="Возраст">
         <template #body>
-          <Skeleton width="45%" height="1rem" class="rounded-md" />
+          <Skeleton width="40%" height="1rem" class="rounded-md" />
+        </template>
+      </Column>
+      <Column header="Регион">
+        <template #body>
+          <Skeleton width="40%" height="1rem" class="rounded-md" />
         </template>
       </Column>
       <Column header="Игроков">
@@ -802,7 +869,20 @@ async function confirmDeleteRosterPlayer() {
       <Column field="rating" header="Рейтинг" sortable style="width: 7rem">
         <template #body="{ data }">{{ data.rating ?? 3 }}</template>
       </Column>
-      <Column field="category" header="Категория" />
+      <Column header="Возраст" style="min-width: 6rem">
+        <template #body="{ data }">
+          <span v-if="data.ageGroup?.shortLabel || data.ageGroup?.name" class="text-sm">
+            {{ data.ageGroup?.shortLabel || data.ageGroup?.name }}
+          </span>
+          <span v-else class="text-muted-color">—</span>
+        </template>
+      </Column>
+      <Column header="Регион" style="min-width: 7rem">
+        <template #body="{ data }">
+          <span v-if="data.region?.name" class="text-sm">{{ data.region.name }}</span>
+          <span v-else class="text-muted-color">—</span>
+        </template>
+      </Column>
       <Column field="playersCount" header="Игроков" sortable>
         <template #body="{ data }">{{ data.playersCount }}</template>
       </Column>
@@ -922,9 +1002,10 @@ async function confirmDeleteRosterPlayer() {
         <!-- Справа от логотипа: название, slug, тренер, рейтинг -->
         <div class="space-y-4 md:col-span-2">
           <FloatLabel variant="on" class="block">
-            <InputText id="team_name" v-model="form.name" class="w-full" />
+            <InputText id="team_name" v-model="form.name" class="w-full" :invalid="showNameError" />
             <label for="team_name">Название</label>
           </FloatLabel>
+          <p v-if="showNameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ teamFormErrors.name }}</p>
 
           <FloatLabel variant="on" class="block">
             <InputText
@@ -954,34 +1035,50 @@ async function confirmDeleteRosterPlayer() {
           </FloatLabel>
         </div>
 
-        <div class="md:col-span-3">
+        <div class="md:col-span-3 grid grid-cols-1 gap-4 md:grid-cols-2">
           <FloatLabel variant="on" class="block">
             <Select
-              inputId="team_cat"
-              v-model="form.category"
-              :options="teamCategorySelectOptions"
+              inputId="team_age_group"
+              v-model="form.ageGroupId"
+              :options="ageGroupSelectOptions"
               option-label="label"
               option-value="value"
               class="w-full"
-              :loading="categoriesLoading"
+              :loading="ageGroupsLoading"
             />
-            <label for="team_cat">Категория</label>
+            <label for="team_age_group">Возрастная группа</label>
+          </FloatLabel>
+          <FloatLabel variant="on" class="block">
+            <Select
+              inputId="team_region"
+              v-model="form.regionId"
+              :options="regionSelectOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+              :loading="regionsLoading"
+            />
+            <label for="team_region">Регион</label>
           </FloatLabel>
         </div>
 
         <!-- Bottom: description -->
         <div class="md:col-span-3">
-          <FloatLabel variant="on" class="block">
-            <Textarea id="team_desc" v-model="form.description" class="w-full" rows="3" />
-            <label for="team_desc">Описание</label>
-          </FloatLabel>
+          <label for="team_desc" class="mb-1 block text-sm">Описание</label>
+          <AdminMarkdownEditor input-id="team_desc" v-model="form.description" :rows="3" />
         </div>
       </div>
 
       <template #footer>
         <div class="flex justify-end gap-2">
           <Button label="Отмена" text @click="showForm = false" />
-          <Button :label="isEdit ? 'Сохранить' : 'Создать'" icon="pi pi-check" :loading="saving" @click="saveTeam" />
+          <Button
+            :label="isEdit ? 'Сохранить' : 'Создать'"
+            icon="pi pi-check"
+            :loading="saving"
+            :disabled="saving || (submitAttempted && !canSaveTeam)"
+            @click="saveTeam"
+          />
         </div>
       </template>
     </Dialog>

@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsEnum,
   IsInt,
   IsObject,
   IsOptional,
@@ -13,6 +14,15 @@ import {
 } from 'class-validator';
 
 export class GenerateCalendarDto {
+  @ApiPropertyOptional({
+    enum: ['FLOW', 'STRICT_ROUNDS'],
+    description:
+      'FLOW: dense streaming by field/team availability. STRICT_ROUNDS: round-by-round blocks',
+  })
+  @IsOptional()
+  @IsEnum(['FLOW', 'STRICT_ROUNDS'])
+  schedulingMode?: 'FLOW' | 'STRICT_ROUNDS';
+
   @ApiPropertyOptional({
     example: '2026-03-18',
     description: 'Defaults to tournament.startsAt',
@@ -110,4 +120,15 @@ export class GenerateCalendarDto {
   @IsInt()
   @Min(1)
   roundsPerDay?: number;
+
+  @ApiPropertyOptional({
+    example: 2,
+    description:
+      'How many round-robin cycles each pair should play in group stage (defaults to tournament.roundRobinCycles or 1)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(4)
+  roundRobinCycles?: number;
 }

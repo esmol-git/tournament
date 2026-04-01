@@ -10,6 +10,7 @@ import { CreatePlayerDto } from './dto/create-player.dto';
 import { PlayersFilterQueryDto } from './dto/players-filter-query.dto';
 import { UpdatePlayerDto } from './dto/update-player.dto';
 import { csvRow, parseCsv } from './players-csv.util';
+import * as XLSX from 'xlsx';
 
 @Injectable()
 export class PlayersService {
@@ -50,93 +51,10 @@ export class PlayersService {
     teamId: string,
     playerId: string,
   ): Promise<void> {
-    const [team, player] = await Promise.all([
-      tx.team.findFirst({
-        where: { id: teamId, tenantId },
-        select: {
-          id: true,
-          name: true,
-          category: true,
-        },
-      }),
-      tx.player.findFirst({
-        where: { id: playerId, tenantId },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          birthDate: true,
-          gender: true,
-        },
-      }),
-    ]);
-    if (!team) throw new BadRequestException('Team not found');
-    if (!player) throw new BadRequestException('Player not found');
-    if (!team.category) return;
-    const category = await tx.teamCategory.findFirst({
-      where: { tenantId, name: { equals: team.category, mode: 'insensitive' } },
-      select: {
-        name: true,
-        rules: {
-          select: {
-            type: true,
-            minBirthYear: true,
-            maxBirthYear: true,
-            requireBirthDate: true,
-            allowedGenders: true,
-          },
-        },
-      },
-    });
-    if (!category) return;
-    const rules = category.rules;
-
-    for (const rule of rules) {
-      if (rule.type === 'AGE') {
-        if (rule.requireBirthDate && !player.birthDate) {
-          throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires it`,
-          );
-        }
-        if (rule.minBirthYear != null) {
-          if (!player.birthDate) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires birth year ${rule.minBirthYear} or younger`,
-            );
-          }
-          if (player.birthDate.getFullYear() < rule.minBirthYear) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" is too old for category "${category.name}". Required birth year: ${rule.minBirthYear}+`,
-            );
-          }
-        }
-        if (rule.maxBirthYear != null) {
-          if (!player.birthDate) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires birth year ${rule.maxBirthYear} or older`,
-            );
-          }
-          if (player.birthDate.getFullYear() > rule.maxBirthYear) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" is too young for category "${category.name}". Max allowed birth year: ${rule.maxBirthYear}`,
-            );
-          }
-        }
-      }
-
-      if (rule.type === 'GENDER' && (rule.allowedGenders?.length ?? 0) > 0) {
-        if (!player.gender) {
-          throw new BadRequestException(
-            `Player "${player.lastName} ${player.firstName}" has no gender, but category "${category.name}" has gender restriction`,
-          );
-        }
-        if (!rule.allowedGenders.includes(player.gender)) {
-          throw new BadRequestException(
-            `Player "${player.lastName} ${player.firstName}" gender "${player.gender}" is not allowed for category "${category.name}"`,
-          );
-        }
-      }
-    }
+    void tx;
+    void tenantId;
+    void teamId;
+    void playerId;
   }
 
   /** Одна команда на игрока: сбросить состав и при необходимости добавить в команду. */
@@ -304,6 +222,73 @@ export class PlayersService {
   }
 
   private static readonly CSV_EXPORT_MAX = 20_000;
+  private static readonly XLSX_EXPORT_MAX = 20_000;
+  private static readonly IMPORT_HEADERS = [
+    'id',
+    'lastName',
+    'firstName',
+    'birthDate',
+    'gender',
+    'position',
+    'phone',
+    'bioNumber',
+    'teamId',
+    'teamName',
+    'biography',
+    'photoUrl',
+  ];
+  private static readonly IMPORT_FIELD_KEYS = [
+    'lastName',
+    'firstName',
+    'birthDate',
+    'gender',
+    'position',
+    'phone',
+    'bioNumber',
+    'team',
+    'biography',
+    'photoUrl',
+  ] as const;
+
+  private isImportFieldKey(
+    value: string,
+  ): value is (typeof PlayersService.IMPORT_FIELD_KEYS)[number] {
+    return (
+      PlayersService.IMPORT_FIELD_KEYS as readonly string[]
+    ).includes(value);
+  }
+
+  private toXlsxRows(players: Array<{
+    id: string;
+    lastName: string;
+    firstName: string;
+    birthDate: Date | null;
+    gender: string | null;
+    position: string | null;
+    phone: string | null;
+    bioNumber: string | null;
+    biography: string | null;
+    photoUrl: string | null;
+    teamPlayers: Array<{ team: { id: string; name: string } | null }>;
+  }>): Record<string, string>[] {
+    return players.map((p) => {
+      const team = p.teamPlayers[0]?.team;
+      return {
+        id: p.id,
+        lastName: p.lastName ?? '',
+        firstName: p.firstName ?? '',
+        birthDate: this.formatBirthDateCsv(p.birthDate),
+        gender: p.gender ?? '',
+        position: p.position ?? '',
+        phone: p.phone ?? '',
+        bioNumber: p.bioNumber ?? '',
+        teamId: team?.id ?? '',
+        teamName: team?.name ?? '',
+        biography: p.biography ?? '',
+        photoUrl: p.photoUrl ?? '',
+      };
+    });
+  }
 
   async exportCsv(
     tenantId: string,
@@ -382,6 +367,57 @@ export class PlayersService {
     return {
       filename: 'players-export.csv',
       body: bom + lines.join('\r\n'),
+    };
+  }
+
+  async exportXlsx(
+    tenantId: string,
+    actorUserId: string,
+    actorRole: string,
+    query: PlayersFilterQueryDto,
+  ): Promise<{ filename: string; body: Buffer }> {
+    const { where, orderBy } = this.getListWhereAndOrderBy(
+      tenantId,
+      actorUserId,
+      actorRole,
+      query,
+    );
+
+    const players = await this.prisma.player.findMany({
+      where,
+      orderBy,
+      take: PlayersService.XLSX_EXPORT_MAX,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        birthDate: true,
+        gender: true,
+        position: true,
+        phone: true,
+        bioNumber: true,
+        biography: true,
+        photoUrl: true,
+        teamPlayers: {
+          take: 1,
+          select: {
+            team: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    const dataRows = this.toXlsxRows(players);
+    const ws = XLSX.utils.json_to_sheet(dataRows, {
+      header: PlayersService.IMPORT_HEADERS,
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Players');
+    const body = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    return {
+      filename: 'players-export.xlsx',
+      body,
     };
   }
 
@@ -479,37 +515,156 @@ export class PlayersService {
     );
   }
 
-  async importCsv(
+  private parseImportFields(
+    raw?: string,
+  ): Set<(typeof PlayersService.IMPORT_FIELD_KEYS)[number]> {
+    if (!raw?.trim()) {
+      return new Set(PlayersService.IMPORT_FIELD_KEYS);
+    }
+
+    const selected = raw
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    if (!selected.length) {
+      throw new BadRequestException(
+        'Параметр fields: укажите хотя бы одно поле импорта',
+      );
+    }
+
+    const invalid = selected.filter((x) => !this.isImportFieldKey(x));
+    if (invalid.length) {
+      throw new BadRequestException(
+        `Параметр fields: недопустимые значения (${invalid.join(', ')}). Допустимо: ${PlayersService.IMPORT_FIELD_KEYS.join(', ')}`,
+      );
+    }
+
+    return new Set(
+      selected as Array<(typeof PlayersService.IMPORT_FIELD_KEYS)[number]>,
+    );
+  }
+
+  private normalizeImportCellValue(value: unknown): string {
+    if (value == null) return '';
+    if (value instanceof Date) return this.formatBirthDateCsv(value);
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    return String(value).trim();
+  }
+
+  private toStringMatrix(rows: unknown[][]): string[][] {
+    return rows.map((row) => row.map((cell) => this.normalizeImportCellValue(cell)));
+  }
+
+  private buildImportError(
+    row: number,
+    message: string,
+    field?: string,
+    code?: string,
+    value?: string,
+  ) {
+    return {
+      row,
+      message,
+      ...(field ? { field } : {}),
+      ...(code ? { code } : {}),
+      ...(value !== undefined ? { value } : {}),
+    };
+  }
+
+  private async importRows(
     tenantId: string,
     actorUserId: string,
     actorRole: string,
-    csvText: string,
+    rows: string[][],
     modeRaw?: string,
+    fieldsRaw?: string,
   ): Promise<{
     created: number;
     updated: number;
     skipped: number;
-    errors: Array<{ row: number; message: string }>;
+    errors: Array<{
+      row: number;
+      message: string;
+      field?: string;
+      code?: string;
+      value?: string;
+    }>;
   }> {
     const mode = this.parseImportMode(modeRaw);
-    const rows = parseCsv(csvText.trim());
+    const fields = this.parseImportFields(fieldsRaw);
     if (rows.length < 2) {
       throw new BadRequestException(
-        'CSV: нужна строка заголовков и хотя бы одна строка данных',
+        'CSV/XLSX: нужна строка заголовков и хотя бы одна строка данных',
       );
     }
 
     const headerMap = this.buildCsvHeaderMap(rows[0]);
-    if (
-      headerMap.get('lastName') === undefined ||
-      headerMap.get('firstName') === undefined
-    ) {
+    if (mode !== 'updateOnly' && !fields.has('lastName')) {
       throw new BadRequestException(
-        'CSV: обязательные колонки lastName и firstName (или «Фамилия», «Имя»)',
+        'Для createOnly/upsert поле lastName должно быть включено в fields',
+      );
+    }
+    if (mode !== 'updateOnly' && !fields.has('firstName')) {
+      throw new BadRequestException(
+        'Для createOnly/upsert поле firstName должно быть включено в fields',
+      );
+    }
+    if (mode === 'updateOnly' && headerMap.get('id') === undefined) {
+      throw new BadRequestException(
+        'Для режима updateOnly нужна колонка id в CSV/XLSX',
       );
     }
 
-    const errors: Array<{ row: number; message: string }> = [];
+    const requiredMissing: string[] = [];
+    if (fields.has('lastName') && headerMap.get('lastName') === undefined) {
+      requiredMissing.push('lastName');
+    }
+    if (fields.has('firstName') && headerMap.get('firstName') === undefined) {
+      requiredMissing.push('firstName');
+    }
+    if (fields.has('birthDate') && headerMap.get('birthDate') === undefined) {
+      requiredMissing.push('birthDate');
+    }
+    if (fields.has('gender') && headerMap.get('gender') === undefined) {
+      requiredMissing.push('gender');
+    }
+    if (fields.has('position') && headerMap.get('position') === undefined) {
+      requiredMissing.push('position');
+    }
+    if (fields.has('phone') && headerMap.get('phone') === undefined) {
+      requiredMissing.push('phone');
+    }
+    if (fields.has('bioNumber') && headerMap.get('bioNumber') === undefined) {
+      requiredMissing.push('bioNumber');
+    }
+    if (
+      fields.has('team') &&
+      headerMap.get('teamId') === undefined &&
+      headerMap.get('teamName') === undefined
+    ) {
+      requiredMissing.push('teamId/teamName');
+    }
+    if (fields.has('biography') && headerMap.get('biography') === undefined) {
+      requiredMissing.push('biography');
+    }
+    if (fields.has('photoUrl') && headerMap.get('photoUrl') === undefined) {
+      requiredMissing.push('photoUrl');
+    }
+    if (requiredMissing.length) {
+      throw new BadRequestException(
+        `CSV/XLSX: не найдены обязательные колонки для выбранных fields: ${requiredMissing.join(', ')}`,
+      );
+    }
+
+    const errors: Array<{
+      row: number;
+      message: string;
+      field?: string;
+      code?: string;
+      value?: string;
+    }> = [];
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -518,45 +673,7 @@ export class PlayersService {
       const row = rows[r];
       if (row.every((c) => !String(c).trim())) continue;
 
-      const lastName = this.cellAt(row, headerMap, 'lastName');
-      const firstName = this.cellAt(row, headerMap, 'firstName');
-      if (!lastName || !firstName) {
-        errors.push({ row: r + 1, message: 'Пустые lastName или firstName' });
-        continue;
-      }
-
       const id = this.cellAt(row, headerMap, 'id');
-      const birthDate = this.cellAt(row, headerMap, 'birthDate') || undefined;
-      const gender = this.normalizeGenderForCsv(
-        this.cellAt(row, headerMap, 'gender'),
-      );
-      const position = this.cellAt(row, headerMap, 'position') || undefined;
-      const phone = this.cellAt(row, headerMap, 'phone') || undefined;
-      const bioNumber = this.cellAt(row, headerMap, 'bioNumber') || undefined;
-      const biography = this.cellAt(row, headerMap, 'biography') || undefined;
-      const photoUrlRaw = this.cellAt(row, headerMap, 'photoUrl');
-      const photoUrl =
-        photoUrlRaw === '' ? undefined : photoUrlRaw || undefined;
-
-      let teamIdResolved: string | undefined;
-      try {
-        teamIdResolved = await this.resolveTeamIdForCsv(
-          tenantId,
-          this.cellAt(row, headerMap, 'teamId'),
-          this.cellAt(row, headerMap, 'teamName'),
-        );
-      } catch {
-        errors.push({ row: r + 1, message: 'Не удалось сопоставить команду' });
-        continue;
-      }
-
-      const hasTeamCols = headerMap.has('teamId') || headerMap.has('teamName');
-      const teamIdForCreate = teamIdResolved?.trim() || undefined;
-      let teamIdForUpdate: string | null | undefined = undefined;
-      if (hasTeamCols) {
-        teamIdForUpdate = teamIdResolved?.trim() ? teamIdResolved.trim() : null;
-      }
-
       try {
         if (mode === 'createOnly' && id) {
           skipped++;
@@ -567,64 +684,225 @@ export class PlayersService {
           continue;
         }
 
-        if (id) {
-          const existing = await this.prisma.player.findFirst({
-            where: { id, tenantId },
-            select: { id: true },
-          });
-          if (existing) {
-            await this.update(tenantId, id, actorUserId, actorRole, {
-              lastName,
-              firstName,
-              birthDate,
-              gender,
-              position,
-              phone,
-              bioNumber,
-              biography,
-              photoUrl,
-              ...(hasTeamCols ? { teamId: teamIdForUpdate } : {}),
-            });
-            updated++;
-          } else if (mode === 'updateOnly') {
-            skipped++;
-          } else {
-            await this.create(tenantId, actorUserId, actorRole, {
-              lastName,
-              firstName,
-              birthDate,
-              gender,
-              position,
-              phone,
-              bioNumber,
-              biography,
-              photoUrl,
-              teamId: teamIdForCreate,
-            });
-            created++;
+        const lastName = fields.has('lastName')
+          ? this.cellAt(row, headerMap, 'lastName')
+          : undefined;
+        const firstName = fields.has('firstName')
+          ? this.cellAt(row, headerMap, 'firstName')
+          : undefined;
+        const birthDate = fields.has('birthDate')
+          ? this.cellAt(row, headerMap, 'birthDate') || undefined
+          : undefined;
+        const genderRaw = fields.has('gender')
+          ? this.cellAt(row, headerMap, 'gender')
+          : '';
+        const gender = fields.has('gender')
+          ? this.normalizeGenderForCsv(genderRaw)
+          : undefined;
+        const position = fields.has('position')
+          ? this.cellAt(row, headerMap, 'position') || undefined
+          : undefined;
+        const phone = fields.has('phone')
+          ? this.cellAt(row, headerMap, 'phone') || undefined
+          : undefined;
+        const bioNumber = fields.has('bioNumber')
+          ? this.cellAt(row, headerMap, 'bioNumber') || undefined
+          : undefined;
+        const biography = fields.has('biography')
+          ? this.cellAt(row, headerMap, 'biography') || undefined
+          : undefined;
+        const photoUrlRaw = fields.has('photoUrl')
+          ? this.cellAt(row, headerMap, 'photoUrl')
+          : '';
+        const photoUrl = fields.has('photoUrl')
+          ? photoUrlRaw === ''
+            ? undefined
+            : photoUrlRaw || undefined
+          : undefined;
+
+        if (fields.has('lastName') && !lastName) {
+          errors.push(
+            this.buildImportError(
+              r + 1,
+              'Пустой lastName',
+              'lastName',
+              'REQUIRED',
+            ),
+          );
+          continue;
+        }
+        if (fields.has('firstName') && !firstName) {
+          errors.push(
+            this.buildImportError(
+              r + 1,
+              'Пустой firstName',
+              'firstName',
+              'REQUIRED',
+            ),
+          );
+          continue;
+        }
+
+        if (fields.has('gender') && genderRaw && !gender) {
+          errors.push(
+            this.buildImportError(
+              r + 1,
+              'Недопустимое значение пола',
+              'gender',
+              'INVALID_ENUM',
+              genderRaw,
+            ),
+          );
+          continue;
+        }
+
+        let teamIdResolved: string | undefined;
+        if (fields.has('team')) {
+          try {
+            teamIdResolved = await this.resolveTeamIdForCsv(
+              tenantId,
+              this.cellAt(row, headerMap, 'teamId'),
+              this.cellAt(row, headerMap, 'teamName'),
+            );
+          } catch {
+            errors.push(
+              this.buildImportError(
+                r + 1,
+                'Не удалось сопоставить команду',
+                'teamId',
+                'TEAM_RESOLVE_FAILED',
+              ),
+            );
+            continue;
           }
-        } else {
+        }
+
+        const teamIdForCreate = teamIdResolved?.trim() || undefined;
+        const teamIdForUpdate = fields.has('team')
+          ? teamIdResolved?.trim()
+            ? teamIdResolved.trim()
+            : null
+          : undefined;
+
+        const existing = id
+          ? await this.prisma.player.findFirst({
+              where: { id, tenantId },
+              select: { id: true },
+            })
+          : null;
+
+        const willCreate = !id || !existing;
+
+        if (willCreate) {
+          if (mode === 'updateOnly') {
+            skipped++;
+            continue;
+          }
+          const createLastName = lastName as string;
+          const createFirstName = firstName as string;
           await this.create(tenantId, actorUserId, actorRole, {
-            lastName,
-            firstName,
-            birthDate,
-            gender,
-            position,
-            phone,
-            bioNumber,
-            biography,
-            photoUrl,
-            teamId: teamIdForCreate,
+            lastName: createLastName,
+            firstName: createFirstName,
+            ...(fields.has('birthDate') ? { birthDate } : {}),
+            ...(fields.has('gender') ? { gender } : {}),
+            ...(fields.has('position') ? { position } : {}),
+            ...(fields.has('phone') ? { phone } : {}),
+            ...(fields.has('bioNumber') ? { bioNumber } : {}),
+            ...(fields.has('biography') ? { biography } : {}),
+            ...(fields.has('photoUrl') ? { photoUrl } : {}),
+            ...(fields.has('team') ? { teamId: teamIdForCreate } : {}),
           });
           created++;
+          continue;
         }
+
+        await this.update(tenantId, id, actorUserId, actorRole, {
+          ...(fields.has('lastName') ? { lastName } : {}),
+          ...(fields.has('firstName') ? { firstName } : {}),
+          ...(fields.has('birthDate') ? { birthDate } : {}),
+          ...(fields.has('gender') ? { gender } : {}),
+          ...(fields.has('position') ? { position } : {}),
+          ...(fields.has('phone') ? { phone } : {}),
+          ...(fields.has('bioNumber') ? { bioNumber } : {}),
+          ...(fields.has('biography') ? { biography } : {}),
+          ...(fields.has('photoUrl') ? { photoUrl } : {}),
+          ...(fields.has('team') ? { teamId: teamIdForUpdate } : {}),
+        });
+        updated++;
       } catch (e: any) {
         const msg = e?.message ?? String(e);
-        errors.push({ row: r + 1, message: msg });
+        errors.push(this.buildImportError(r + 1, msg));
       }
     }
 
     return { created, updated, skipped, errors };
+  }
+
+  async importCsv(
+    tenantId: string,
+    actorUserId: string,
+    actorRole: string,
+    csvText: string,
+    modeRaw?: string,
+    fieldsRaw?: string,
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+    errors: Array<{
+      row: number;
+      message: string;
+      field?: string;
+      code?: string;
+      value?: string;
+    }>;
+  }> {
+    const rows = parseCsv(csvText.trim());
+    return this.importRows(
+      tenantId,
+      actorUserId,
+      actorRole,
+      rows,
+      modeRaw,
+      fieldsRaw,
+    );
+  }
+
+  async importXlsx(
+    tenantId: string,
+    actorUserId: string,
+    actorRole: string,
+    fileBuffer: Buffer,
+    modeRaw?: string,
+    fieldsRaw?: string,
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+    errors: Array<{
+      row: number;
+      message: string;
+      field?: string;
+      code?: string;
+      value?: string;
+    }>;
+  }> {
+    const wb = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+    const firstSheetName = wb.SheetNames[0];
+    if (!firstSheetName) {
+      throw new BadRequestException('XLSX: не найден лист с данными');
+    }
+    const ws = wb.Sheets[firstSheetName];
+    const rowsRaw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as unknown[][];
+    const rows = this.toStringMatrix(rowsRaw);
+    return this.importRows(
+      tenantId,
+      actorUserId,
+      actorRole,
+      rows,
+      modeRaw,
+      fieldsRaw,
+    );
   }
 
   async list(

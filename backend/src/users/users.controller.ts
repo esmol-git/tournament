@@ -13,15 +13,25 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { UserQueryDto } from './dto/user-query.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { Request } from 'express';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { UiSettingsDto } from './dto/ui-settings.dto';
+import { UpdateTenantSocialLinksDto } from './dto/update-tenant-social-links.dto';
 
 @ApiTags('users')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
@@ -39,12 +49,48 @@ export class UsersController {
     return this.usersService.patchUiSettings(req.user.sub, dto);
   }
 
+  @Get('me')
+  async getMe(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.getProfile(req.user.sub, req.user.tenantId);
+  }
+
+  @Patch('me')
+  async patchMe(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateMyProfileDto,
+  ) {
+    return this.usersService.updateMyProfile(
+      req.user.sub,
+      req.user.tenantId,
+      dto,
+    );
+  }
+
+  @Get('me/tenant-social-links')
+  async getMyTenantSocialLinks(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.getMyTenantSocialLinks(req.user.sub, req.user.tenantId);
+  }
+
+  @Patch('me/tenant-social-links')
+  async patchMyTenantSocialLinks(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateTenantSocialLinksDto,
+  ) {
+    return this.usersService.updateMyTenantSocialLinks(
+      req.user.sub,
+      req.user.tenantId,
+      dto,
+    );
+  }
+
   @Get()
   async findAll(
     @Req() req: Request & { user: JwtPayload },
     @Query() query: UserQueryDto,
   ) {
-    return this.usersService.findAll(req.user.tenantId, query);
+    return this.usersService.findAll(req.user.tenantId, query, {
+      excludeUserId: query.excludeSelf ? req.user.sub : undefined,
+    });
   }
 
   @Post()
@@ -69,7 +115,7 @@ export class UsersController {
     @Req() req: Request & { user: JwtPayload },
     @Param('id') id: string,
   ) {
-    return this.usersService.delete(req.user.tenantId, id);
+    return this.usersService.delete(req.user.tenantId, id, req.user.sub);
   }
 
   @Post(':id/block')
@@ -78,6 +124,6 @@ export class UsersController {
     @Param('id') id: string,
     @Body('blocked') blocked: boolean,
   ) {
-    return this.usersService.setBlocked(req.user.tenantId, id, blocked);
+    return this.usersService.setBlocked(req.user.tenantId, id, blocked, req.user.sub);
   }
 }

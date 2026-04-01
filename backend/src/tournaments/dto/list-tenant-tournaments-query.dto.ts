@@ -20,6 +20,27 @@ export class ListTenantTournamentsQueryDto {
   @IsString()
   q?: string;
 
+  @ApiPropertyOptional({
+    description: 'Фильтр по id сезона из справочника тенанта.',
+  })
+  @IsOptional()
+  @IsString()
+  seasonId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Фильтр по id типа соревнования из справочника «Соревнования».',
+  })
+  @IsOptional()
+  @IsString()
+  competitionId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Фильтр по id возрастной группы из справочника.',
+  })
+  @IsOptional()
+  @IsString()
+  ageGroupId?: string;
+
   @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()
   @Type(() => Number)

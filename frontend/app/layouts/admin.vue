@@ -3,15 +3,17 @@ import {
   applyAdminLocale,
   syncThemeAndAccentFromStore,
 } from '~/composables/useAdminAppearance'
-import { useAdminSidebarCollapsed } from '~/composables/useAdminSidebarCollapsed'
 import { useAdminSettingsStore } from '~/stores/adminSettings'
 
 const confirmLogout = ref(false)
+const mobileMenuOpen = ref(false)
+const route = useRoute()
 const adminSettings = useAdminSettingsStore()
-const { locale, setLocale } = useI18n()
+const { locale, setLocale, t } = useI18n()
 const nuxtApp = useNuxtApp()
-const { mini, toggleMini } = useAdminSidebarCollapsed()
 const showThemeGate = ref(true)
+
+let mobileMenuViewportCleanup: (() => void) | undefined
 
 function syncI18nAndPrimeLocale() {
   const code = adminSettings.locale
@@ -31,6 +33,16 @@ if (import.meta.client) {
  * или middleware не дошёл до конца — иначе страница «Настройки» зависает на скелетоне.
  */
 onMounted(() => {
+  if (import.meta.client) {
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const closeOnDesktop = () => {
+      if (mq.matches) mobileMenuOpen.value = false
+    }
+    closeOnDesktop()
+    mq.addEventListener('change', closeOnDesktop)
+    mobileMenuViewportCleanup = () => mq.removeEventListener('change', closeOnDesktop)
+  }
+
   void adminSettings.fetchFromServerIfLoggedIn().then(() => {
     syncI18nAndPrimeLocale()
     syncThemeAndAccentFromStore()
@@ -43,6 +55,10 @@ onMounted(() => {
       })
     })
   })
+})
+
+onBeforeUnmount(() => {
+  mobileMenuViewportCleanup?.()
 })
 
 watch(
@@ -58,6 +74,18 @@ watch(
     syncThemeAndAccentFromStore()
   },
 )
+
+watch(
+  () => route.path,
+  () => {
+    mobileMenuOpen.value = false
+  },
+)
+
+function onMobileNavLogout() {
+  confirmLogout.value = true
+  mobileMenuOpen.value = false
+}
 </script>
 
 <template>
@@ -81,27 +109,61 @@ watch(
 
       <AdminSidebar @logout-click="confirmLogout = true" />
 
+      <Drawer
+        v-model:visible="mobileMenuOpen"
+        position="left"
+        :header="t('admin.sidebar.mobile_menu')"
+        class="!w-[min(100vw,20rem)]"
+        :block-scroll="true"
+        :pt="{
+          content: {
+            class: '!min-h-0 !flex !flex-1 !flex-col !overflow-hidden !p-0',
+          },
+        }"
+      >
+        <AdminSidebarNav
+          force-expanded
+          pin-footer
+          @logout-click="onMobileNavLogout"
+        />
+      </Drawer>
+
       <div class="flex min-w-0 flex-1 flex-col">
         <header
           class="sticky top-0 z-10 flex h-16 items-center border-b border-surface-200 bg-surface-0/95 px-4 shadow-[0_6px_16px_rgba(15,23,42,0.06)] backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 dark:shadow-[0_6px_16px_rgba(0,0,0,0.35)] sm:px-6"
         >
-          <div class="flex items-center gap-3">
+          <div class="flex min-w-0 items-center gap-3">
             <Button
               type="button"
               text
               rounded
               severity="secondary"
-              :icon="mini ? 'pi pi-angle-double-right' : 'pi pi-angle-double-left'"
-              :title="mini ? 'Развернуть сайдбар' : 'Свернуть сайдбар'"
-              :aria-label="mini ? 'Развернуть сайдбар' : 'Свернуть сайдбар'"
-              class="!h-10 !w-10 !p-0"
-              @click="toggleMini"
+              icon="pi pi-bars"
+              class="!h-10 !w-10 !p-0 lg:!hidden"
+              :title="t('admin.sidebar.open_menu')"
+              :aria-label="t('admin.sidebar.open_menu')"
+              @click="mobileMenuOpen = true"
             />
+            <NuxtLink
+              to="/admin"
+              class="flex shrink-0 items-center lg:hidden"
+              aria-label="Tournament Platform"
+            >
+              <img
+                src="/logo.png"
+                alt=""
+                width="36"
+                height="36"
+                class="h-9 w-9 object-contain"
+              />
+            </NuxtLink>
             <div class="min-w-0">
-              <p class="truncate text-sm text-muted-color">Админ-панель</p>
               <h2 class="truncate text-base font-semibold text-surface-900 dark:text-surface-0">
-                Tournament Platform
+                {{ t('admin.layout.header_title') }}
               </h2>
+              <p class="truncate text-xs text-muted-color sm:text-sm">
+                {{ t('admin.layout.header_subtitle') }}
+              </p>
             </div>
           </div>
         </header>

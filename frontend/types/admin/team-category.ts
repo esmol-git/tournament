@@ -1,15 +1,12 @@
-export interface TeamCategoryRule {
+export type TeamCategoryRow = {
   id: string
-  type: 'AGE' | 'GENDER'
+  tenantId: string
+  name: string
+  slug: string | null
   minBirthYear: number | null
   maxBirthYear: number | null
   requireBirthDate: boolean
   allowedGenders: Array<'MALE' | 'FEMALE'>
-}
-
-export interface TeamCategoryRow {
-  id: string
-  name: string
-  slug: string | null
-  rules: TeamCategoryRule[]
+  createdAt: string
+  updatedAt: string
 }

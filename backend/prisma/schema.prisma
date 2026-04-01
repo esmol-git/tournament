@@ -18,6 +18,31 @@ model Tenant {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
+  /** Тариф (лимиты, что показывать в UI). */
+  subscriptionPlan SubscriptionPlan @default(FREE)
+  /** Жизненный цикл подписки в биллинге. */
+  subscriptionStatus SubscriptionStatus @default(NONE)
+  /**
+   * Доступ по подписке/оплате до этой даты (UTC).
+   * `null` — без дедлайна (например FREE, ручной доступ, «вечный» договор).
+   */
+  subscriptionEndsAt DateTime?
+  /** Id клиента в платёжной системе (Stripe Customer и т.д.) — по мере интеграции. */
+  billingCustomerId String?
+  /** Id подписки во внешней системе — по мере интеграции. */
+  billingSubscriptionId String?
+  /** Публичные ссылки организации для сайта. */
+  websiteUrl String?
+  socialYoutubeUrl String?
+  socialInstagramUrl String?
+  socialTelegramUrl String?
+  socialMaxUrl String?
+  showWebsiteLink Boolean @default(true)
+  showSocialYoutubeLink Boolean @default(true)
+  showSocialInstagramLink Boolean @default(true)
+  showSocialTelegramLink Boolean @default(true)
+  showSocialMaxLink Boolean @default(true)
+
   users       User[]
   tournaments Tournament[]
   teams       Team[]
@@ -30,6 +55,308 @@ model Tenant {
   tournamentGroups TournamentGroup[]
   tournamentTableRows TournamentTableRow[]
   players     Player[]
+  tournamentNews TournamentNews[]
+  newsTags    NewsTag[]
+  tournamentNewsTags TournamentNewsTag[]
+  tournamentGalleryImages TournamentGalleryImage[]
+  stadiums    Stadium[]
+  referees    Referee[]
+  refereeCategories RefereeCategory[]
+  refereePositions  RefereePosition[]
+  managementMembers   ManagementMember[]
+  competitions        Competition[]
+  seasons             Season[]
+  ageGroups           AgeGroup[]
+  regions             Region[]
+  referenceDocuments  ReferenceDocument[]
+  tournamentReferees TournamentReferee[]
+  protocolEventTypes  ProtocolEventType[]
+  matchScheduleReasons MatchScheduleReason[]
+
+  @@index([subscriptionEndsAt])
+}
+
+/// Расширяемые подписи событий протокола; `mapsToType` хранит семантику для логики и статистики.
+model ProtocolEventType {
+  id          String         @id @default(cuid())
+  tenantId    String
+  name        String
+  mapsToType  MatchEventType
+  note        String?
+  sortOrder   Int            @default(0)
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  matchEvents MatchEvent[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Причины переноса / отмены матча (журналирование смены времени и статуса).
+model MatchScheduleReason {
+  id        String                   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  note      String?
+  /// Для каких сценариев доступна запись: перенос, отмена или оба.
+  scope     MatchScheduleReasonScope @default(BOTH)
+  sortOrder Int                      @default(0)
+  active    Boolean                  @default(true)
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  matches Match[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+enum MatchScheduleReasonScope {
+  POSTPONE
+  CANCEL
+  BOTH
+}
+
+/// Возрастная группа / дивизион (U12, взрослые и т.д.) — справочник тенанта.
+model AgeGroup {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  /** Короткая подпись для бейджей: U12, ст.возраст */
+  shortLabel  String?
+  code        String?
+  note        String?
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  teams       Team[]
+  tournaments Tournament[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Регион / территория для команд и площадок — справочник тенанта.
+model Region {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  teams    Team[]
+  stadiums Stadium[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Вид / название соревнования в справочнике тенанта (чемпионат, кубок и т.д.).
+model Competition {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournaments Tournament[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Сезон / игровой год (справочник тенанта).
+model Season {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournaments Tournament[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Документ (регламент, положение): ссылка и примечание; файл — по URL или позже через загрузку.
+model ReferenceDocument {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// null = общий документ тенанта; not null = документ конкретного турнира.
+  tournamentId String?
+  title     String
+  code      String?
+  url       String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament Tournament? @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, tournamentId, sortOrder])
+}
+
+/// Руководящий состав организации тенанта (админка; публичный вывод — по желанию позже).
+model ManagementMember {
+  id        String   @id @default(cuid())
+  tenantId  String
+  lastName  String
+  firstName String
+  /** Должность: председатель, член совета и т.д. */
+  title     String
+  phone     String?
+  email     String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, lastName, firstName])
+}
+
+/// Позиция судьи на матче (главный, линейный и т.д.) — справочник тенанта.
+model RefereePosition {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  referees Referee[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Категория / разряд судьи (справочник тенанта).
+model RefereeCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  referees Referee[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+model Stadium {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  address   String?
+  city      String?
+  regionId  String?
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  region      Region?      @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  tournaments Tournament[]
+
+  @@index([tenantId, name])
+  @@index([tenantId, regionId])
+}
+
+/// Судья из справочника (не учётная запись User).
+model Referee {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  firstName           String
+  lastName            String
+  phone               String?
+  note                String?
+  refereeCategoryId   String?
+  refereePositionId   String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refereeCategory     RefereeCategory?    @relation(fields: [refereeCategoryId], references: [id], onDelete: SetNull)
+  refereePosition     RefereePosition?    @relation(fields: [refereePositionId], references: [id], onDelete: SetNull)
+  tournamentReferees  TournamentReferee[]
+
+  @@index([tenantId, lastName, firstName])
+  @@index([tenantId, refereeCategoryId])
+  @@index([tenantId, refereePositionId])
+}
+
+model TournamentReferee {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  refereeId    String
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  referee    Referee    @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, refereeId])
+  @@index([tenantId, tournamentId])
+}
+
+/// Тарифы: FREE + 4 платных (Любительская / Премьер-лига / Лига чемпионов / Чемпионат мира).
+enum SubscriptionPlan {
+  FREE
+  AMATEUR
+  PREMIER
+  CHAMPIONS
+  WORLD_CUP
+}
+
+enum SubscriptionStatus {
+  NONE
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
 }
 
 model User {
@@ -85,6 +412,7 @@ model Tournament {
   status      TournamentStatus @default(DRAFT)
   intervalDays Int     @default(7)
   allowedDays  Int[]   @default([])
+  roundRobinCycles     Int @default(1)
   matchDurationMinutes Int @default(50)
   matchBreakMinutes    Int @default(10)
   simultaneousMatches  Int @default(1)
@@ -95,18 +423,114 @@ model Tournament {
   pointsDraw  Int      @default(1)
   pointsLoss  Int      @default(0)
   tenantId    String
+  /** Игровой сезон из справочника (опционально). */
+  seasonId       String?
+  /** Тип соревнования из справочника: чемпионат, кубок и т.д. (опционально). */
+  competitionId  String?
+  /** Возрастная группа турнира из справочника (опционально). */
+  ageGroupId     String?
+  stadiumId   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  season      Season?     @relation(fields: [seasonId], references: [id], onDelete: SetNull)
+  competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
+  ageGroup    AgeGroup?   @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
+  stadium     Stadium?    @relation(fields: [stadiumId], references: [id], onDelete: SetNull)
   teams       Team[]              // legacy связь (пока не выпиливаем)
   tournamentTeams TournamentTeam[]
   groups      TournamentGroup[]
   members     TournamentMember[]
   matches     Match[]
+  news        TournamentNews[]
+  galleryImages TournamentGalleryImage[]
   tableRows   TournamentTableRow[]
+  tournamentReferees TournamentReferee[]
+  referenceDocuments ReferenceDocument[]
 
   @@unique([tenantId, slug])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, seasonId])
+  @@index([tenantId, competitionId])
+  @@index([tenantId, ageGroupId])
+  @@index([tenantId, stadiumId])
+}
+
+model TournamentNews {
+  id           String   @id @default(cuid())
+  tenantId     String
+  /** null — черновик без привязки; для публикации обязателен (см. сервис). */
+  tournamentId String?
+  title        String
+  slug         String
+  excerpt      String?
+  content      String?
+  coverImageUrl String?
+  section      NewsSection @default(ANNOUNCEMENT)
+  published    Boolean  @default(false)
+  publishedAt  DateTime?
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament   Tournament? @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  newsTags     TournamentNewsTag[]
+
+  @@index([tenantId, tournamentId, published, publishedAt])
+  @@index([tenantId, published, publishedAt])
+}
+
+model NewsTag {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  slug      String
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  taggedNews TournamentNewsTag[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, sortOrder])
+}
+
+model TournamentNewsTag {
+  id        String   @id @default(cuid())
+  tenantId  String
+  newsId    String
+  tagId     String
+  createdAt DateTime @default(now())
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  news   TournamentNews @relation(fields: [newsId], references: [id], onDelete: Cascade)
+  tag    NewsTag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([newsId, tagId])
+  @@index([tenantId, newsId])
+  @@index([tenantId, tagId])
+}
+
+/// Фото турнира: множественная загрузка, порядок, подпись.
+model TournamentGalleryImage {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  imageUrl     String
+  caption      String?
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, tournamentId, sortOrder])
+  @@index([tenantId, createdAt])
 }
 
 model Team {
@@ -118,6 +542,8 @@ model Team {
   slug         String?      // "spartak-2008" для URL (позже сделаем NOT NULL)
   logoUrl      String?
   category     String?      // "U12", "Adult", "Amateur"
+  ageGroupId   String?
+  regionId     String?
   coachName    String?
   coachPhone   String?
   coachEmail   String?
@@ -132,6 +558,8 @@ model Team {
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id])
   tournament   Tournament?  @relation(fields: [tournamentId], references: [id])
+  ageGroup     AgeGroup?    @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
+  region       Region?      @relation(fields: [regionId], references: [id], onDelete: SetNull)
   admins       TeamAdmin[]
   players      TeamPlayer[]
   tournamentTeams TournamentTeam[]
@@ -141,6 +569,8 @@ model Team {
 
   @@unique([tenantId, slug])
   @@index([tenantId, name])
+  @@index([tenantId, ageGroupId])
+  @@index([tenantId, regionId])
 }
 
 model TeamCategory {
@@ -256,6 +686,9 @@ model Match {
   status       MatchStatus  @default(SCHEDULED)
   homeScore    Int?
   awayScore    Int?
+  /** Последняя зафиксированная причина переноса или отмены (из справочника). */
+  scheduleChangeReasonId String?
+  scheduleChangeNote       String?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -264,10 +697,13 @@ model Match {
   homeTeam     Team         @relation("HomeTeam", fields: [homeTeamId], references: [id])
   awayTeam     Team         @relation("AwayTeam", fields: [awayTeamId], references: [id])
   group        TournamentGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  scheduleChangeReason MatchScheduleReason? @relation(fields: [scheduleChangeReasonId], references: [id], onDelete: SetNull)
   events       MatchEvent[]
 
   @@index([tournamentId, startTime])
+  @@index([tournamentId, status, startTime])
   @@index([tenantId, tournamentId])
+  @@index([scheduleChangeReasonId])
 }
 
 model MatchEvent {
@@ -278,9 +714,13 @@ model MatchEvent {
   playerId  String?
   teamSide  MatchTeamSide?
   payload   Json?
+  protocolEventTypeId String?
   createdAt DateTime      @default(now())
 
-  match     Match         @relation(fields: [matchId], references: [id])
+  match              Match              @relation(fields: [matchId], references: [id])
+  protocolEventType  ProtocolEventType? @relation(fields: [protocolEventTypeId], references: [id], onDelete: SetNull)
+
+  @@index([protocolEventTypeId])
 }
 
 model TournamentTableRow {
@@ -307,6 +747,7 @@ model TournamentTableRow {
 
   @@unique([tournamentId, teamId])
   @@index([tenantId, tournamentId])
+  @@index([tournamentId, position])
   @@index([tournamentId, updatedAt])
 }
 
@@ -388,6 +829,14 @@ enum TournamentStatus {
   ACTIVE
   COMPLETED
   ARCHIVED
+}
+
+enum NewsSection {
+  ANNOUNCEMENT
+  REPORT
+  INTERVIEW
+  OFFICIAL
+  MEDIA
 }
 
 enum TournamentMemberRole {

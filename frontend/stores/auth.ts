@@ -111,6 +111,20 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function subscriptionOrTenantBlockFromError(e: unknown): string | null {
+    const err = e as {
+      statusCode?: number
+      data?: { code?: string }
+      response?: { status?: number; _data?: { code?: string } }
+    }
+    const status = err.statusCode ?? err.response?.status
+    const code =
+      err.data?.code ?? (err.response as { _data?: { code?: string } } | undefined)?._data?.code
+    if (status !== 403) return null
+    if (code === 'SUBSCRIPTION_EXPIRED' || code === 'TENANT_BLOCKED') return code
+    return null
+  }
+
   async function authFetch<T = unknown>(
     url: string,
     options: Record<string, unknown> = {},
@@ -127,6 +141,15 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       return await $fetch<T>(url, { ...options, headers })
     } catch (e: unknown) {
+      const block = subscriptionOrTenantBlockFromError(e)
+      if (block && process.client) {
+        clearSession()
+        await navigateTo({
+          path: '/admin/subscription-expired',
+          query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
+        })
+        throw e
+      }
       const err = e as { response?: { status?: number }; statusCode?: number }
       const status = err?.response?.status ?? err?.statusCode
       if (status === 401 && !retried) {
@@ -158,6 +181,15 @@ export const useAuthStore = defineStore('auth', () => {
         responseType: 'blob',
       })
     } catch (e: unknown) {
+      const block = subscriptionOrTenantBlockFromError(e)
+      if (block && process.client) {
+        clearSession()
+        await navigateTo({
+          path: '/admin/subscription-expired',
+          query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
+        })
+        throw e
+      }
       const err = e as { response?: { status?: number }; statusCode?: number }
       const status = err?.response?.status ?? err?.statusCode
       if (status === 401 && !retried) {

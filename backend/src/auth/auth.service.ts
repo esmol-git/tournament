@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
@@ -9,6 +13,10 @@ import { PlatformLoginDto } from './dto/platform-login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './jwt.strategy';
 import { UserRole } from '@prisma/client';
+import {
+  assertSubscriptionNotExpired,
+  isTenantSubscriptionActive,
+} from './subscription-access.util';
 
 @Injectable()
 export class AuthService {
@@ -82,6 +90,7 @@ export class AuthService {
     if (tenant.blocked) {
       throw new UnauthorizedException('Tenant is blocked');
     }
+    assertSubscriptionNotExpired(tenant);
 
     const existing = await this.prisma.user.findFirst({
       where: { email, tenantId: tenant.id },
@@ -132,6 +141,9 @@ export class AuthService {
         id: tenant.id,
         slug: tenant.slug,
         name: tenant.name,
+        subscriptionPlan: tenant.subscriptionPlan,
+        subscriptionStatus: tenant.subscriptionStatus,
+        subscriptionEndsAt: tenant.subscriptionEndsAt,
       },
     };
   }
@@ -153,6 +165,7 @@ export class AuthService {
     if (tenant.blocked) {
       throw new UnauthorizedException('Tenant is blocked');
     }
+    assertSubscriptionNotExpired(tenant);
 
     const user = await this.prisma.user.findFirst({
       where: { username: normalizedUsername, tenantId: tenant.id },
@@ -189,6 +202,14 @@ export class AuthService {
         lastName: user.lastName ?? '',
         role: user.role,
         tenantId: tenant.id,
+      },
+      tenant: {
+        id: tenant.id,
+        slug: tenant.slug,
+        name: tenant.name,
+        subscriptionPlan: tenant.subscriptionPlan,
+        subscriptionStatus: tenant.subscriptionStatus,
+        subscriptionEndsAt: tenant.subscriptionEndsAt,
       },
     };
   }
@@ -297,12 +318,31 @@ export class AuthService {
         tenantId: true,
         blocked: true,
         createdAt: true,
+        tenant: {
+          select: {
+            subscriptionPlan: true,
+            subscriptionStatus: true,
+            subscriptionEndsAt: true,
+            blocked: true,
+          },
+        },
       },
     });
     if (!u) {
       throw new UnauthorizedException('Invalid token');
     }
-    return u;
+    const { tenant, ...rest } = u;
+    return {
+      ...rest,
+      tenantSubscription: tenant
+        ? {
+            plan: tenant.subscriptionPlan,
+            status: tenant.subscriptionStatus,
+            endsAt: tenant.subscriptionEndsAt,
+            active: isTenantSubscriptionActive(tenant),
+          }
+        : null,
+    };
   }
 
   async refresh(refreshTokenRaw: string) {
@@ -312,6 +352,7 @@ export class AuthService {
       where: { tokenHash },
       include: {
         user: true,
+        tenant: true,
       },
     });
 
@@ -322,6 +363,13 @@ export class AuthService {
       record.user.blocked
     ) {
       throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    if (record.user.role !== UserRole.SUPER_ADMIN) {
+      if (record.tenant.blocked) {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+      assertSubscriptionNotExpired(record.tenant);
     }
 
     // Rotation: revoke current refresh token and issue a new one.

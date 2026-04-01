@@ -369,12 +369,66 @@
           <div class="mt-9">
             <Button label="Запросить демонстрацию" size="large" class="cta-glow shadow-xl shadow-emerald-500/30" />
           </div>
-          <form class="mx-auto mt-10 grid max-w-3xl gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left backdrop-blur sm:grid-cols-2">
-            <input class="landing-input" type="text" placeholder="Ваше имя" />
-            <input class="landing-input" type="text" placeholder="Телефон или Telegram" />
-            <input class="landing-input sm:col-span-2" type="text" placeholder="Название лиги / турнира" />
-            <textarea class="landing-input min-h-24 sm:col-span-2" placeholder="Коротко опишите задачу" />
-            <button type="button" class="plan-btn form-submit-btn sm:col-span-2">
+          <form
+            class="mx-auto mt-10 grid max-w-3xl gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left backdrop-blur sm:grid-cols-2"
+            @submit.prevent="submitDemoForm"
+          >
+            <input
+              v-model="demoForm.name"
+              class="landing-input"
+              :class="{ 'landing-input-error': showDemoNameError }"
+              type="text"
+              placeholder="Ваше имя"
+            >
+            <input
+              v-model="demoForm.contact"
+              class="landing-input"
+              :class="{ 'landing-input-error': showDemoContactError }"
+              type="text"
+              placeholder="Телефон или Telegram"
+            >
+            <input
+              v-model="demoForm.league"
+              class="landing-input sm:col-span-2"
+              :class="{ 'landing-input-error': showDemoLeagueError }"
+              type="text"
+              placeholder="Название лиги / турнира"
+            >
+            <textarea
+              v-model="demoForm.message"
+              class="landing-input min-h-24 sm:col-span-2"
+              :class="{ 'landing-input-error': showDemoMessageError }"
+              placeholder="Коротко опишите задачу"
+            />
+            <p
+              v-if="showDemoNameError"
+              class="sm:col-span-2 mt-0 text-[11px] leading-3 text-red-300"
+            >
+              {{ demoFormErrors.name }}
+            </p>
+            <p
+              v-if="showDemoContactError"
+              class="sm:col-span-2 mt-0 text-[11px] leading-3 text-red-300"
+            >
+              {{ demoFormErrors.contact }}
+            </p>
+            <p
+              v-if="showDemoLeagueError"
+              class="sm:col-span-2 mt-0 text-[11px] leading-3 text-red-300"
+            >
+              {{ demoFormErrors.league }}
+            </p>
+            <p
+              v-if="showDemoMessageError"
+              class="sm:col-span-2 mt-0 text-[11px] leading-3 text-red-300"
+            >
+              {{ demoFormErrors.message }}
+            </p>
+            <button
+              type="submit"
+              class="plan-btn form-submit-btn sm:col-span-2"
+              :disabled="demoSubmitAttempted && !canSubmitDemoForm"
+            >
               Отправить заявку
             </button>
           </form>
@@ -430,7 +484,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { minLength, required } from '@vuelidate/validators'
 
 const heroRef = ref<HTMLElement | null>(null)
 const offsetX = ref(0)
@@ -439,6 +495,74 @@ let revealObserver: IntersectionObserver | null = null
 let cleanupHeroListeners: (() => void) | null = null
 let metricObserver: IntersectionObserver | null = null
 const metricRefs = ref<HTMLElement[]>([])
+const toast = useToast()
+const demoSubmitAttempted = ref(false)
+const demoForm = reactive({
+  name: '',
+  contact: '',
+  league: '',
+  message: '',
+})
+const demoRules = computed(() => ({
+  name: { required, minLength: minLength(2) },
+  contact: { required, minLength: minLength(5) },
+  league: { required, minLength: minLength(2) },
+  message: { required, minLength: minLength(5) },
+}))
+const demoV$ = useVuelidate(demoRules, demoForm, { $autoDirty: true })
+const demoFormErrors = computed(() => ({
+  name: demoForm.name.trim().length >= 2 ? '' : 'Укажите имя (минимум 2 символа).',
+  contact:
+    demoForm.contact.trim().length >= 5
+      ? ''
+      : 'Укажите контакт для связи (минимум 5 символов).',
+  league:
+    demoForm.league.trim().length >= 2
+      ? ''
+      : 'Укажите название лиги/турнира (минимум 2 символа).',
+  message:
+    demoForm.message.trim().length >= 5
+      ? ''
+      : 'Опишите задачу (минимум 5 символов).',
+}))
+const canSubmitDemoForm = computed(
+  () =>
+    !demoV$.value.$invalid &&
+    !demoFormErrors.value.name &&
+    !demoFormErrors.value.contact &&
+    !demoFormErrors.value.league &&
+    !demoFormErrors.value.message,
+)
+const showDemoNameError = computed(
+  () => (demoSubmitAttempted.value || demoV$.value.name.$dirty) && !!demoFormErrors.value.name,
+)
+const showDemoContactError = computed(
+  () => (demoSubmitAttempted.value || demoV$.value.contact.$dirty) && !!demoFormErrors.value.contact,
+)
+const showDemoLeagueError = computed(
+  () => (demoSubmitAttempted.value || demoV$.value.league.$dirty) && !!demoFormErrors.value.league,
+)
+const showDemoMessageError = computed(
+  () => (demoSubmitAttempted.value || demoV$.value.message.$dirty) && !!demoFormErrors.value.message,
+)
+
+function submitDemoForm() {
+  demoSubmitAttempted.value = true
+  demoV$.value.$touch()
+  if (!canSubmitDemoForm.value) return
+  toast.add({
+    severity: 'success',
+    summary: 'Заявка отправлена',
+    detail: 'Спасибо! Мы свяжемся с вами в ближайшее время.',
+    life: 4000,
+  })
+  demoForm.name = ''
+  demoForm.contact = ''
+  demoForm.league = ''
+  demoForm.message = ''
+  demoSubmitAttempted.value = false
+  demoV$.value.$reset()
+}
 
 const heroStyle = computed(() => ({
   '--hero-offset-x': `${offsetX.value}px`,
@@ -896,6 +1020,13 @@ onBeforeUnmount(() => {
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
+.form-submit-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  filter: grayscale(0.15);
+  box-shadow: none;
+}
+
 .landing-input {
   width: 100%;
   border-radius: 0.75rem;
@@ -918,6 +1049,11 @@ onBeforeUnmount(() => {
   border-color: rgba(99, 102, 241, 0.75);
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2);
   background: rgba(255, 255, 255, 0.12);
+}
+
+.landing-input-error {
+  border-color: rgba(248, 113, 113, 0.95);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18);
 }
 
 .quiz-chip {

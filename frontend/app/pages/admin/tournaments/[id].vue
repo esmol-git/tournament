@@ -5,15 +5,12 @@ import { useTenantId } from '~/composables/useTenantId'
 import type {
   CalendarRound,
   CalendarViewMode,
-  MatchEventRow,
   MatchRow,
   TableRow,
   TeamLite,
   TournamentDetails,
 } from '~/types/tournament-admin'
-import type { TeamPlayerRow } from '~/types/admin/team'
 import { getApiErrorMessage } from '~/utils/apiError'
-import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDateTimeFields'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { toYmdLocal } from '~/utils/dateYmd'
 import {
@@ -22,20 +19,13 @@ import {
   getDisplayedRoundTitle,
 } from '~/utils/tournamentMatchCalendar'
 import {
-  dayLabels,
-  eventTypeOptions,
   formatDateTimeNoSeconds,
   formatMatchScoreDisplay,
   isGroupsPlusPlayoffFamily,
   isMatchEditLocked,
-  matchCountLabel,
-  statusLabel,
-  statusOptions,
   statusPillClass,
-  teamSideOptions,
-  tournamentFormatLabel,
 } from '~/utils/tournamentAdminUi'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
 
 definePageMeta({ layout: 'admin' })
@@ -45,6 +35,7 @@ const router = useRouter()
 const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
+const { t, locale } = useI18n()
 
 const tournamentId = computed(() => route.params.id as string)
 const tenantId = useTenantId()
@@ -62,30 +53,14 @@ const groupTables = ref<Record<string, TableRow[]>>({})
 
 const calendarDialog = ref(false)
 const calendarSaving = ref(false)
+const calendarSubmitAttempted = ref(false)
 
 const activeTab = ref(0)
-
-const qualificationRowStyle = (row: any) => {
-  const k = playoffQualifiersPerGroup.value
-  const pos = row?.position
-  if (typeof pos !== 'number' || !k) return undefined
-
-  if (pos < k) return { backgroundColor: 'rgba(34, 197, 94, 0.06)' }
-
-  if (pos === k) {
-    return {
-      backgroundColor: 'rgba(34, 197, 94, 0.08)',
-      // inset-схема работает над stripedRows и даёт линию на всю ширину строки
-      boxShadow: 'inset 0 -2px 0 rgba(34, 197, 94, 1)',
-    }
-  }
-
-  return undefined
-}
 
 const teamsLoading = ref(false)
 const allTeams = ref<TeamLite[]>([])
 const selectedTeamIds = ref<string[]>([])
+const teamCompositionSubmitAttempted = ref(false)
 const savingTeams = ref(false)
 type TournamentTeamRow = TournamentDetails['tournamentTeams'][number]
 type GroupColumn = { id: string; name: string; teams: TournamentTeamRow[] }
@@ -142,11 +117,14 @@ function initGroupColumns(res: TournamentDetails) {
 const calendarForm = reactive({
   startDate: null as Date | null,
   endDate: null as Date | null,
+  oneDayTournament: false,
+  schedulingMode: 'FLOW' as 'FLOW' | 'STRICT_ROUNDS',
   format: 'SINGLE_GROUP',
   templateId: '' as '' | 'kids_mini_8',
   useTemplate: false,
   intervalDays: 7,
   roundsPerDay: 1,
+  roundRobinCycles: 1,
   allowedDays: [] as number[],
   matchDurationMinutes: 50,
   matchBreakMinutes: 10,
@@ -187,6 +165,11 @@ const resetCalendarFilters = () => {
 // Фильтрация теперь полностью на бэкенде: фронт только отображает то, что вернул сервер.
 const filteredMatches = computed(() => tournament.value?.matches ?? [])
 
+const selectedCalendarTeamIdSet = computed(() => new Set(calendarFilterTeamIds.value))
+const isCalendarTeamHighlighted = (teamId: string) =>
+  selectedCalendarTeamIdSet.value.size > 0 &&
+  selectedCalendarTeamIdSet.value.has(teamId)
+
 const visibleCalendarRounds = computed(() => {
   return calendarRounds.value
     .map((r) => ({
@@ -207,6 +190,72 @@ const displayedRoundTitle = (r: CalendarRound) =>
     calendarViewMode: calendarViewMode.value,
     calendarFiltersActive: calendarFiltersActive.value,
   })
+
+const localizedStatusOptions = computed(() => [
+  { value: 'SCHEDULED', label: t('admin.tournament_page.status_scheduled') },
+  { value: 'LIVE', label: t('admin.tournament_page.status_live') },
+  { value: 'PLAYED', label: t('admin.tournament_page.status_played') },
+  { value: 'FINISHED', label: t('admin.tournament_page.status_finished') },
+  { value: 'CANCELED', label: t('admin.tournament_page.status_canceled') },
+])
+
+const statusLabelByValue = computed<Record<string, string>>(() =>
+  localizedStatusOptions.value.reduce<Record<string, string>>((acc, o) => {
+    acc[o.value] = o.label
+    return acc
+  }, {}),
+)
+
+const localizedStatusLabel = (status?: string | null) =>
+  status ? statusLabelByValue.value[status] ?? status : '—'
+
+const weekdayLabelByValue = computed<Record<number, string>>(() => ({
+  1: t('admin.tournament_page.weekday_mon'),
+  2: t('admin.tournament_page.weekday_tue'),
+  3: t('admin.tournament_page.weekday_wed'),
+  4: t('admin.tournament_page.weekday_thu'),
+  5: t('admin.tournament_page.weekday_fri'),
+  6: t('admin.tournament_page.weekday_sat'),
+  0: t('admin.tournament_page.weekday_sun'),
+}))
+
+const allowedDayOptions = computed(() => [
+  { value: 1, label: weekdayLabelByValue.value[1] },
+  { value: 2, label: weekdayLabelByValue.value[2] },
+  { value: 3, label: weekdayLabelByValue.value[3] },
+  { value: 4, label: weekdayLabelByValue.value[4] },
+  { value: 5, label: weekdayLabelByValue.value[5] },
+  { value: 6, label: weekdayLabelByValue.value[6] },
+  { value: 0, label: weekdayLabelByValue.value[0] },
+])
+
+const schedulingModeOptions = computed(() => [
+  { label: t('admin.tournament_page.scheduling_mode_flow'), value: 'FLOW' },
+  { label: t('admin.tournament_page.scheduling_mode_strict_rounds'), value: 'STRICT_ROUNDS' },
+])
+
+const localizedTournamentFormatLabel = (f?: string | null): string => {
+  if (f == null || f === '') return '—'
+  if (f === 'GROUPS_2' || f === 'GROUPS_3' || f === 'GROUPS_4') {
+    return t('admin.tournament_page.format_groups_plus_playoff')
+  }
+  if (f === 'SINGLE_GROUP') return t('admin.tournament_page.format_single_group')
+  if (f === 'PLAYOFF') return t('admin.tournament_page.format_playoff')
+  if (f === 'GROUPS_PLUS_PLAYOFF') return t('admin.tournament_page.format_groups_plus_playoff')
+  if (f === 'MANUAL') return t('admin.tournament_page.format_manual')
+  return f
+}
+
+const localizedMatchCountLabel = (n: number) => {
+  if (locale.value.startsWith('ru')) {
+    const nn = Math.floor(Math.abs(n)) % 100
+    const n10 = nn % 10
+    if (n10 === 1 && nn !== 11) return t('admin.tournament_page.match_word_one')
+    if (n10 >= 2 && n10 <= 4 && (nn < 12 || nn > 14)) return t('admin.tournament_page.match_word_few')
+    return t('admin.tournament_page.match_word_many')
+  }
+  return n === 1 ? t('admin.tournament_page.match_word_one') : t('admin.tournament_page.match_word_other')
+}
 
 const matchNumberById = computed(() => {
   if (tournament.value?.matchNumberById) return tournament.value.matchNumberById
@@ -245,15 +294,15 @@ const saveRoundOrder = async (r: CalendarRound) => {
     )
     toast.add({
       severity: 'success',
-      summary: 'Порядок матчей обновлён',
-      detail: 'Время матчей пересчитано по слотам.',
+      summary: t('admin.tournament_page.reorder_saved_summary'),
+      detail: t('admin.tournament_page.reorder_saved_detail'),
       life: 2500,
     })
     await fetchTournament()
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось изменить порядок',
+      summary: t('admin.tournament_page.reorder_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -265,181 +314,16 @@ const saveRoundOrder = async (r: CalendarRound) => {
 }
 
 const protocolOpen = ref(false)
-const protocolSaving = ref(false)
 const protocolMatch = ref<MatchRow | null>(null)
-
-const protocolPlayersLoading = ref(false)
-const protocolHomePlayers = ref<TeamPlayerRow[]>([])
-const protocolAwayPlayers = ref<TeamPlayerRow[]>([])
-
-const protocolHomePlayerOptions = computed(() =>
-  protocolHomePlayers.value.map((tp) => ({
-    label: `${tp.player.lastName} ${tp.player.firstName}`,
-    value: tp.playerId,
-  })),
-)
-const protocolAwayPlayerOptions = computed(() =>
-  protocolAwayPlayers.value.map((tp) => ({
-    label: `${tp.player.lastName} ${tp.player.firstName}`,
-    value: tp.playerId,
-  })),
-)
-
-const protocolDate = ref<Date | null>(null)
-const protocolTime = ref<Date | null>(null)
-
-const protocolForm = reactive({
-  startTime: null as Date | null,
-  homeScore: 0,
-  awayScore: 0,
-  status: 'PLAYED',
-  events: [] as {
-    type: string
-    minute: number | null
-    playerId: string
-    teamSide: 'HOME' | 'AWAY' | null
-  }[],
-})
-
-const protocolReadOnly = computed(() =>
-  protocolMatch.value ? isMatchEditLocked(protocolMatch.value.status) : false,
-)
 
 const openProtocol = async (m: MatchRow) => {
   protocolMatch.value = m
-  protocolForm.startTime = m.startTime ? new Date(m.startTime) : null
-  const sp = splitStartTimeToDateAndTime(protocolForm.startTime)
-  protocolDate.value = sp.date
-  protocolTime.value = sp.time
-  protocolForm.homeScore = (m.homeScore ?? 0) as number
-  protocolForm.awayScore = (m.awayScore ?? 0) as number
-  protocolForm.status = (m.status ?? 'PLAYED') as string
-  protocolForm.events = (m.events ?? []).map((e: MatchEventRow) => ({
-    type: e.type,
-    minute: (e.minute ?? null) as number | null,
-    playerId: (e.playerId ?? '') as string,
-    teamSide: (e.teamSide ?? null) as 'HOME' | 'AWAY' | null,
-  }))
   protocolOpen.value = true
-
-  // Load roster players for both teams so "playerId" can be selected safely.
-  protocolPlayersLoading.value = true
-  try {
-    const [home, away] = await Promise.all([
-      authFetch<{ items: TeamPlayerRow[]; total: number }>(
-        apiUrl(`/tenants/${tenantId.value}/teams/${m.homeTeam.id}/players`),
-        {
-          headers: { Authorization: `Bearer ${token.value}` },
-          params: { page: 1, pageSize: 200 },
-        },
-      ),
-      authFetch<{ items: TeamPlayerRow[]; total: number }>(
-        apiUrl(`/tenants/${tenantId.value}/teams/${m.awayTeam.id}/players`),
-        {
-          headers: { Authorization: `Bearer ${token.value}` },
-          params: { page: 1, pageSize: 200 },
-        },
-      ),
-    ])
-    protocolHomePlayers.value = home.items
-    protocolAwayPlayers.value = away.items
-  } catch {
-    protocolHomePlayers.value = []
-    protocolAwayPlayers.value = []
-  } finally {
-    protocolPlayersLoading.value = false
-  }
 }
 
-watch([protocolDate, protocolTime], () => {
-  protocolForm.startTime = mergeDateAndTime(protocolDate.value, protocolTime.value)
-})
-
-const addEvent = () => {
-  protocolForm.events.push({
-    type: 'GOAL',
-    minute: null,
-    playerId: '',
-    teamSide: 'HOME',
-  })
-}
-
-const removeEvent = (idx: number) => {
-  protocolForm.events.splice(idx, 1)
-}
-
-const saveProtocol = async () => {
-  if (!token.value || !protocolMatch.value) return
-  if (protocolReadOnly.value) {
-    toast.add({
-      severity: 'info',
-      summary: 'Матч завершён',
-      detail: 'Протокол нельзя изменить.',
-      life: 4000,
-    })
-    return
-  }
-  protocolSaving.value = true
-  try {
-    const desiredStartTime = protocolForm.startTime instanceof Date ? protocolForm.startTime : null
-    const currentStartTime = protocolMatch.value.startTime ? new Date(protocolMatch.value.startTime) : null
-    if (
-      desiredStartTime &&
-      (!currentStartTime || desiredStartTime.getTime() !== currentStartTime.getTime())
-    ) {
-      await authFetch(
-        apiUrl(`/tournaments/${tournamentId.value}/matches/${protocolMatch.value.id}`),
-        {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${token.value}` },
-          body: { startTime: desiredStartTime.toISOString() },
-        },
-      )
-    }
-
-    await authFetch(
-      apiUrl(`/tournaments/${tournamentId.value}/matches/${protocolMatch.value.id}/protocol`),
-      {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token.value}` },
-        body: {
-          homeScore: protocolForm.homeScore,
-          awayScore: protocolForm.awayScore,
-          status: protocolForm.status,
-          events: protocolForm.events.map((e) => ({
-            type: e.type,
-            minute: e.minute ?? undefined,
-            playerId: e.playerId || undefined,
-            teamSide: e.teamSide ?? undefined,
-          })),
-        },
-      },
-    )
-    protocolOpen.value = false
-    await fetchTournament()
-    await fetchTable()
-    toast.add({
-      severity: 'success',
-      summary: 'Протокол сохранён',
-      detail: 'Результат матча обновлён, таблица пересчитана.',
-      life: 3000,
-    })
-  } catch (e: any) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось сохранить протокол',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
-  } finally {
-    protocolSaving.value = false
-  }
-}
-
-const finishProtocol = async () => {
-  if (protocolReadOnly.value) return
-  if (protocolForm.status !== 'FINISHED') protocolForm.status = 'FINISHED'
-  await saveProtocol()
+const onProtocolSaved = async () => {
+  await fetchTournament()
+  await fetchTable()
 }
 
 const fetchTournament = async () => {
@@ -470,7 +354,13 @@ const fetchTournament = async () => {
     calendarRounds.value = buildCalendarRoundsFromMatches(res.matches ?? [], res.groups ?? [])
 
     calendarForm.intervalDays = res.intervalDays ?? 7
+    calendarForm.roundRobinCycles = res.roundRobinCycles ?? 1
+    calendarForm.schedulingMode = 'FLOW'
     calendarForm.allowedDays = Array.isArray(res.allowedDays) ? res.allowedDays : []
+    calendarForm.oneDayTournament =
+      (res.intervalDays ?? 7) === 1 &&
+      Array.isArray(res.allowedDays) &&
+      res.allowedDays.length === 1
     calendarForm.startDate = res.startsAt ? new Date(res.startsAt) : null
     calendarForm.endDate = res.endsAt ? new Date(res.endsAt) : null
     calendarForm.format = (res.format ?? 'SINGLE_GROUP') as string
@@ -501,7 +391,7 @@ const fetchTournament = async () => {
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось применить фильтры',
+      summary: t('admin.tournament_page.filters_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -542,8 +432,105 @@ const isGroupedFormat = computed(() => {
   return false
 })
 
+/** Подсветка строк таблицы: одна круговая — только пьедестал 1–3 без «черты отбора»; группы с выходом в плей-офф — зона из k мест и линия под k-й строкой. */
+const qualificationRowStyle = (row: any) => {
+  const pos = row?.position
+  if (typeof pos !== 'number') return undefined
+
+  if (!isGroupedFormat.value) {
+    if (pos >= 1 && pos <= 3) return { backgroundColor: 'rgba(34, 197, 94, 0.06)' }
+    return undefined
+  }
+
+  const k = playoffQualifiersPerGroup.value
+  if (!k) return undefined
+
+  if (pos < k) return { backgroundColor: 'rgba(34, 197, 94, 0.06)' }
+
+  if (pos === k) {
+    return {
+      backgroundColor: 'rgba(34, 197, 94, 0.08)',
+      boxShadow: 'inset 0 -2px 0 rgba(34, 197, 94, 1)',
+    }
+  }
+
+  return undefined
+}
+
 const isManualFormat = computed(() => tournament.value?.format === 'MANUAL')
 const isPlayoffOnlyFormat = computed(() => tournament.value?.format === 'PLAYOFF')
+
+const showTournamentTableTab = computed(() => !isPlayoffOnlyFormat.value)
+
+function tournamentTabSlugToIndex(slug: string | undefined | null, hasTable: boolean): number {
+  const s = (slug ?? 'calendar').toString().toLowerCase()
+  if (s === 'calendar') return 0
+  if (s === 'matches') return 1
+  if (s === 'table') return hasTable ? 2 : 0
+  if (s === 'squads') return hasTable ? 3 : 2
+  return 0
+}
+
+function tournamentIndexToSlug(index: number, hasTable: boolean): string {
+  if (hasTable) {
+    return (['calendar', 'matches', 'table', 'squads'] as const)[index] ?? 'calendar'
+  }
+  return (['calendar', 'matches', 'squads'] as const)[index] ?? 'calendar'
+}
+
+let tournamentTabSyncInProgress = false
+
+function syncTournamentTabFromRoute() {
+  if (!tournament.value) return
+  const hasTable = showTournamentTableTab.value
+  const raw = (route.query.tab as string | undefined) ?? 'calendar'
+  const next = tournamentTabSlugToIndex(raw, hasTable)
+  const slug = tournamentIndexToSlug(next, hasTable)
+  if (activeTab.value === next && (route.query.tab as string | undefined) === slug) return
+
+  tournamentTabSyncInProgress = true
+  activeTab.value = next
+  if ((route.query.tab as string | undefined) !== slug) {
+    void router.replace({ query: { ...route.query, tab: slug } })
+  }
+  nextTick(() => {
+    tournamentTabSyncInProgress = false
+  })
+}
+
+watch(activeTab, (i) => {
+  if (tournamentTabSyncInProgress) return
+  if (!tournament.value) return
+  const hasTable = showTournamentTableTab.value
+  const max = hasTable ? 3 : 2
+  if (i < 0 || i > max) return
+  const slug = tournamentIndexToSlug(i, hasTable)
+  if ((route.query.tab as string | undefined) === slug) return
+  void router.replace({ query: { ...route.query, tab: slug } })
+})
+
+watch(
+  () => route.query.tab,
+  () => {
+    if (tournament.value) syncTournamentTabFromRoute()
+  },
+)
+
+watch(showTournamentTableTab, (hasTable) => {
+  if (!tournament.value) return
+  if (!hasTable) {
+    if (activeTab.value === 2) activeTab.value = 0
+    else if (activeTab.value === 3) activeTab.value = 2
+  }
+})
+
+watch(
+  () => tournament.value,
+  (t) => {
+    if (t) syncTournamentTabFromRoute()
+  },
+  { immediate: true },
+)
 
 const showGroupBuckets = computed(() =>
   tournament.value ? showGroupBucketsFor(tournament.value) : false,
@@ -559,16 +546,29 @@ const hasAnyEnteredResults = computed(() => {
   return ms.some((m) => m.homeScore !== null && m.awayScore !== null && (m.status === 'PLAYED' || m.status === 'FINISHED'))
 })
 
+/** Есть хотя бы один матч в расписании (календарь сгенерирован или добавлен вручную). */
+const hasScheduleMatches = computed(() => (tournament.value?.matches?.length ?? 0) > 0)
+
 const canEditTournament = computed(() => tournament.value?.status === 'DRAFT')
 
-// Группы можно менять, пока в расписании нет введённых результатов.
-// После ввода хотя бы одного счёта правки групп могут сломать календарь и таблицы.
+// Группы — только до появления матчей (как и состав команд).
 const canEditGroups = computed(
   () =>
-    showGroupBuckets.value && canEditTournament.value && !hasAnyEnteredResults.value,
+    showGroupBuckets.value &&
+    canEditTournament.value &&
+    !hasAnyEnteredResults.value &&
+    !hasScheduleMatches.value,
 )
 
-const canEditTeams = computed(() => canEditTournament.value && !hasAnyEnteredResults.value)
+/** Добавление/удаление команд — только пока нет матчей. */
+const canEditTeamComposition = computed(
+  () => canEditTournament.value && !hasAnyEnteredResults.value && !hasScheduleMatches.value,
+)
+
+/** Рейтинги для сетки — пока нет введённых результатов; при наличии матчей сработает перегенерация календаря. */
+const canEditTeamRatings = computed(
+  () => canEditTournament.value && !hasAnyEnteredResults.value,
+)
 
 // Если календарь уже сгенерирован (есть матчи), то при правках состава/групп
 // нужно пересоздавать расписание, иначе матчи будут соответствовать старой структуре.
@@ -586,6 +586,17 @@ const canRegenerateCalendar = computed(() => {
     !isManualFormat.value
   )
 })
+const teamCompositionErrors = computed(() => {
+  const minTeams = Math.max(0, tournament.value?.minTeams ?? 0)
+  const selectedCount = selectedTeamIds.value.length
+  return {
+    minTeams:
+      selectedCount >= minTeams
+        ? ''
+        : t('admin.validation.min_teams_selected', { min: minTeams, selected: selectedCount }),
+  }
+})
+const canSaveTeamComposition = computed(() => !teamCompositionErrors.value.minTeams)
 
 const ratingSaving = ref(false)
 const ratingOptions = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }))
@@ -593,7 +604,7 @@ const ratingOptions = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }
 const updateTeamRating = async (teamId: string, rating: number) => {
   if (!token.value) return
   if (!tournament.value) return
-  if (!canEditTeams.value) return
+  if (!canEditTeamRatings.value) return
   if (ratingSaving.value) return
 
   ratingSaving.value = true
@@ -614,7 +625,7 @@ const updateTeamRating = async (teamId: string, rating: number) => {
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось сохранить рейтинг',
+      summary: t('admin.tournament_page.rating_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -826,10 +837,14 @@ const playoffSlotLabels = (m: MatchRow) => {
 
     const homeTeam =
       (usesLoser ? loserName(semi1) : winnerName(semi1)) ??
-      `${usesLoser ? 'Проигравший' : 'Победитель'} матча ${matchNumberById.value[semi1.id] ?? '—'}`
+      t(usesLoser ? 'admin.tournament_page.playoff_loser_of_match' : 'admin.tournament_page.playoff_winner_of_match', {
+        number: matchNumberById.value[semi1.id] ?? '—',
+      })
     const awayTeam =
       (usesLoser ? loserName(semi2) : winnerName(semi2)) ??
-      `${usesLoser ? 'Проигравший' : 'Победитель'} матча ${matchNumberById.value[semi2.id] ?? '—'}`
+      t(usesLoser ? 'admin.tournament_page.playoff_loser_of_match' : 'admin.tournament_page.playoff_winner_of_match', {
+        number: matchNumberById.value[semi2.id] ?? '—',
+      })
     return { home: homeTeam, away: awayTeam }
   }
 
@@ -848,10 +863,14 @@ const playoffSlotLabels = (m: MatchRow) => {
 
   const homeTeam =
     winnerName(leftParent) ??
-    `Победитель матча ${matchNumberById.value[leftParent.id] ?? '—'}`
+    t('admin.tournament_page.playoff_winner_of_match', {
+      number: matchNumberById.value[leftParent.id] ?? '—',
+    })
   const awayTeam =
     winnerName(rightParent) ??
-    `Победитель матча ${matchNumberById.value[rightParent.id] ?? '—'}`
+    t('admin.tournament_page.playoff_winner_of_match', {
+      number: matchNumberById.value[rightParent.id] ?? '—',
+    })
 
   return { home: homeTeam, away: awayTeam }
 }
@@ -895,22 +914,6 @@ const checkGroupMove = (evt: any) => {
   if (destLen < size) return true
   if (destLen === size && srcLen === size) return true
   return false
-}
-
-function ruTeamsNom(n: number): string {
-  const nn = Math.floor(Math.abs(n)) % 100
-  const n10 = nn % 10
-  if (n10 === 1 && nn !== 11) return 'команда'
-  if (n10 >= 2 && n10 <= 4 && (nn < 12 || nn > 14)) return 'команды'
-  return 'команд'
-}
-
-function ruGroupsNom(n: number): string {
-  const nn = Math.floor(Math.abs(n)) % 100
-  const n10 = nn % 10
-  if (n10 === 1 && nn !== 11) return 'группа'
-  if (n10 >= 2 && n10 <= 4 && (nn < 12 || nn > 14)) return 'группы'
-  return 'групп'
 }
 
 const snapshotPreDrag = () => {
@@ -972,8 +975,12 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
       await fetchTournament()
       toast.add({
         severity: 'warn',
-        summary: 'Ровное распределение',
-        detail: `При ${tournament.value?.tournamentTeams?.length ?? 0} командах и ${cols.length} группах в каждой должно быть ровно ${size}. Перетащите обменом или отмените действие.`,
+        summary: t('admin.tournament_page.groups_even_summary'),
+        detail: t('admin.tournament_page.groups_even_detail', {
+          teams: tournament.value?.tournamentTeams?.length ?? 0,
+          groups: cols.length,
+          size,
+        }),
         life: 6000,
       })
       return
@@ -989,16 +996,21 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
       await fetchTournament()
       toast.add({
         severity: 'success',
-        summary: 'Группы обновлены',
-        detail: 'Календарь пересоздан с новым распределением.',
+        summary: t('admin.tournament_page.groups_updated_summary'),
+        detail: t('admin.tournament_page.groups_updated_regenerated_detail'),
         life: 2000,
       })
     } else {
       toast.add({
         severity: 'success',
-        summary: 'Группы обновлены',
+        summary: t('admin.tournament_page.groups_updated_summary'),
         detail:
-          swapped ? 'Команды поменялись местами.' : 'Команда перемещена.' + (teamCount.value < (tournament.value?.minTeams ?? 0) ? ' Календарь не пересоздан: недостаточно команд.' : ''),
+          swapped
+            ? t('admin.tournament_page.groups_updated_swapped_detail')
+            : t('admin.tournament_page.groups_updated_moved_detail') +
+              (teamCount.value < (tournament.value?.minTeams ?? 0)
+                ? ` ${t('admin.tournament_page.groups_updated_not_regenerated_detail')}`
+                : ''),
         life: 1500,
       })
     }
@@ -1006,7 +1018,12 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
       await fetchTable()
     }
   } catch (e: any) {
-    toast.add({ severity: 'error', summary: 'Не удалось сохранить группы', detail: getApiErrorMessage(e, 'Ошибка запроса'), life: 6000 })
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.groups_error_summary'),
+      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      life: 6000,
+    })
     await fetchTournament()
   }
 }
@@ -1030,30 +1047,30 @@ const fetchAllTeams = async () => {
 
 const saveTeams = async () => {
   if (!token.value || !tournament.value) return
+  teamCompositionSubmitAttempted.value = true
+  if (!canSaveTeamComposition.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.composition_check_summary'),
+      detail: teamCompositionErrors.value.minTeams,
+      life: 5000,
+    })
+    return
+  }
   savingTeams.value = true
-  if (!canEditTeams.value) {
+  if (!canEditTeamComposition.value) {
     toast.add({
       severity: 'error',
-      summary: 'Редактирование запрещено',
-      detail: 'Изменения доступны только для черновика и только до ввода результатов.',
+      summary: t('admin.tournament_page.composition_edit_forbidden_summary'),
+      detail: hasScheduleMatches.value
+        ? t('admin.tournament_page.composition_edit_forbidden_schedule_detail')
+        : t('admin.tournament_page.composition_edit_forbidden_status_detail'),
       life: 6000,
     })
     savingTeams.value = false
     return
   }
-  const wasGenerated = (tournament.value.matches?.length ?? 0) > 0
-  const canEditAfterGeneration = !hasAnyEnteredResults.value
   try {
-    if (wasGenerated && !canEditAfterGeneration) {
-      toast.add({
-        severity: 'error',
-        summary: 'Нельзя менять состав после ввода результатов',
-        detail: 'Изменение команд после внесения счётов ломает календарь. Сначала очистите результаты или пересоздайте календарь.',
-        life: 6000,
-      })
-      return
-    }
-
     const prev = new Set<string>(
       Array.isArray(tournament.value.tournamentTeams)
         ? tournament.value.tournamentTeams.map((x) => x.teamId)
@@ -1080,8 +1097,8 @@ const saveTeams = async () => {
     await fetchTable()
     toast.add({
       severity: 'success',
-      summary: 'Команды обновлены',
-      detail: 'Состав турнира сохранён.',
+      summary: t('admin.tournament_page.composition_saved_summary'),
+      detail: t('admin.tournament_page.composition_saved_detail'),
       life: 2500,
     })
 
@@ -1093,7 +1110,7 @@ const saveTeams = async () => {
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось сохранить команды',
+      summary: t('admin.tournament_page.composition_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -1143,15 +1160,331 @@ const normalizeDateInput = (v: unknown) => {
 
 const isValidTimeHHmm = (s: unknown) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)
 
+const sanitizeDayStartOverrides = (overrides: Record<number, string>) => {
+  const cleaned: Record<number, string> = {}
+  for (const [k, raw] of Object.entries(overrides ?? {})) {
+    const day = Number(k)
+    const value = typeof raw === 'string' ? raw.trim() : ''
+    if (!value) continue
+    if (!isValidTimeHHmm(value)) {
+      throw new Error(
+        t('admin.tournament_page.invalid_day_start_time_format', {
+          day: weekdayLabelByValue.value[day] ?? k,
+        }),
+      )
+    }
+    cleaned[day] = value
+  }
+  return cleaned
+}
+
+const parseTimeToDate = (time: string | undefined | null): Date | null => {
+  if (!time || !isValidTimeHHmm(time)) return null
+  const [h, m] = time.split(':').map(Number)
+  const d = new Date()
+  d.setHours(h, m, 0, 0)
+  return d
+}
+
+const toTimeHHmm = (value: Date | Date[] | null | undefined): string => {
+  const d = Array.isArray(value) ? value[0] : value
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return ''
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+const defaultDayStartTimeModel = computed<Date | null>({
+  get: () => parseTimeToDate(calendarForm.dayStartTimeDefault),
+  set: (value) => {
+    calendarForm.dayStartTimeDefault = toTimeHHmm(value) || '12:00'
+  },
+})
+
+const getDayOverrideTimeModel = (day: number) => parseTimeToDate(calendarForm.dayStartTimeOverrides[day] || '')
+const setDayOverrideTimeModel = (day: number, value: Date | Date[] | null | undefined) => {
+  const next = toTimeHHmm(value)
+  if (next) calendarForm.dayStartTimeOverrides[day] = next
+  else delete calendarForm.dayStartTimeOverrides[day]
+}
+
+type CalendarNumericField =
+  | 'intervalDays'
+  | 'roundsPerDay'
+  | 'roundRobinCycles'
+  | 'matchDurationMinutes'
+  | 'matchBreakMinutes'
+  | 'simultaneousMatches'
+
+const setCalendarNumberLive = (field: CalendarNumericField, rawValue: number | null | undefined) => {
+  if (typeof rawValue !== 'number' || Number.isNaN(rawValue)) return
+  const n = Math.trunc(rawValue)
+  const clamp = (v: number, min: number, max?: number) =>
+    max !== undefined ? Math.min(max, Math.max(min, v)) : Math.max(min, v)
+  const next =
+    field === 'roundRobinCycles'
+      ? clamp(n, 1, 4)
+      : field === 'matchBreakMinutes'
+        ? clamp(n, 0)
+        : clamp(n, 1)
+  ;(calendarForm as Record<string, unknown>)[field] = next
+}
+
+const roundsPerDayHintText =
+  t('admin.tournament_page.rounds_per_day_hint')
+const roundRobinCyclesHintText =
+  t('admin.tournament_page.round_robin_cycles_hint')
+const previewHintText =
+  t('admin.tournament_page.preview_hint')
+const oneDayHintText =
+  t('admin.tournament_page.one_day_hint')
+const schedulingModeHintText =
+  t('admin.tournament_page.scheduling_mode_hint')
+
+const minutesUntilMidnightFromHhmm = (hhmm: string) => {
+  if (!isValidTimeHHmm(hhmm)) return 24 * 60
+  const [h, m] = hhmm.split(':').map(Number)
+  return 24 * 60 - h * 60 - m
+}
+
+const effectiveIntervalDays = computed(() =>
+  calendarForm.oneDayTournament ? 1 : Math.max(1, Number(calendarForm.intervalDays) || 1),
+)
+
+const effectiveAllowedDays = computed(() => {
+  if (!calendarForm.oneDayTournament) return calendarForm.allowedDays
+  if (!calendarForm.startDate) return []
+  return [new Date(calendarForm.startDate).getDay()]
+})
+
+const effectiveDayStartOverrides = computed(() =>
+  calendarForm.oneDayTournament ? ({} as Record<number, string>) : calendarForm.dayStartTimeOverrides,
+)
+
+const calendarPreview = computed(() => {
+  const teams = tournament.value?.tournamentTeams ?? []
+  const teamCount = teams.length
+  const cycles = Math.max(1, Number(calendarForm.roundRobinCycles) || 1)
+  const roundsPerDay = Math.max(1, Number(calendarForm.roundsPerDay) || 1)
+  const intervalDays = effectiveIntervalDays.value
+  const startDate = calendarForm.startDate ? new Date(calendarForm.startDate) : null
+  const format = tournament.value?.format ?? calendarForm.format
+
+  const slotMinutes =
+    Math.max(1, Number(calendarForm.matchDurationMinutes) || 50) +
+    Math.max(0, Number(calendarForm.matchBreakMinutes) ?? 0)
+  const parallel = Math.max(1, Number(calendarForm.simultaneousMatches) || 1)
+
+  const roundsPerCycleForGroupSize = (n: number) => (n > 1 ? (n % 2 === 0 ? n - 1 : n) : 0)
+  const matchesPerCycleForGroupSize = (n: number) => (n > 1 ? (n * (n - 1)) / 2 : 0)
+
+  let estimatedMatches = 0
+  let estimatedRounds = 0
+  let matchesPerRound = 0
+
+  if (format === 'SINGLE_GROUP') {
+    estimatedMatches = matchesPerCycleForGroupSize(teamCount) * cycles
+    estimatedRounds = roundsPerCycleForGroupSize(teamCount) * cycles
+    matchesPerRound = Math.floor(teamCount / 2)
+  } else if (isGroupsPlusPlayoffFamily(format)) {
+    const groups = tournament.value?.groups ?? []
+    const byGroup = new Map<string, number>()
+    for (const tt of teams) {
+      const gid = tt.group?.id
+      if (!gid) continue
+      byGroup.set(gid, (byGroup.get(gid) ?? 0) + 1)
+    }
+    const sizes = groups.map((g) => byGroup.get(g.id) ?? 0).filter((n) => n > 0)
+    if (sizes.length) {
+      estimatedMatches = sizes.reduce((acc, n) => acc + matchesPerCycleForGroupSize(n) * cycles, 0)
+      estimatedRounds = Math.max(...sizes.map((n) => roundsPerCycleForGroupSize(n) * cycles))
+      matchesPerRound = sizes.reduce((acc, n) => acc + Math.floor(n / 2), 0)
+    }
+  }
+
+  if (!estimatedMatches && teamCount > 1) {
+    estimatedMatches = matchesPerCycleForGroupSize(teamCount) * cycles
+  }
+  if (!estimatedRounds && teamCount > 1) {
+    estimatedRounds = roundsPerCycleForGroupSize(teamCount) * cycles
+  }
+  if (!matchesPerRound && teamCount > 1 && format === 'SINGLE_GROUP') {
+    matchesPerRound = Math.floor(teamCount / 2)
+  }
+
+  const roundDays = estimatedRounds ? Math.ceil(estimatedRounds / roundsPerDay) : 0
+  const allowedSet = effectiveAllowedDays.value?.length ? new Set(effectiveAllowedDays.value) : null
+  let estimatedEndDate: Date | null = null
+  if (startDate && roundDays > 0) {
+    let roundDate = new Date(startDate)
+    for (let d = 0; d < roundDays; d++) {
+      if (d > 0) {
+        roundDate = new Date(roundDate.getTime() + intervalDays * 24 * 60 * 60 * 1000)
+      }
+      if (allowedSet) {
+        while (!allowedSet.has(roundDate.getDay())) {
+          roundDate = new Date(roundDate.getTime() + 24 * 60 * 60 * 1000)
+        }
+      }
+      estimatedEndDate = new Date(roundDate)
+    }
+  }
+
+  const roundsOnBusiestDay =
+    estimatedRounds > 0 ? Math.min(estimatedRounds, roundsPerDay) : 0
+  const matchesOnBusiestDay = roundsOnBusiestDay * matchesPerRound
+  const effectiveParallel = Math.max(1, Math.min(parallel, Math.max(1, matchesPerRound)))
+  const minutesNeededOnBusiestDay =
+    matchesOnBusiestDay > 0
+      ? calendarForm.schedulingMode === 'STRICT_ROUNDS'
+        ? roundsOnBusiestDay * Math.ceil(matchesPerRound / effectiveParallel) * slotMinutes
+        : Math.ceil(matchesOnBusiestDay / effectiveParallel) * slotMinutes
+      : 0
+
+  const dayIndices = effectiveAllowedDays.value?.length
+    ? effectiveAllowedDays.value
+    : ([0, 1, 2, 3, 4, 5, 6] as const)
+  const minAvailableMinutesPerDay = Math.min(
+    ...dayIndices.map((d) => {
+      const t =
+        (effectiveDayStartOverrides.value[d] as string | undefined) ||
+        calendarForm.dayStartTimeDefault
+      return minutesUntilMidnightFromHhmm(t)
+    }),
+  )
+
+  const scheduleOverflow =
+    (format === 'SINGLE_GROUP' || isGroupsPlusPlayoffFamily(format)) &&
+    estimatedRounds > 0 &&
+    matchesOnBusiestDay > 0 &&
+    minutesNeededOnBusiestDay > minAvailableMinutesPerDay
+
+  return {
+    teamCount,
+    estimatedMatches,
+    estimatedRounds,
+    roundDays,
+    estimatedEndDate,
+    minutesNeededOnBusiestDay,
+    minAvailableMinutesPerDay,
+    scheduleOverflow,
+  }
+})
+
+type CalendarPreviewKey =
+  | 'teamCount'
+  | 'estimatedMatches'
+  | 'estimatedRounds'
+  | 'roundDays'
+  | 'estimatedEndDate'
+
+const calendarPreviewChanged = reactive<Record<CalendarPreviewKey, boolean>>({
+  teamCount: false,
+  estimatedMatches: false,
+  estimatedRounds: false,
+  roundDays: false,
+  estimatedEndDate: false,
+})
+
+let previewResetTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(calendarPreview, (next, prev) => {
+  if (!prev) return
+  const prevEnd = prev.estimatedEndDate?.toISOString().slice(0, 10) ?? null
+  const nextEnd = next.estimatedEndDate?.toISOString().slice(0, 10) ?? null
+  calendarPreviewChanged.teamCount = next.teamCount !== prev.teamCount
+  calendarPreviewChanged.estimatedMatches = next.estimatedMatches !== prev.estimatedMatches
+  calendarPreviewChanged.estimatedRounds = next.estimatedRounds !== prev.estimatedRounds
+  calendarPreviewChanged.roundDays = next.roundDays !== prev.roundDays
+  calendarPreviewChanged.estimatedEndDate = nextEnd !== prevEnd
+  if (previewResetTimer) clearTimeout(previewResetTimer)
+  previewResetTimer = setTimeout(() => {
+    calendarPreviewChanged.teamCount = false
+    calendarPreviewChanged.estimatedMatches = false
+    calendarPreviewChanged.estimatedRounds = false
+    calendarPreviewChanged.roundDays = false
+    calendarPreviewChanged.estimatedEndDate = false
+  }, 700)
+})
+
+onBeforeUnmount(() => {
+  if (previewResetTimer) clearTimeout(previewResetTimer)
+})
+
+watch(
+  () => calendarForm.oneDayTournament,
+  (enabled) => {
+    if (!enabled) return
+    calendarForm.endDate = null
+    calendarForm.intervalDays = 1
+    calendarForm.dayStartTimeOverrides = {}
+    if (calendarForm.startDate) {
+      calendarForm.allowedDays = [new Date(calendarForm.startDate).getDay()]
+    }
+  },
+)
+
+watch(
+  () => calendarForm.startDate,
+  (value) => {
+    if (!calendarForm.oneDayTournament || !value) return
+    calendarForm.allowedDays = [new Date(value).getDay()]
+  },
+)
+
+watch(
+  [() => calendarForm.oneDayTournament, () => calendarPreview.value.estimatedRounds],
+  ([enabled, estimatedRounds]) => {
+    if (!enabled) return
+    calendarForm.roundsPerDay = Math.max(1, Number(estimatedRounds) || 1)
+  },
+)
+
+const calendarFormErrors = computed(() => {
+  const start = calendarForm.startDate ? new Date(calendarForm.startDate) : null
+  const end = calendarForm.endDate ? new Date(calendarForm.endDate) : null
+  return {
+    startDate: start ? '' : t('admin.validation.required_start_date'),
+    endDate:
+      start && end && start >= end ? t('admin.validation.end_after_start') : '',
+    dayStartTimeDefault: isValidTimeHHmm(calendarForm.dayStartTimeDefault)
+      ? ''
+      : t('admin.validation.invalid_time_hhmm'),
+    schedule:
+      !calendarForm.useTemplate &&
+      (calendarPreview.value.scheduleOverflow ||
+        (calendarForm.oneDayTournament && calendarPreview.value.roundDays > 1))
+        ? calendarPreview.value.scheduleOverflow
+          ? t('admin.validation.schedule_overflow')
+          : t('admin.validation.one_day_conflict')
+        : '',
+  }
+})
+const canGenerateCalendar = computed(
+  () =>
+    !calendarFormErrors.value.startDate &&
+    !calendarFormErrors.value.endDate &&
+    !calendarFormErrors.value.dayStartTimeDefault &&
+    !calendarFormErrors.value.schedule,
+)
+
+watch(calendarDialog, (open) => {
+  if (open) calendarSubmitAttempted.value = false
+})
+
 const generateCalendar = async () => {
   if (!token.value) return
   if (tournament.value?.format === 'MANUAL') {
     toast.add({
       severity: 'warn',
-      summary: 'Автогенерация недоступна',
-      detail: 'Для формата «только ручное расписание» календарь не генерируется автоматически.',
+      summary: t('admin.tournament_page.calendar_manual_summary'),
+      detail: t('admin.tournament_page.calendar_manual_detail'),
       life: 4000,
     })
+    return
+  }
+  calendarSubmitAttempted.value = true
+  if (!canGenerateCalendar.value) {
     return
   }
   calendarSaving.value = true
@@ -1160,16 +1493,28 @@ const generateCalendar = async () => {
       calendarForm.useTemplate && calendarForm.templateId === 'kids_mini_8'
 
     if (calendarForm.startDate && calendarForm.endDate && calendarForm.startDate >= calendarForm.endDate) {
-      throw new Error('Дата окончания должна быть позже даты старта')
+      throw new Error(t('admin.validation.end_after_start'))
     }
     if (!isValidTimeHHmm(calendarForm.dayStartTimeDefault)) {
-      throw new Error('Время начала дня должно быть в формате HH:mm')
+      throw new Error(t('admin.validation.invalid_time_hhmm'))
     }
-    for (const [k, v] of Object.entries(calendarForm.dayStartTimeOverrides ?? {})) {
-      if (!isValidTimeHHmm(v)) {
-        const day = Number(k)
-        throw new Error(`Неверное время старта для ${dayLabels[day] ?? k}. Формат HH:mm`)
-      }
+    const cleanedDayStartTimeOverrides = sanitizeDayStartOverrides(effectiveDayStartOverrides.value)
+
+    if (
+      !templateEnabled &&
+      calendarPreview.value.scheduleOverflow
+    ) {
+      throw new Error(
+        t('admin.tournament_page.schedule_overflow_detailed', {
+          needed: calendarPreview.value.minutesNeededOnBusiestDay,
+          available: calendarPreview.value.minAvailableMinutesPerDay,
+        }),
+      )
+    }
+    if (calendarForm.oneDayTournament && calendarPreview.value.roundDays > 1) {
+      throw new Error(
+        t('admin.tournament_page.one_day_detailed'),
+      )
     }
 
     // Important: calendar generator should not change tournament.format here.
@@ -1179,19 +1524,24 @@ const generateCalendar = async () => {
       headers: { Authorization: `Bearer ${token.value}` },
       body: {
         startsAt: normalizeDateInput(calendarForm.startDate) ?? null,
-        endsAt: normalizeDateInput(calendarForm.endDate) ?? null,
+        endsAt: calendarForm.oneDayTournament
+          ? null
+          : normalizeDateInput(calendarForm.endDate) ?? null,
         ...(templateEnabled
           ? {}
           : {
-              intervalDays: calendarForm.intervalDays || undefined,
-              allowedDays: Array.isArray(calendarForm.allowedDays) ? calendarForm.allowedDays : [],
-              roundsPerDay: calendarForm.roundsPerDay || undefined, // ignored by backend update; kept for future
+              intervalDays: effectiveIntervalDays.value,
+              allowedDays: Array.isArray(effectiveAllowedDays.value)
+                ? effectiveAllowedDays.value
+                : [],
+              roundRobinCycles: calendarForm.roundRobinCycles || undefined,
             }),
+        roundsPerDay: calendarForm.roundsPerDay || undefined,
         matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
         matchBreakMinutes: calendarForm.matchBreakMinutes ?? 0,
         simultaneousMatches: calendarForm.simultaneousMatches || undefined,
         dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
-        dayStartTimeOverrides: calendarForm.dayStartTimeOverrides ?? {},
+        dayStartTimeOverrides: cleanedDayStartTimeOverrides,
       },
     })
 
@@ -1209,8 +1559,8 @@ const generateCalendar = async () => {
       if (res?.playoff?.skipped) {
         toast.add({
           severity: 'info',
-          summary: 'Группы созданы',
-          detail: 'Плей-офф будет доступен после ввода результатов групп.',
+          summary: t('admin.tournament_page.groups_created_summary'),
+          detail: t('admin.tournament_page.groups_created_playoff_detail'),
           life: 4500,
         })
       }
@@ -1221,15 +1571,19 @@ const generateCalendar = async () => {
         body: {
           // можно не передавать параметры — backend возьмёт startsAt/intervalDays/allowedDays из турнира
           startDate: normalizeDateInput(calendarForm.startDate),
-          intervalDays: calendarForm.intervalDays || undefined,
+          intervalDays: effectiveIntervalDays.value,
           roundsPerDay: calendarForm.roundsPerDay || undefined,
-          allowedDays: calendarForm.allowedDays?.length ? calendarForm.allowedDays : undefined,
+          roundRobinCycles: calendarForm.roundRobinCycles || undefined,
+          schedulingMode: calendarForm.schedulingMode,
+          allowedDays: effectiveAllowedDays.value?.length
+            ? effectiveAllowedDays.value
+            : undefined,
           replaceExisting: calendarForm.replaceExisting,
           matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
           matchBreakMinutes: calendarForm.matchBreakMinutes ?? undefined,
           simultaneousMatches: calendarForm.simultaneousMatches || undefined,
           dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
-          dayStartTimeOverrides: calendarForm.dayStartTimeOverrides ?? undefined,
+          dayStartTimeOverrides: cleanedDayStartTimeOverrides,
         },
       })
     }
@@ -1237,14 +1591,16 @@ const generateCalendar = async () => {
     await fetchTournament()
     toast.add({
       severity: 'success',
-      summary: 'Календарь создан',
-      detail: templateEnabled ? 'Сгенерировано по шаблону.' : 'Расписание сгенерировано.',
+      summary: t('admin.tournament_page.calendar_created_summary'),
+      detail: templateEnabled
+        ? t('admin.tournament_page.calendar_created_template_detail')
+        : t('admin.tournament_page.calendar_created_default_detail'),
       life: 3000,
     })
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось сгенерировать календарь',
+      summary: t('admin.tournament_page.calendar_generate_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -1265,14 +1621,14 @@ const clearCalendar = async () => {
     await fetchTable()
     toast.add({
       severity: 'success',
-      summary: 'Календарь очищен',
-      detail: 'Все матчи турнира удалены.',
+      summary: t('admin.tournament_page.calendar_cleared_summary'),
+      detail: t('admin.tournament_page.calendar_cleared_detail'),
       life: 3000,
     })
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось очистить календарь',
+      summary: t('admin.tournament_page.calendar_clear_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -1300,14 +1656,14 @@ const generatePlayoff = async () => {
     await fetchTournament()
     toast.add({
       severity: 'success',
-      summary: 'Плей-офф создан',
-      detail: 'Полуфиналы/финал/за 3 место добавлены.',
+      summary: t('admin.tournament_page.playoff_created_summary'),
+      detail: t('admin.tournament_page.playoff_created_detail'),
       life: 3000,
     })
   } catch (e: any) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось создать плей-офф',
+      summary: t('admin.tournament_page.playoff_create_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -1337,16 +1693,15 @@ const deletingMatchId = ref<string | null>(null)
 
 const deleteManualMatchConfirmOpen = ref(false)
 const manualMatchToDelete = ref<MatchRow | null>(null)
-const deleteManualMatchMessage =
-  'Удалить этот матч из турнира? Таблица и календарь обновятся.'
+const deleteManualMatchMessage = t('admin.tournament_page.delete_match_confirm_message')
 
 function requestDeleteManualMatch(m: MatchRow) {
   if (!token.value) return
   if (isMatchEditLocked(m.status)) {
     toast.add({
       severity: 'info',
-      summary: 'Матч завершён',
-      detail: 'Нельзя удалить завершённый матч.',
+      summary: t('admin.tournament_page.match_finished_summary'),
+      detail: t('admin.tournament_page.match_delete_finished_detail'),
       life: 4000,
     })
     return
@@ -1368,13 +1723,13 @@ async function confirmDeleteManualMatch() {
     await fetchTable()
     toast.add({
       severity: 'success',
-      summary: 'Матч удалён',
+      summary: t('admin.tournament_page.match_deleted_summary'),
       life: 2500,
     })
   } catch (e: unknown) {
     toast.add({
       severity: 'error',
-      summary: 'Не удалось удалить матч',
+      summary: t('admin.tournament_page.match_delete_error_summary'),
       detail: getApiErrorMessage(e, 'Ошибка запроса'),
       life: 6000,
     })
@@ -1394,6 +1749,7 @@ onMounted(async () => {
     }
   }
   await fetchTournament()
+  teamCompositionSubmitAttempted.value = false
   await fetchAllTeams()
   await fetchTable()
 })
@@ -1483,22 +1839,40 @@ onMounted(async () => {
     <div class="flex items-start justify-between gap-4">
       <div>
         <Button
-          label="Назад"
+          :label="t('admin.tournament_page.back')"
           icon="pi pi-arrow-left"
           text
           class="mb-2"
           @click="router.push('/admin/tournaments')"
         />
         <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
-          {{ tournament?.name ?? 'Турнир' }}
+          {{ tournament?.name ?? t('admin.tournament_page.tournament_fallback_name') }}
         </h1>
         <p class="mt-1 text-sm text-muted-color">/{{ tournament?.slug }}</p>
+        <p v-if="tournament?.season" class="mt-2 text-sm text-surface-600 dark:text-surface-300">
+          {{ t('admin.tournament_page.season_label') }}:
+          <span class="font-medium text-surface-800 dark:text-surface-100">{{
+            tournament.season.name
+          }}</span>
+        </p>
+        <p v-if="tournament?.competition" class="mt-1 text-sm text-surface-600 dark:text-surface-300">
+          {{ t('admin.tournament_page.competition_type_label') }}:
+          <span class="font-medium text-surface-800 dark:text-surface-100">{{
+            tournament.competition.name
+          }}</span>
+        </p>
+        <p v-if="tournament?.ageGroup" class="mt-1 text-sm text-surface-600 dark:text-surface-300">
+          {{ t('admin.tournament_page.age_group_label') }}:
+          <span class="font-medium text-surface-800 dark:text-surface-100">{{
+            tournament.ageGroup.shortLabel || tournament.ageGroup.name
+          }}</span>
+        </p>
       </div>
 
       <div class="flex gap-2">
         <Button
           v-if="!isPlayoffOnlyFormat"
-          label="Обновить таблицу"
+          :label="t('admin.tournament_page.refresh_table')"
           icon="pi pi-refresh"
           :loading="tableLoading"
           severity="secondary"
@@ -1508,18 +1882,18 @@ onMounted(async () => {
     </div>
 
     <TabView :activeIndex="activeTab" @update:activeIndex="(v) => (activeTab = v)">
-      <TabPanel header="Календарь">
+      <TabPanel :header="t('admin.tournament_page.tab_calendar')">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
           <div
             v-if="isManualFormat"
             class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 px-3 py-2"
           >
             <p class="text-sm text-muted-color">
-              Ручное расписание: автогенерация отключена. Добавляйте матчи кнопкой справа (нужно минимум 2 команды в составе).
+              {{ t('admin.tournament_page.manual_schedule_hint') }}
             </p>
             <Button
               v-if="canManageManualMatches"
-              label="Добавить матч"
+              :label="t('admin.tournament_page.add_match')"
               icon="pi pi-plus"
               size="small"
               class="shrink-0"
@@ -1528,14 +1902,14 @@ onMounted(async () => {
           </div>
           <div class="flex items-center justify-between gap-3">
             <div>
-              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">Турнирные туры</h2>
+              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_rounds_title') }}</h2>
               <p class="mt-1 text-xs text-muted-color">
-                Нажми на матч, чтобы ввести протокол (счёт и события).
+                {{ t('admin.tournament_page.rounds_hint_open_protocol') }}
               </p>
             </div>
             <Button
               v-if="!isManualFormat"
-              label="Сгенерировать"
+              :label="t('admin.tournament_page.generate')"
               icon="pi pi-calendar-plus"
               severity="secondary"
               :disabled="!tournament"
@@ -1547,13 +1921,13 @@ onMounted(async () => {
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div class="flex items-center gap-2">
                 <Button
-                  label="Как сейчас"
+                  :label="t('admin.tournament_page.view_mode_current')"
                   severity="secondary"
                   :text="calendarViewMode !== 'grouped'"
                   @click="calendarViewMode = 'grouped'"
                 />
                 <Button
-                  label="По турам"
+                  :label="t('admin.tournament_page.view_mode_by_tours')"
                   severity="secondary"
                   :text="calendarViewMode !== 'tour'"
                   @click="calendarViewMode = 'tour'"
@@ -1561,13 +1935,13 @@ onMounted(async () => {
               </div>
               <div class="flex items-center gap-2">
                 <Button
-                  label="Сбросить фильтры"
+                  :label="t('admin.tournament_page.reset_filters')"
                   text
                   :disabled="!calendarFiltersActive"
                   @click="resetCalendarFilters"
                 />
                 <Button
-                  label="Применить"
+                  :label="t('admin.tournament_page.apply_filters')"
                   icon="pi pi-filter"
                   severity="secondary"
                   :disabled="!calendarFiltersActive || !tournament"
@@ -1578,7 +1952,7 @@ onMounted(async () => {
 
             <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
               <div class="md:col-span-6">
-                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">Диапазон дат</label>
+                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.date_range') }}</label>
                 <DatePicker
                   v-model="calendarFilterDateRange"
                   class="w-full"
@@ -1588,32 +1962,32 @@ onMounted(async () => {
                 />
               </div>
               <div class="md:col-span-3">
-                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">Статус</label>
+                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.status') }}</label>
                 <MultiSelect
                   v-model="calendarFilterStatuses"
-                  :options="statusOptions"
+                  :options="localizedStatusOptions"
                   option-label="label"
                   option-value="value"
                   :maxSelectedLabels="0"
-                  selectedItemsLabel="Выбрано: {0}"
+                  :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
                   class="w-full"
-                  placeholder="Любые"
+                  :placeholder="t('admin.tournament_page.any')"
                   :showToggleAll="false"
                   filter
                 />
               </div>
               <div class="md:col-span-3">
-                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">Команда</label>
+                <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.team') }}</label>
                 <MultiSelect
                   v-model="calendarFilterTeamIds"
                   :options="allTeams"
                   option-label="name"
                   option-value="id"
                   :maxSelectedLabels="0"
-                  selectedItemsLabel="Выбрано: {0}"
+                  :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
                   class="w-full"
                   :loading="teamsLoading"
-                  placeholder="Все команды"
+                  :placeholder="t('admin.tournament_page.all_teams')"
                   :showToggleAll="false"
                   filter
                 />
@@ -1648,7 +2022,7 @@ onMounted(async () => {
             <template v-else>
             <div v-if="calendarViewMode === 'grouped'">
               <div v-if="!visibleCalendarRounds.length" class="text-sm text-muted-color">
-                Пока нет матчей (с учётом фильтров).
+                {{ t('admin.tournament_page.no_matches_with_filters') }}
               </div>
 
               <div v-else class="space-y-4">
@@ -1664,15 +2038,15 @@ onMounted(async () => {
                         v-if="canReorderCalendarDay"
                         class="ml-2 text-xs font-normal text-muted-color"
                       >
-                        Перетащи строку, чтобы поменять порядок
+                        {{ t('admin.tournament_page.drag_to_reorder') }}
                       </span>
                     </div>
                     <div class="text-xs text-muted-color flex items-center gap-2">
                       <span v-if="reordering === r.dateKey" class="inline-flex items-center gap-1">
                         <span class="pi pi-spin pi-spinner" />
-                        Сохраняю…
+                        {{ t('admin.tournament_page.saving') }}
                       </span>
-                      <span v-else>{{ r.matches.length }} {{ matchCountLabel(r.matches.length) }}</span>
+                      <span v-else>{{ r.matches.length }} {{ localizedMatchCountLabel(r.matches.length) }}</span>
                     </div>
                   </div>
                   <draggable
@@ -1693,7 +2067,7 @@ onMounted(async () => {
                         <button
                           type="button"
                           class="drag-handle flex items-center justify-center w-10 text-muted-color hover:text-surface-900 dark:hover:text-surface-100 cursor-grab active:cursor-grabbing"
-                          :title="canReorderCalendarDay ? 'Перетащить' : 'Недоступно для формата'"
+                          :title="canReorderCalendarDay ? t('admin.tournament_page.drag') : t('admin.tournament_page.unavailable_for_format')"
                         >
                           <div class="flex items-center gap-2">
                             <span class="pi pi-bars text-sm" />
@@ -1710,13 +2084,27 @@ onMounted(async () => {
                         >
                           <div class="flex items-center justify-between gap-3">
                             <div class="text-sm text-surface-900 dark:text-surface-100">
-                              <span class="font-medium">
+                              <span
+                                class="font-medium rounded px-1 py-0.5 transition-colors"
+                                :class="
+                                  isCalendarTeamHighlighted(m.homeTeam.id)
+                                    ? 'bg-primary/20 text-primary'
+                                    : ''
+                                "
+                              >
                                 {{ playoffSlotLabels(m)?.home ?? m.homeTeam.name }}
                               </span>
                               <span class="text-muted-color mx-1">
                                 {{ playoffSlotLabels(m) ? '-' : 'vs' }}
                               </span>
-                              <span class="font-medium">
+                              <span
+                                class="font-medium rounded px-1 py-0.5 transition-colors"
+                                :class="
+                                  isCalendarTeamHighlighted(m.awayTeam.id)
+                                    ? 'bg-primary/20 text-primary'
+                                    : ''
+                                "
+                              >
                                 {{ playoffSlotLabels(m)?.away ?? m.awayTeam.name }}
                               </span>
                             </div>
@@ -1729,7 +2117,7 @@ onMounted(async () => {
                           </div>
                           <div class="mt-1 text-xs text-muted-color">
                             {{ formatDateTimeNoSeconds(m.startTime) }} ·
-                            <span :class="statusPillClass(m.status)">{{ statusLabel(m.status) }}</span>
+                            <span :class="statusPillClass(m.status)">{{ localizedStatusLabel(m.status) }}</span>
                           </div>
                         </button>
                         <Button
@@ -1742,7 +2130,7 @@ onMounted(async () => {
                           class="shrink-0 self-center"
                           :disabled="isMatchEditLocked(m.status)"
                           :loading="deletingMatchId === m.id"
-                          aria-label="Удалить матч"
+                          :aria-label="t('admin.tournament_page.delete_match_aria')"
                           @click.stop="requestDeleteManualMatch(m)"
                         />
                       </div>
@@ -1754,7 +2142,7 @@ onMounted(async () => {
 
             <div v-else>
               <div v-if="!visibleTourSections.length" class="text-sm text-muted-color">
-                Пока нет матчей (с учётом фильтров).
+                {{ t('admin.tournament_page.no_matches_with_filters') }}
               </div>
 
               <div v-else class="space-y-4">
@@ -1775,7 +2163,7 @@ onMounted(async () => {
                         size="small"
                         @click="toggleTour(t.key)"
                       />
-                      <span>{{ t.matches.length }} {{ matchCountLabel(t.matches.length) }}</span>
+                      <span>{{ t.matches.length }} {{ localizedMatchCountLabel(t.matches.length) }}</span>
                     </div>
                   </div>
 
@@ -1792,13 +2180,27 @@ onMounted(async () => {
                       >
                         <div class="flex items-center justify-between gap-3">
                           <div class="text-sm text-surface-900 dark:text-surface-100">
-                            <span class="font-medium">
+                            <span
+                              class="font-medium rounded px-1 py-0.5 transition-colors"
+                              :class="
+                                isCalendarTeamHighlighted(m.homeTeam.id)
+                                  ? 'bg-primary/20 text-primary'
+                                  : ''
+                              "
+                            >
                               {{ playoffSlotLabels(m)?.home ?? m.homeTeam.name }}
                             </span>
                             <span class="text-muted-color mx-1">
                               {{ playoffSlotLabels(m) ? '-' : 'vs' }}
                             </span>
-                            <span class="font-medium">
+                            <span
+                              class="font-medium rounded px-1 py-0.5 transition-colors"
+                              :class="
+                                isCalendarTeamHighlighted(m.awayTeam.id)
+                                  ? 'bg-primary/20 text-primary'
+                                  : ''
+                              "
+                            >
                               {{ playoffSlotLabels(m)?.away ?? m.awayTeam.name }}
                             </span>
                           </div>
@@ -1811,7 +2213,7 @@ onMounted(async () => {
                         </div>
                         <div class="mt-1 text-xs text-muted-color">
                           {{ formatDateTimeNoSeconds(m.startTime) }} ·
-                          <span :class="statusPillClass(m.status)">{{ statusLabel(m.status) }}</span>
+                          <span :class="statusPillClass(m.status)">{{ localizedStatusLabel(m.status) }}</span>
                         </div>
                       </button>
                       <Button
@@ -1824,7 +2226,7 @@ onMounted(async () => {
                         class="shrink-0 self-center"
                         :disabled="isMatchEditLocked(m.status)"
                         :loading="deletingMatchId === m.id"
-                        aria-label="Удалить матч"
+                        :aria-label="t('admin.tournament_page.delete_match_aria')"
                         @click.stop="requestDeleteManualMatch(m)"
                       />
                     </div>
@@ -1837,21 +2239,20 @@ onMounted(async () => {
         </div>
       </TabPanel>
 
-      <TabPanel header="Матчи">
+      <TabPanel :header="t('admin.tournament_page.tab_matches')">
         <div
           v-if="canGenerateManualPlayoff"
           class="mb-4 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50 p-4"
         >
           <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div class="text-sm">
-              <span class="font-medium text-surface-900 dark:text-surface-0">Плей-офф по итогам групп</span>
+              <span class="font-medium text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.playoff_from_groups_title') }}</span>
               <p class="mt-1 text-xs text-muted-color">
-                После того как все групповые матчи сыграны и внесены в протокол, можно сгенерировать сетку на вылет по
-                очкам и доп. критериям (как в автоформатах). Число выходов из группы задаётся в настройках турнира.
+                {{ t('admin.tournament_page.playoff_from_groups_hint') }}
               </p>
             </div>
             <Button
-              label="Сгенерировать плей-офф"
+              :label="t('admin.tournament_page.generate_playoff')"
               icon="pi pi-sitemap"
               severity="secondary"
               :loading="calendarSaving"
@@ -1870,15 +2271,15 @@ onMounted(async () => {
         />
       </TabPanel>
 
-      <TabPanel v-if="!isPlayoffOnlyFormat" header="Таблица">
+      <TabPanel v-if="!isPlayoffOnlyFormat" :header="t('admin.tournament_page.tab_table')">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
           <div class="flex items-center justify-between">
             <div>
-              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">Турнирная таблица</h2>
-              <p class="mt-1 text-xs text-muted-color">Автообновляется после сохранения протокола.</p>
+              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.table_title') }}</h2>
+              <p class="mt-1 text-xs text-muted-color">{{ t('admin.tournament_page.table_autorefresh_hint') }}</p>
             </div>
             <Button
-              label="Обновить"
+              :label="t('admin.tournament_page.refresh')"
               icon="pi pi-refresh"
               :loading="tableLoading"
               severity="secondary"
@@ -1900,18 +2301,18 @@ onMounted(async () => {
                 stripedRows
               >
                 <Column field="position" header="#" style="width: 4rem" />
-                <Column field="teamName" header="Команда" />
-                <Column field="played" header="И" style="width: 4rem" />
-                <Column field="wins" header="В" style="width: 4rem" />
-                <Column field="draws" header="Н" style="width: 4rem" />
-                <Column field="losses" header="П" style="width: 4rem" />
-                <Column header="Мячи" style="width: 6rem">
+                <Column field="teamName" :header="t('admin.tournament_page.team')" />
+                <Column field="played" :header="t('admin.tournament_page.table_col_played')" style="width: 4rem" />
+                <Column field="wins" :header="t('admin.tournament_page.table_col_wins')" style="width: 4rem" />
+                <Column field="draws" :header="t('admin.tournament_page.table_col_draws')" style="width: 4rem" />
+                <Column field="losses" :header="t('admin.tournament_page.table_col_losses')" style="width: 4rem" />
+                <Column :header="t('admin.tournament_page.table_col_goals')" style="width: 6rem">
                   <template #body="{ data }">
                     {{ data.goalsFor }}:{{ data.goalsAgainst }}
                   </template>
                 </Column>
                 <Column field="goalDiff" header="Δ" style="width: 4rem" />
-                <Column field="points" header="Очки" style="width: 5rem" />
+                <Column field="points" :header="t('admin.tournament_page.table_col_points')" style="width: 5rem" />
               </DataTable>
             </div>
           </div>
@@ -1925,27 +2326,27 @@ onMounted(async () => {
             stripedRows
           >
             <Column field="position" header="#" style="width: 4rem" />
-            <Column field="teamName" header="Команда" />
-            <Column field="played" header="И" style="width: 4rem" />
-            <Column field="wins" header="В" style="width: 4rem" />
-            <Column field="draws" header="Н" style="width: 4rem" />
-            <Column field="losses" header="П" style="width: 4rem" />
-            <Column header="Мячи" style="width: 6rem">
+            <Column field="teamName" :header="t('admin.tournament_page.team')" />
+            <Column field="played" :header="t('admin.tournament_page.table_col_played')" style="width: 4rem" />
+            <Column field="wins" :header="t('admin.tournament_page.table_col_wins')" style="width: 4rem" />
+            <Column field="draws" :header="t('admin.tournament_page.table_col_draws')" style="width: 4rem" />
+            <Column field="losses" :header="t('admin.tournament_page.table_col_losses')" style="width: 4rem" />
+            <Column :header="t('admin.tournament_page.table_col_goals')" style="width: 6rem">
               <template #body="{ data }">
                 {{ data.goalsFor }}:{{ data.goalsAgainst }}
               </template>
             </Column>
             <Column field="goalDiff" header="Δ" style="width: 4rem" />
-            <Column field="points" header="Очки" style="width: 5rem" />
+            <Column field="points" :header="t('admin.tournament_page.table_col_points')" style="width: 5rem" />
           </DataTable>
         </div>
       </TabPanel>
 
-      <TabPanel header="Составы">
+      <TabPanel :header="t('admin.tournament_page.tab_compositions')">
         <div class="grid gap-4 lg:grid-cols-3">
           <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 lg:col-span-2">
             <div class="flex items-center justify-between">
-              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">Команды турнира</h2>
+              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_teams_title') }}</h2>
               <div class="text-xs text-muted-color">
                 {{ tournament?.tournamentTeams?.length ?? 0 }} / {{ tournament?.minTeams ?? 0 }}
               </div>
@@ -1959,42 +2360,55 @@ onMounted(async () => {
                 option-label="name"
                 option-value="id"
                 :maxSelectedLabels="0"
-                selectedItemsLabel="Выбрано: {0}"
+                :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
                 class="w-full"
-                placeholder="Выбрать команды"
+                :placeholder="t('admin.tournament_page.select_teams')"
                 filter
-                :disabled="!canEditTeams"
+                :disabled="!canEditTeamComposition"
               />
               <Button
-                label="Сохранить"
+                :label="t('admin.tournament_page.save')"
                 icon="pi pi-check"
                 :loading="savingTeams"
                 @click="saveTeams"
-                :disabled="!canEditTeams"
+                :disabled="!canEditTeamComposition || (teamCompositionSubmitAttempted && !canSaveTeamComposition)"
               />
             </div>
+            <p
+              v-if="teamCompositionSubmitAttempted && teamCompositionErrors.minTeams"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ teamCompositionErrors.minTeams }}
+            </p>
+
+            <p
+              v-if="canEditTournament && hasScheduleMatches && !hasAnyEnteredResults"
+              class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+            >
+              {{ t('admin.tournament_page.schedule_generated_lock_hint') }}
+            </p>
 
             <div v-if="showGroupBuckets" class="mt-4">
-              <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">Группы</div>
+              <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.groups_title') }}</div>
               <div class="mt-1 text-xs text-muted-color space-y-1">
                 <p v-if="isManualFormat">
-                  Число групп задаётся в «Редактировать турнир» (поле «Кол-во групп», 2–8). Распределите команды по
-                  колонкам; при равном делении показывается «ожидается по N команд» в группе. Сколько команд выходит
-                  из группы дальше — поле «Команд выходит из группы» в карточке турнира.
+                  {{ t('admin.tournament_page.groups_manual_hint') }}
                 </p>
                 <p v-else>
-                  Перетаскивай команды между группами. После генерации календаря распределение будет доступно, пока не
-                  введены результаты (счёт в матчах). Правки доступны только для черновика.
+                  {{ t('admin.tournament_page.groups_drag_hint') }}
                 </p>
               </div>
               <div
                 v-if="expectedGroupSize"
                 class="mt-2 text-xs font-medium text-surface-700 dark:text-surface-200"
               >
-                По {{ expectedGroupSize }} {{ ruTeamsNom(expectedGroupSize) }} в каждой группе при текущем составе
-                ({{ tournament?.tournamentTeams?.length ?? 0 }}
-                {{ ruTeamsNom(tournament?.tournamentTeams?.length ?? 0) }}, {{ tournament?.groupCount ?? 1 }}
-                {{ ruGroupsNom(tournament?.groupCount ?? 1) }}).
+                {{
+                  t('admin.tournament_page.groups_expected_size', {
+                    size: expectedGroupSize,
+                    teams: tournament?.tournamentTeams?.length ?? 0,
+                    groups: tournament?.groupCount ?? 1,
+                  })
+                }}
               </div>
 
               <div
@@ -2023,7 +2437,7 @@ onMounted(async () => {
                     :move="checkGroupMove"
                     class="mt-2 space-y-2"
                     @start="snapshotPreDrag"
-                    @change="(e: any) => onGroupChange(e, col.id)"
+                    @change="(e) => onGroupChange(e, col.id)"
                   >
                     <template #item="{ element: tt }">
                       <div class="flex items-center justify-between rounded-md border border-surface-200 dark:border-surface-700 px-3 py-2">
@@ -2031,7 +2445,7 @@ onMounted(async () => {
                           <span
                             class="drag-handle pi pi-bars text-muted-color shrink-0"
                             :class="canEditGroups ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-50'"
-                            :title="canEditGroups ? 'Перетащить' : 'Недоступно после генерации'"
+                            :title="canEditGroups ? t('admin.tournament_page.drag') : t('admin.tournament_page.unavailable_after_generation')"
                           />
                           <div class="text-sm truncate">{{ tt.team.name }}</div>
                         </div>
@@ -2041,7 +2455,7 @@ onMounted(async () => {
                           optionLabel="label"
                           optionValue="value"
                           class="w-20 shrink-0"
-                          :disabled="!canEditTeams || ratingSaving || groupingSaving"
+                          :disabled="!canEditTeamRatings || ratingSaving || groupingSaving"
                           @update:modelValue="(v) => { tt.rating = v; updateTeamRating(tt.teamId, v) }"
                         />
                       </div>
@@ -2067,7 +2481,7 @@ onMounted(async () => {
                     optionLabel="label"
                     optionValue="value"
                     class="w-20"
-                    :disabled="!canEditTeams || ratingSaving || groupingSaving"
+                    :disabled="!canEditTeamRatings || ratingSaving || groupingSaving"
                     @update:modelValue="(v) => { tt.rating = v; updateTeamRating(tt.teamId, v) }"
                   />
                   <div class="text-xs text-muted-color">
@@ -2080,7 +2494,7 @@ onMounted(async () => {
           </div>
 
           <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
-            <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">Админы турнира</h2>
+            <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_admins_title') }}</h2>
             <ul class="mt-3 space-y-2">
               <li
                 v-for="m in tournament?.members ?? []"
@@ -2101,7 +2515,7 @@ onMounted(async () => {
 
     <AdminConfirmDialog
       v-model="deleteManualMatchConfirmOpen"
-      title="Удалить матч?"
+      :title="t('admin.tournament_page.delete_match_confirm_title')"
       :message="deleteManualMatchMessage"
       @confirm="confirmDeleteManualMatch"
     />
@@ -2110,20 +2524,20 @@ onMounted(async () => {
       :visible="calendarDialog"
       @update:visible="(v) => (calendarDialog = v)"
       modal
-      header="Генерация календаря"
-      :style="{ width: '34rem' }"
+      :header="t('admin.tournament_page.calendar_generation_header')"
+      :style="{ width: '48rem' }"
     >
       <div class="flex flex-col gap-3">
         <div>
           <div class="flex items-center justify-between gap-3">
             <div>
-              <div class="text-sm font-medium text-surface-900 dark:text-surface-0">Формат турнира</div>
+              <div class="text-sm font-medium text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_format') }}</div>
               <div class="mt-1 text-sm text-muted-color">
-                {{ tournamentFormatLabel(tournament?.format ?? calendarForm.format) }}
+                {{ localizedTournamentFormatLabel(tournament?.format ?? calendarForm.format) }}
               </div>
             </div>
             <div class="text-xs text-muted-color">
-              Меняется в «Редактировать турнир»
+              {{ t('admin.tournament_page.changed_in_edit_tournament') }}
             </div>
           </div>
             <div
@@ -2131,121 +2545,337 @@ onMounted(async () => {
               class="mt-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3"
             >
             <div class="flex items-center justify-between gap-3">
-                <div class="text-sm font-medium">Режим генерации</div>
+                <div class="text-sm font-medium">{{ t('admin.tournament_page.generation_mode') }}</div>
               <ToggleSwitch v-model="calendarForm.useTemplate" />
             </div>
             <div class="mt-1 text-xs text-muted-color">
-                Пресет `kids_mini_8`: 8 команд (2 группы по 4) + плей-офф.
+                {{ t('admin.tournament_page.kids_mini_preset_hint') }}
             </div>
             <div v-if="calendarForm.useTemplate" class="mt-3 text-sm">
-              Используется пресет <span class="font-mono text-surface-900 dark:text-surface-100">kids_mini_8</span>.
+              {{ t('admin.tournament_page.kids_mini_preset_used') }}
             </div>
           </div>
         </div>
-        <div>
-          <label class="text-sm block mb-1">Дата старта</label>
-          <DatePicker v-model="calendarForm.startDate" class="w-full" dateFormat="yy-mm-dd" showIcon />
-        </div>
-        <div>
-          <label class="text-sm block mb-1">Дата окончания (необязательно)</label>
-          <DatePicker v-model="calendarForm.endDate" class="w-full" dateFormat="yy-mm-dd" showIcon />
-        </div>
-        <div v-if="!calendarForm.useTemplate">
-          <label class="text-sm block mb-1">Интервал (дней)</label>
-          <InputNumber v-model="calendarForm.intervalDays" class="w-full" :min="1" />
-        </div>
-        <div v-if="!calendarForm.useTemplate">
-          <label class="text-sm block mb-1">Туров в день</label>
-          <InputNumber v-model="calendarForm.roundsPerDay" class="w-full" :min="1" />
-          <div class="mt-1 text-xs text-muted-color">
-            Для однодневного турнира поставь 5–7 (зависит от формата и количества туров).
+        <div
+          class="rounded-lg border p-3"
+          :class="
+            (calendarPreview.scheduleOverflow ||
+              (calendarForm.oneDayTournament && calendarPreview.roundDays > 1))
+              ? 'border-red-300 bg-red-50/80 dark:border-red-800 dark:bg-red-950/30'
+              : 'border-surface-200 dark:border-surface-700'
+          "
+        >
+          <div class="text-sm font-medium has-tooltip flex items-center gap-1.5">
+            <span>{{ t('admin.tournament_page.preview_parameters') }}</span>
+            <button
+              type="button"
+              class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+              :aria-label="t('admin.tournament_page.hint_preview_aria')"
+              v-tooltip.top="previewHintText"
+              @click.prevent
+            >
+              <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+            </button>
+          </div>
+          <div class="mt-2 grid grid-cols-2 gap-2 text-sm">
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_teams') }}</div>
+            <div
+              class="text-right font-medium transition-colors"
+              :class="calendarPreviewChanged.teamCount ? 'text-primary' : ''"
+            >
+              {{ calendarPreview.teamCount }}
+            </div>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_matches_approx') }}</div>
+            <div
+              class="text-right font-medium transition-colors"
+              :class="calendarPreviewChanged.estimatedMatches ? 'text-primary' : ''"
+            >
+              {{ calendarPreview.estimatedMatches }}
+            </div>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_rounds_approx') }}</div>
+            <div
+              class="text-right font-medium transition-colors"
+              :class="calendarPreviewChanged.estimatedRounds ? 'text-primary' : ''"
+            >
+              {{ calendarPreview.estimatedRounds }}
+            </div>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_game_days') }}</div>
+            <div
+              class="text-right font-medium transition-colors"
+              :class="calendarPreviewChanged.roundDays ? 'text-primary' : ''"
+            >
+              {{ calendarPreview.roundDays }}
+            </div>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_end_estimate') }}</div>
+            <div
+              class="text-right font-medium transition-colors"
+              :class="calendarPreviewChanged.estimatedEndDate ? 'text-primary' : ''"
+            >
+              {{
+                calendarPreview.estimatedEndDate
+                  ? calendarPreview.estimatedEndDate.toISOString().slice(0, 10)
+                  : '—'
+              }}
+            </div>
+            <template v-if="!calendarForm.useTemplate">
+              <div class="text-muted-color">{{ t('admin.tournament_page.preview_min_minutes_to_midnight') }}</div>
+              <div class="text-right font-medium">{{ calendarPreview.minAvailableMinutesPerDay }}</div>
+              <div class="text-muted-color">{{ t('admin.tournament_page.preview_minutes_needed_busiest_day') }}</div>
+              <div
+                class="text-right font-medium"
+                :class="calendarPreview.scheduleOverflow ? 'text-red-600 dark:text-red-400' : ''"
+              >
+                {{ calendarPreview.minutesNeededOnBusiestDay }}
+              </div>
+            </template>
+          </div>
+          <div v-if="!calendarForm.useTemplate" class="mt-2 text-xs">
+            <div
+              v-if="calendarPreview.scheduleOverflow"
+              class="text-red-700 dark:text-red-300"
+            >
+              {{ t('admin.tournament_page.schedule_overflow_short') }}
+            </div>
+            <div
+              v-else-if="calendarForm.oneDayTournament && calendarPreview.roundDays > 1"
+              class="text-red-700 dark:text-red-300"
+            >
+              {{ t('admin.tournament_page.one_day_short', { days: calendarPreview.roundDays }) }}
+            </div>
+            <div v-else class="text-muted-color">
+              {{ t('admin.tournament_page.preview_estimate_hint') }}
+            </div>
+            <p
+              v-if="calendarSubmitAttempted && calendarFormErrors.schedule"
+              class="mt-1 text-[11px] leading-3 text-red-500"
+            >
+              {{ calendarFormErrors.schedule }}
+            </p>
+          </div>
+          <div v-else class="mt-2 text-xs text-muted-color">
+            {{ t('admin.tournament_page.preview_estimate_hint') }}
           </div>
         </div>
-        <div v-if="!calendarForm.useTemplate">
-          <label class="text-sm block mb-1">Разрешённые дни</label>
-          <MultiSelect
-            v-model="calendarForm.allowedDays"
-            :options="[
-              { value: 1, label: 'Пн' },
-              { value: 2, label: 'Вт' },
-              { value: 3, label: 'Ср' },
-              { value: 4, label: 'Чт' },
-              { value: 5, label: 'Пт' },
-              { value: 6, label: 'Сб' },
-              { value: 0, label: 'Вс' },
-            ]"
-            option-label="label"
-            option-value="value"
-            :maxSelectedLabels="0"
-            selectedItemsLabel="Выбрано: {0}"
-            class="w-full"
-            placeholder="Любые дни"
-            :showToggleAll="false"
-          />
-        </div>
-        <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
-          <div class="md:col-span-4">
-            <label class="text-sm block mb-1 leading-tight">Длительность, мин</label>
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div class="md:col-span-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <label class="text-sm font-medium has-tooltip flex items-center gap-1.5">
+                <span>{{ t('admin.tournament_page.one_day_tournament') }}</span>
+                <button
+                  type="button"
+                  class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                  :aria-label="t('admin.tournament_page.hint_one_day_aria')"
+                  v-tooltip.top="oneDayHintText"
+                  @click.prevent
+                >
+                  <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+                </button>
+              </label>
+              <ToggleSwitch v-model="calendarForm.oneDayTournament" />
+            </div>
+          </div>
+          <div v-if="!calendarForm.useTemplate" class="md:col-span-2">
+            <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
+              <span>{{ t('admin.tournament_page.scheduling_mode') }}</span>
+              <button
+                type="button"
+                class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                :aria-label="t('admin.tournament_page.hint_scheduling_mode_aria')"
+                v-tooltip.top="schedulingModeHintText"
+                @click.prevent
+              >
+                <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+              </button>
+            </label>
+            <Select
+              v-model="calendarForm.schedulingMode"
+              :options="schedulingModeOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+            />
+          </div>
+          <div>
+            <label class="text-sm block mb-1">{{ t('admin.tournament_page.start_date') }}</label>
+            <DatePicker
+              v-model="calendarForm.startDate"
+              class="w-full"
+              dateFormat="yy-mm-dd"
+              showIcon
+              :invalid="calendarSubmitAttempted && !!calendarFormErrors.startDate"
+            />
+            <p
+              v-if="calendarSubmitAttempted && calendarFormErrors.startDate"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ calendarFormErrors.startDate }}
+            </p>
+          </div>
+          <div>
+            <label class="text-sm block mb-1">{{ t('admin.tournament_page.end_date_optional') }}</label>
+            <DatePicker
+              v-model="calendarForm.endDate"
+              class="w-full"
+              dateFormat="yy-mm-dd"
+              showIcon
+              :disabled="calendarForm.oneDayTournament"
+              :invalid="calendarSubmitAttempted && !!calendarFormErrors.endDate"
+            />
+            <p
+              v-if="calendarSubmitAttempted && calendarFormErrors.endDate"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ calendarFormErrors.endDate }}
+            </p>
+          </div>
+          <div v-if="!calendarForm.useTemplate">
+            <label class="text-sm block mb-1">{{ t('admin.tournament_page.interval_days') }}</label>
+            <InputNumber
+              v-model="calendarForm.intervalDays"
+              class="w-full"
+              :min="1"
+              :disabled="calendarForm.oneDayTournament"
+              @input="(e) => setCalendarNumberLive('intervalDays', e.value)"
+            />
+          </div>
+          <div v-if="!calendarForm.useTemplate">
+            <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
+              <span>{{ t('admin.tournament_page.rounds_per_day') }}</span>
+              <button
+                type="button"
+                class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                :aria-label="t('admin.tournament_page.hint_rounds_per_day_aria')"
+                v-tooltip.top="roundsPerDayHintText"
+                @click.prevent
+              >
+                <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+              </button>
+            </label>
+            <InputNumber
+              v-model="calendarForm.roundsPerDay"
+              class="w-full"
+              :min="1"
+              :disabled="calendarForm.oneDayTournament"
+              @input="(e) => setCalendarNumberLive('roundsPerDay', e.value)"
+            />
+          </div>
+          <div v-if="!calendarForm.useTemplate">
+            <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
+              <span>{{ t('admin.tournament_page.round_robin_cycles') }}</span>
+              <button
+                type="button"
+                class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+                :aria-label="t('admin.tournament_page.hint_cycles_aria')"
+                v-tooltip.top="roundRobinCyclesHintText"
+                @click.prevent
+              >
+                <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+              </button>
+            </label>
+            <InputNumber
+              v-model="calendarForm.roundRobinCycles"
+              class="w-full"
+              :min="1"
+              :max="4"
+              @input="(e) => setCalendarNumberLive('roundRobinCycles', e.value)"
+            />
+          </div>
+          <div v-if="!calendarForm.useTemplate">
+            <label class="text-sm block mb-1">{{ t('admin.tournament_page.allowed_days') }}</label>
+            <MultiSelect
+              v-model="calendarForm.allowedDays"
+              :options="allowedDayOptions"
+              option-label="label"
+              option-value="value"
+              :maxSelectedLabels="0"
+              :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
+              class="w-full"
+              :placeholder="t('admin.tournament_page.any_days')"
+              :showToggleAll="false"
+              :disabled="calendarForm.oneDayTournament"
+            />
+          </div>
+          <div>
+            <label class="text-sm block mb-1 leading-tight">{{ t('admin.tournament_page.duration_minutes') }}</label>
             <InputNumber
               v-model="calendarForm.matchDurationMinutes"
               class="w-full"
               inputClass="w-full"
               :min="1"
+              @input="(e) => setCalendarNumberLive('matchDurationMinutes', e.value)"
             />
           </div>
-          <div class="md:col-span-4">
-            <label class="text-sm block mb-1 leading-tight">Перерыв, мин</label>
+          <div>
+            <label class="text-sm block mb-1 leading-tight">{{ t('admin.tournament_page.break_minutes') }}</label>
             <InputNumber
               v-model="calendarForm.matchBreakMinutes"
               class="w-full"
               inputClass="w-full"
               :min="0"
+              @input="(e) => setCalendarNumberLive('matchBreakMinutes', e.value)"
             />
           </div>
-          <div class="md:col-span-4">
-            <label class="text-sm block mb-1 leading-tight">Параллельно</label>
+          <div>
+            <label class="text-sm block mb-1 leading-tight">{{ t('admin.tournament_page.simultaneous_matches') }}</label>
             <InputNumber
               v-model="calendarForm.simultaneousMatches"
               class="w-full"
               inputClass="w-full"
               :min="1"
+              @input="(e) => setCalendarNumberLive('simultaneousMatches', e.value)"
             />
           </div>
-        </div>
-        <div class="grid grid-cols-1 gap-2 md:grid-cols-12 md:items-end">
-          <div class="md:col-span-6">
-            <label class="text-sm block mb-1 leading-tight">Время начала дня</label>
-            <InputText v-model="calendarForm.dayStartTimeDefault" class="w-full" placeholder="12:00" />
+          <div>
+            <label class="text-sm block mb-1 leading-tight">{{ t('admin.tournament_page.day_start_time') }}</label>
+            <DatePicker
+              v-model="defaultDayStartTimeModel"
+              class="w-full"
+              timeOnly
+              hourFormat="24"
+              showIcon
+              :manualInput="false"
+              :invalid="calendarSubmitAttempted && !!calendarFormErrors.dayStartTimeDefault"
+            />
+            <p
+              v-if="calendarSubmitAttempted && calendarFormErrors.dayStartTimeDefault"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ calendarFormErrors.dayStartTimeDefault }}
+            </p>
           </div>
-          <div class="md:col-span-6">
-            <div class="text-xs text-muted-color">Формат: HH:mm (например, 10:30)</div>
-          </div>
         </div>
-        <div v-if="calendarForm.allowedDays?.length" class="rounded-lg border border-surface-200 dark:border-surface-700 p-3">
-          <div class="text-sm font-medium">Время начала по дням (override)</div>
+        <div
+          v-if="!calendarForm.oneDayTournament && calendarForm.allowedDays?.length"
+          class="rounded-lg border border-surface-200 dark:border-surface-700 p-3"
+        >
+          <div class="text-sm font-medium">{{ t('admin.tournament_page.day_start_time_overrides') }}</div>
           <div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
             <div
               v-for="d in calendarForm.allowedDays"
               :key="d"
               class="flex items-center justify-between gap-3"
             >
-              <div class="text-sm text-muted-color">{{ dayLabels[d] }}</div>
-              <InputText
-                v-model="calendarForm.dayStartTimeOverrides[d]"
-                class="w-32"
-                :placeholder="calendarForm.dayStartTimeDefault"
+              <div class="text-sm text-muted-color">{{ weekdayLabelByValue[d] }}</div>
+              <DatePicker
+                :modelValue="getDayOverrideTimeModel(d)"
+                @update:modelValue="(value) => setDayOverrideTimeModel(d, value)"
+                class="w-40"
+                timeOnly
+                hourFormat="24"
+                showIcon
+                :manualInput="false"
               />
             </div>
           </div>
           <div class="mt-2 text-xs text-muted-color">
-            Оставь пустым — будет использовано «Время начала дня (по умолчанию)».
+            {{ t('admin.tournament_page.day_start_time_overrides_hint') }}
           </div>
         </div>
         <div class="flex items-center justify-between gap-3">
           <div class="text-sm">
-            Заменить существующий календарь
+            {{ t('admin.tournament_page.replace_existing_calendar') }}
             <div class="text-xs text-muted-color">
-              Если выключено и матчи уже есть — сервер вернёт ошибку.
+              {{ t('admin.tournament_page.replace_existing_calendar_hint') }}
             </div>
           </div>
           <ToggleSwitch v-model="calendarForm.replaceExisting" />
@@ -2253,7 +2883,7 @@ onMounted(async () => {
       </div>
       <template #footer>
         <div v-if="isManualFormat" class="flex justify-end gap-2">
-          <Button label="Закрыть" @click="calendarDialog = false" />
+          <Button :label="t('admin.tournament_page.close')" @click="calendarDialog = false" />
         </div>
         <div
           v-else
@@ -2262,7 +2892,7 @@ onMounted(async () => {
           <div class="flex flex-wrap gap-2">
             <Button
               v-if="tournament?.matches?.length"
-              label="Очистить календарь"
+              :label="t('admin.tournament_page.clear_calendar')"
               icon="pi pi-trash"
               severity="danger"
               text
@@ -2271,7 +2901,7 @@ onMounted(async () => {
             />
             <Button
               v-if="isGroupsPlusPlayoffFamily(tournament?.format)"
-              label="Сгенерировать плей-офф"
+              :label="t('admin.tournament_page.generate_playoff')"
               icon="pi pi-sitemap"
               severity="secondary"
               text
@@ -2280,12 +2910,13 @@ onMounted(async () => {
             />
           </div>
           <div class="flex justify-end gap-2 sm:shrink-0">
-            <Button label="Отмена" text @click="calendarDialog = false" />
+            <Button :label="t('admin.tournament_page.cancel')" text @click="calendarDialog = false" />
             <Button
-              label="Сгенерировать"
+              :label="t('admin.tournament_page.generate')"
               icon="pi pi-check"
               class="min-w-40"
               :loading="calendarSaving"
+              :disabled="calendarSaving || (calendarSubmitAttempted && !canGenerateCalendar)"
               @click="generateCalendar"
             />
           </div>
@@ -2293,195 +2924,15 @@ onMounted(async () => {
       </template>
     </Dialog>
 
-    <Dialog
+    <AdminMatchProtocolDialog
       :visible="protocolOpen"
       @update:visible="(v) => (protocolOpen = v)"
-      modal
-      :header="protocolReadOnly ? 'Протокол матча (только просмотр)' : 'Протокол матча'"
-      :style="{ width: '36rem' }"
-    >
-      <div v-if="protocolMatch" class="space-y-4">
-        <p
-          v-if="protocolReadOnly"
-          class="text-sm text-muted-color rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-800/80 px-3 py-2"
-        >
-          Завершённый матч нельзя редактировать.
-        </p>
-        <div class="text-sm">
-          <span class="font-medium">
-            {{ playoffSlotLabels(protocolMatch)?.home ?? protocolMatch.homeTeam.name }}
-          </span>
-          <span class="text-muted-color mx-1">
-            {{ playoffSlotLabels(protocolMatch) ? '-' : 'vs' }}
-          </span>
-          <span class="font-medium">
-            {{ playoffSlotLabels(protocolMatch)?.away ?? protocolMatch.awayTeam.name }}
-          </span>
-          <span class="text-muted-color">
-            · {{ new Date(protocolMatch.startTime).toLocaleDateString() }}
-          </span>
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-sm block mb-1">Счёт (хозяева)</label>
-            <InputNumber
-              v-model="protocolForm.homeScore"
-              class="w-full"
-              :min="0"
-              :disabled="protocolReadOnly"
-            />
-          </div>
-          <div>
-            <label class="text-sm block mb-1">Счёт (гости)</label>
-            <InputNumber
-              v-model="protocolForm.awayScore"
-              class="w-full"
-              :min="0"
-              :disabled="protocolReadOnly"
-            />
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="text-sm block mb-1">Дата матча</label>
-            <DatePicker
-              v-model="protocolDate"
-              class="w-full"
-              dateFormat="dd.mm.yy"
-              showIcon
-              :disabled="protocolReadOnly"
-            />
-          </div>
-          <div>
-            <label class="text-sm block mb-1">Время матча</label>
-            <DatePicker
-              v-model="protocolTime"
-              class="w-full"
-              timeOnly
-              hourFormat="24"
-              showIcon
-              :disabled="protocolReadOnly"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label class="text-sm block mb-1">Статус</label>
-          <Select
-            v-model="protocolForm.status"
-            :options="statusOptions"
-            option-label="label"
-            option-value="value"
-            class="w-full"
-            :disabled="protocolReadOnly"
-          />
-        </div>
-
-        <div>
-          <div class="flex items-center justify-between">
-            <label class="text-sm font-medium">События</label>
-            <Button
-              label="Добавить"
-              icon="pi pi-plus"
-              text
-              size="small"
-              :disabled="protocolReadOnly"
-              @click="addEvent"
-            />
-          </div>
-
-          <div v-if="!protocolForm.events.length" class="mt-2 text-sm text-muted-color">
-            Пока нет событий.
-          </div>
-
-          <div v-else class="mt-2 space-y-2">
-            <div
-              v-for="(e, idx) in protocolForm.events"
-              :key="idx"
-              class="rounded-lg border border-surface-200 dark:border-surface-700 p-3"
-            >
-              <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
-                <div>
-                  <label class="text-xs block mb-1 text-muted-color">Тип</label>
-                <Select
-                  v-model="e.type"
-                  :options="eventTypeOptions"
-                  option-label="label"
-                  option-value="value"
-                  class="w-full"
-                  :disabled="protocolReadOnly"
-                />
-                </div>
-                <div>
-                  <label class="text-xs block mb-1 text-muted-color">Команда</label>
-                <Select
-                  v-model="e.teamSide"
-                  :options="teamSideOptions"
-                  option-label="label"
-                  option-value="value"
-                  class="w-full"
-                  :disabled="protocolReadOnly"
-                  @change="() => { e.playerId = '' }"
-                />
-                </div>
-                <div>
-                  <label class="text-xs block mb-1 text-muted-color">Минута</label>
-                  <InputNumber v-model="e.minute" class="w-full" :min="0" :disabled="protocolReadOnly" />
-                </div>
-                <div>
-                  <label class="text-xs block mb-1 text-muted-color">Игрок</label>
-                  <Select
-                    v-model="e.playerId"
-                    :options="e.teamSide === 'HOME' ? protocolHomePlayerOptions : e.teamSide === 'AWAY' ? protocolAwayPlayerOptions : []"
-                    option-label="label"
-                    option-value="value"
-                    class="w-full"
-                    placeholder="Выберите игрок"
-                    :loading="protocolPlayersLoading"
-                    :disabled="protocolReadOnly || protocolPlayersLoading || !e.teamSide"
-                  />
-                </div>
-              </div>
-              <div class="mt-2 flex justify-end">
-                <Button
-                  label="Удалить"
-                  icon="pi pi-trash"
-                  text
-                  severity="danger"
-                  size="small"
-                  :disabled="protocolReadOnly"
-                  @click="removeEvent(idx)"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <Button label="Закрыть" text @click="protocolOpen = false" />
-          <Button
-            v-if="!protocolReadOnly"
-            label="Сохранить"
-            icon="pi pi-check"
-            :loading="protocolSaving"
-            @click="saveProtocol"
-          />
-          <Button
-            v-if="!protocolReadOnly"
-            label="Завершить"
-            icon="pi pi-check-circle"
-            severity="success"
-            :loading="protocolSaving"
-            :disabled="protocolForm.status === 'CANCELED' || protocolForm.status === 'FINISHED'"
-            @click="finishProtocol"
-          />
-        </div>
-      </template>
-    </Dialog>
+      :tournament-id="tournamentId"
+      :tournament="tournament"
+      :match="protocolMatch"
+      @saved="onProtocolSaved"
+    />
   </section>
 </template>
+
 

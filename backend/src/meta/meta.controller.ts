@@ -1,10 +1,18 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { UserRole } from '@prisma/client';
 
 @ApiTags('meta')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller('meta')
 export class MetaController {
   @Get('roles')

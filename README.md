@@ -15,3 +15,12 @@
 - Hardening checklist: [`docs/server-hardening-checklist.md`](docs/server-hardening-checklist.md)
 - API workflow: [`.github/workflows/deploy-backend.yml`](.github/workflows/deploy-backend.yml)
 - Frontend workflow: [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml)
+
+## Catalogs
+
+- Текущая карта и правила каталогов: [`CATALOGS_STATUS.md`](CATALOGS_STATUS.md)
+
+
+defw2e1eault
+
+RobleeoRobalmicpo@hotmail.com | Melinda2Candace | xanhsm2000#ё

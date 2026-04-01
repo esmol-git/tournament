@@ -5,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  MatchEventType,
+  MatchScheduleReasonScope,
   MatchStatus,
   MatchStage,
   PlayoffRound,
@@ -17,7 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
 import { ListStandaloneMatchesQueryDto } from './dto/list-standalone-matches-query.dto';
-import { UpdateProtocolDto } from './dto/update-protocol.dto';
+import { ProtocolEventDto, UpdateProtocolDto } from './dto/update-protocol.dto';
 import { TournamentsService } from '../tournaments/tournaments.service';
 
 const PROTOCOL_ROLES: UserRole[] = [
@@ -32,6 +34,31 @@ const MUTATION_LOCKED_STATUSES = new Set<MatchStatus>([
   MatchStatus.PLAYED,
   MatchStatus.CANCELED,
 ]);
+
+const MATCH_EVENTS_API = {
+  orderBy: { createdAt: 'asc' as const },
+  select: {
+    id: true,
+    type: true,
+    minute: true,
+    playerId: true,
+    teamSide: true,
+    payload: true,
+    protocolEventTypeId: true,
+    protocolEventType: {
+      select: { id: true, name: true, mapsToType: true },
+    },
+  },
+} satisfies Prisma.Match$eventsArgs;
+
+const MATCH_DETAIL_INCLUDE = {
+  homeTeam: { select: { id: true, name: true } },
+  awayTeam: { select: { id: true, name: true } },
+  scheduleChangeReason: {
+    select: { id: true, name: true, code: true, scope: true },
+  },
+  events: MATCH_EVENTS_API,
+} satisfies Prisma.MatchInclude;
 
 @Injectable()
 export class MatchesService {
@@ -51,6 +78,166 @@ export class MatchesService {
   /** Tenant admin may edit protocol for locked matches as an emergency override. */
   private canOverrideLockedProtocol(actorRole: UserRole) {
     return actorRole === UserRole.TENANT_ADMIN;
+  }
+
+  private async validateScheduleReason(
+    tenantId: string,
+    reasonId: string,
+    kind: 'POSTPONE' | 'CANCEL',
+  ) {
+    const row = await this.prisma.matchScheduleReason.findFirst({
+      where: { id: reasonId, tenantId, active: true },
+    });
+    if (!row) {
+      throw new BadRequestException('Неизвестная причина из справочника');
+    }
+    const ok =
+      row.scope === MatchScheduleReasonScope.BOTH ||
+      (kind === 'POSTPONE' &&
+        row.scope === MatchScheduleReasonScope.POSTPONE) ||
+      (kind === 'CANCEL' && row.scope === MatchScheduleReasonScope.CANCEL);
+    if (!ok) {
+      throw new BadRequestException(
+        'Эта причина не подходит для данного действия',
+      );
+    }
+  }
+
+  private async buildProtocolEventRows(
+    tenantId: string,
+    events: ProtocolEventDto[] | undefined,
+  ): Promise<Omit<Prisma.MatchEventCreateManyInput, 'matchId'>[]> {
+    if (!events?.length) return [];
+    const ids = [
+      ...new Set(
+        events.map((e) => e.protocolEventTypeId).filter(Boolean) as string[],
+      ),
+    ];
+    const catalog =
+      ids.length > 0
+        ? await this.prisma.protocolEventType.findMany({
+            where: { id: { in: ids }, tenantId, active: true },
+          })
+        : [];
+    const byId = new Map(catalog.map((p) => [p.id, p]));
+    return events.map((e) => {
+      const payload =
+        e.payload && typeof e.payload === 'object'
+          ? (e.payload as Record<string, unknown>)
+          : null;
+      if (e.type === MatchEventType.GOAL) {
+        if (!e.teamSide) {
+          throw new BadRequestException(
+            'Для события "Гол" нужно указать команду',
+          );
+        }
+        if (!e.playerId) {
+          throw new BadRequestException(
+            'Для события "Гол" нужно указать игрока',
+          );
+        }
+      }
+      if (e.type === MatchEventType.CARD) {
+        if (!e.teamSide) {
+          throw new BadRequestException(
+            'Для события "Карточка" нужно указать команду',
+          );
+        }
+        if (!e.playerId) {
+          throw new BadRequestException(
+            'Для события "Карточка" нужно указать игрока',
+          );
+        }
+        const rawCardType = String(
+          payload?.cardType ?? payload?.color ?? payload?.cardColor ?? '',
+        )
+          .trim()
+          .toLowerCase();
+        if (rawCardType && !rawCardType.includes('yellow') && !rawCardType.includes('red')) {
+          throw new BadRequestException(
+            'Для события "Карточка" передан некорректный тип карточки',
+          );
+        }
+      }
+      if (e.type === MatchEventType.SUBSTITUTION) {
+        if (!e.teamSide) {
+          throw new BadRequestException(
+            'Для события "Замена" нужно указать команду',
+          );
+        }
+        if (!e.playerId) {
+          throw new BadRequestException(
+            'Для события "Замена" нужно указать заменяемого игрока',
+          );
+        }
+        const playerInId = String(payload?.playerInId ?? '').trim();
+        if (!playerInId) {
+          throw new BadRequestException(
+            'Для события "Замена" нужно указать выходящего игрока',
+          );
+        }
+        if (playerInId === e.playerId) {
+          throw new BadRequestException(
+            'Для события "Замена" игроки на вход и выход не должны совпадать',
+          );
+        }
+      }
+
+      let protocolEventTypeId: string | null = null;
+      if (e.protocolEventTypeId) {
+        const pet = byId.get(e.protocolEventTypeId);
+        if (!pet) {
+          throw new BadRequestException('Неизвестный тип события протокола');
+        }
+        if (pet.mapsToType !== e.type) {
+          throw new BadRequestException(
+            'Тип строки справочника не совпадает с полем type события',
+          );
+        }
+        protocolEventTypeId = pet.id;
+      }
+      const row: Omit<Prisma.MatchEventCreateManyInput, 'matchId'> = {
+        type: e.type,
+        minute: e.minute ?? null,
+        playerId: e.playerId ?? null,
+        teamSide: e.teamSide ?? null,
+        protocolEventTypeId,
+      };
+      if (e.payload !== undefined) {
+        row.payload = e.payload as Prisma.InputJsonValue;
+      }
+      return row;
+    });
+  }
+
+  private validateScoreVsGoalEvents(dto: UpdateProtocolDto) {
+    if (!dto.events?.length) return;
+    if (dto.status === MatchStatus.CANCELED) return;
+
+    let homeGoals = 0;
+    let awayGoals = 0;
+    let hasGoalEvents = false;
+
+    for (const event of dto.events) {
+      if (event.type !== MatchEventType.GOAL) continue;
+      hasGoalEvents = true;
+      if (event.teamSide === MatchTeamSide.HOME) {
+        homeGoals += 1;
+      } else if (event.teamSide === MatchTeamSide.AWAY) {
+        awayGoals += 1;
+      } else {
+        throw new BadRequestException(
+          'Для каждого события "Гол" нужно указать команду',
+        );
+      }
+    }
+
+    if (!hasGoalEvents) return;
+    if (dto.homeScore !== homeGoals || dto.awayScore !== awayGoals) {
+      throw new BadRequestException(
+        'Счёт матча должен совпадать с количеством голов в протоколе',
+      );
+    }
   }
 
   private isUnknownPlayoffTeamName(name: string) {
@@ -301,6 +488,8 @@ export class MatchesService {
       awayTeamId?: string;
       roundNumber?: number;
       groupId?: string | null;
+      scheduleChangeReasonId?: string;
+      scheduleChangeNote?: string;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -341,10 +530,44 @@ export class MatchesService {
         status: true,
         stage: true,
         groupId: true,
+        startTime: true,
+        tenantId: true,
       },
     });
     if (!match) throw new NotFoundException('Match not found');
     this.assertMatchMutable(match.status);
+
+    const startTimeChanged =
+      data.startTime !== undefined &&
+      data.startTime.getTime() !== match.startTime.getTime();
+    if (startTimeChanged) {
+      if (!data.scheduleChangeReasonId) {
+        throw new BadRequestException(
+          'При переносе матча укажите причину из справочника',
+        );
+      }
+      await this.validateScheduleReason(
+        match.tenantId,
+        data.scheduleChangeReasonId,
+        'POSTPONE',
+      );
+    }
+
+    const schedulePatch: {
+      scheduleChangeReasonId?: string | null;
+      scheduleChangeNote?: string | null;
+    } = {};
+    if (startTimeChanged) {
+      if (data.scheduleChangeReasonId !== undefined) {
+        schedulePatch.scheduleChangeReasonId =
+          data.scheduleChangeReasonId || null;
+      }
+      if (data.scheduleChangeNote !== undefined) {
+        schedulePatch.scheduleChangeNote = data.scheduleChangeNote?.trim()
+          ? data.scheduleChangeNote.trim()
+          : null;
+      }
+    }
 
     const wantsTeamChange =
       data.homeTeamId !== undefined || data.awayTeamId !== undefined;
@@ -387,14 +610,11 @@ export class MatchesService {
 
     if (!teamsChanged) {
       if (tournament.format === TournamentFormat.MANUAL) {
-        const patch: {
-          startTime?: Date;
-          roundNumber?: number;
-          groupId?: string | null;
-        } = {};
+        const patch: Prisma.MatchUncheckedUpdateInput = {};
         if (data.startTime !== undefined) patch.startTime = data.startTime;
         if (data.roundNumber !== undefined) patch.roundNumber = data.roundNumber;
         if (data.groupId !== undefined) patch.groupId = data.groupId;
+        Object.assign(patch, schedulePatch);
         if (Object.keys(patch).length === 0) {
           return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
         }
@@ -410,7 +630,7 @@ export class MatchesService {
       }
       return this.prisma.match.update({
         where: { id: matchId },
-        data: { startTime: data.startTime },
+        data: { startTime: data.startTime, ...schedulePatch },
       });
     }
 
@@ -422,6 +642,7 @@ export class MatchesService {
           ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
           ...(data.roundNumber !== undefined ? { roundNumber: data.roundNumber } : {}),
           ...(data.groupId !== undefined ? { groupId: data.groupId } : {}),
+          ...schedulePatch,
           homeTeamId: nextHome,
           awayTeamId: nextAway,
           homeScore: null,
@@ -474,8 +695,12 @@ export class MatchesService {
         'В матчах плей-офф ничья недопустима без решающей серии пенальти',
       );
     }
+    this.validateScoreVsGoalEvents(dto);
 
-    const updated = await this.runProtocolTransaction(matchId, dto);
+    const updated = await this.runProtocolTransaction(matchId, dto, {
+      tenantId: match.tenantId,
+      previousStatus: match.status,
+    });
 
     await this.recomputeTable(tournamentId);
 
@@ -510,28 +735,69 @@ export class MatchesService {
     return updated;
   }
 
-  private async runProtocolTransaction(matchId: string, dto: UpdateProtocolDto) {
+  private async runProtocolTransaction(
+    matchId: string,
+    dto: UpdateProtocolDto,
+    ctx: { tenantId: string; previousStatus: MatchStatus },
+  ) {
+    const nextStatus = dto.status ?? MatchStatus.PLAYED;
+    const becameCanceled =
+      nextStatus === MatchStatus.CANCELED &&
+      ctx.previousStatus !== MatchStatus.CANCELED;
+
+    if (becameCanceled) {
+      if (!dto.scheduleChangeReasonId) {
+        throw new BadRequestException(
+          'При отмене матча укажите причину из справочника',
+        );
+      }
+      await this.validateScheduleReason(
+        ctx.tenantId,
+        dto.scheduleChangeReasonId,
+        'CANCEL',
+      );
+    }
+
+    const eventRows =
+      dto.events !== undefined
+        ? await this.buildProtocolEventRows(ctx.tenantId, dto.events)
+        : null;
+
     return this.prisma.$transaction(async (tx) => {
+      const data: Prisma.MatchUncheckedUpdateInput = {
+        homeScore: dto.homeScore,
+        awayScore: dto.awayScore,
+        status: nextStatus,
+      };
+
+      if (becameCanceled) {
+        if (dto.scheduleChangeReasonId !== undefined) {
+          data.scheduleChangeReasonId = dto.scheduleChangeReasonId || null;
+        }
+        if (dto.scheduleChangeNote !== undefined) {
+          data.scheduleChangeNote = dto.scheduleChangeNote?.trim()
+            ? dto.scheduleChangeNote.trim()
+            : null;
+        }
+      }
+
       const m = await tx.match.update({
         where: { id: matchId },
-        data: {
-          homeScore: dto.homeScore,
-          awayScore: dto.awayScore,
-          status: dto.status ?? MatchStatus.PLAYED,
-        },
+        data,
       });
 
-      if (dto.events) {
+      if (dto.events !== undefined) {
         await tx.matchEvent.deleteMany({ where: { matchId } });
-        if (dto.events.length) {
+        if (eventRows!.length) {
           await tx.matchEvent.createMany({
-            data: dto.events.map((e) => ({
+            data: eventRows!.map((row) => ({
               matchId,
-              type: e.type,
-              minute: e.minute ?? null,
-              playerId: e.playerId ?? null,
-              teamSide: e.teamSide ?? null,
-              payload: (e.payload as any) ?? null,
+              type: row.type,
+              minute: row.minute,
+              playerId: row.playerId,
+              teamSide: row.teamSide,
+              payload: row.payload,
+              protocolEventTypeId: row.protocolEventTypeId,
             })),
           });
         }
@@ -560,8 +826,12 @@ export class MatchesService {
     if (!this.canOverrideLockedProtocol(actorRole)) {
       this.assertMatchMutable(match.status);
     }
+    this.validateScoreVsGoalEvents(dto);
 
-    return this.runProtocolTransaction(matchId, dto);
+    return this.runProtocolTransaction(matchId, dto, {
+      tenantId,
+      previousStatus: match.status,
+    });
   }
 
   async createStandaloneMatch(
@@ -643,16 +913,10 @@ export class MatchesService {
       include: {
         homeTeam: { select: { id: true, name: true } },
         awayTeam: { select: { id: true, name: true } },
-        events: {
-          select: {
-            id: true,
-            type: true,
-            minute: true,
-            playerId: true,
-            teamSide: true,
-            payload: true,
-          },
+        scheduleChangeReason: {
+          select: { id: true, name: true, code: true, scope: true },
         },
+        events: MATCH_EVENTS_API,
       },
     });
   }
@@ -686,22 +950,29 @@ export class MatchesService {
       where.status = { notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED] };
     }
 
+    if (query.dateFrom || query.dateTo) {
+      const st: Prisma.DateTimeFilter = {};
+      if (query.dateFrom && /^\d{4}-\d{2}-\d{2}$/.test(query.dateFrom)) {
+        const [y, m, d] = query.dateFrom.split('-').map(Number);
+        st.gte = new Date(y, m - 1, d, 0, 0, 0, 0);
+      }
+      if (query.dateTo && /^\d{4}-\d{2}-\d{2}$/.test(query.dateTo)) {
+        const [y, m, d] = query.dateTo.split('-').map(Number);
+        st.lte = new Date(y, m - 1, d, 23, 59, 59, 999);
+      }
+      if (Object.keys(st).length) where.startTime = st;
+    }
+
     const include = {
       tournament: {
         select: { id: true, name: true, slug: true, format: true },
       },
       homeTeam: { select: { id: true, name: true } },
       awayTeam: { select: { id: true, name: true } },
-      events: {
-        select: {
-          id: true,
-          type: true,
-          minute: true,
-          playerId: true,
-          teamSide: true,
-          payload: true,
-        },
+      scheduleChangeReason: {
+        select: { id: true, name: true, code: true, scope: true },
       },
+      events: MATCH_EVENTS_API,
     } satisfies Prisma.MatchInclude;
 
     // For strict UI consistency, optionally filter undetermined playoff matches on the backend.
@@ -799,6 +1070,8 @@ export class MatchesService {
       startTime?: Date;
       homeTeamId?: string;
       awayTeamId?: string;
+      scheduleChangeReasonId?: string;
+      scheduleChangeNote?: string;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -807,10 +1080,48 @@ export class MatchesService {
 
     const match = await this.prisma.match.findFirst({
       where: { id: matchId, tenantId, tournamentId: null },
-      select: { id: true, homeTeamId: true, awayTeamId: true, status: true },
+      select: {
+        id: true,
+        homeTeamId: true,
+        awayTeamId: true,
+        status: true,
+        startTime: true,
+      },
     });
     if (!match) throw new NotFoundException('Match not found');
     this.assertMatchMutable(match.status);
+
+    const startTimeChanged =
+      data.startTime !== undefined &&
+      data.startTime.getTime() !== match.startTime.getTime();
+    if (startTimeChanged) {
+      if (!data.scheduleChangeReasonId) {
+        throw new BadRequestException(
+          'При переносе матча укажите причину из справочника',
+        );
+      }
+      await this.validateScheduleReason(
+        tenantId,
+        data.scheduleChangeReasonId,
+        'POSTPONE',
+      );
+    }
+
+    const schedulePatch: {
+      scheduleChangeReasonId?: string | null;
+      scheduleChangeNote?: string | null;
+    } = {};
+    if (startTimeChanged) {
+      if (data.scheduleChangeReasonId !== undefined) {
+        schedulePatch.scheduleChangeReasonId =
+          data.scheduleChangeReasonId || null;
+      }
+      if (data.scheduleChangeNote !== undefined) {
+        schedulePatch.scheduleChangeNote = data.scheduleChangeNote?.trim()
+          ? data.scheduleChangeNote.trim()
+          : null;
+      }
+    }
 
     const wantsTeamChange =
       data.homeTeamId !== undefined || data.awayTeamId !== undefined;
@@ -836,22 +1147,19 @@ export class MatchesService {
       nextHome !== match.homeTeamId || nextAway !== match.awayTeamId;
 
     if (!teamsChanged) {
-      if (data.startTime === undefined) {
+      if (data.startTime === undefined && Object.keys(schedulePatch).length === 0) {
         return this.prisma.match.findUniqueOrThrow({
           where: { id: matchId },
-          include: {
-            homeTeam: { select: { id: true, name: true } },
-            awayTeam: { select: { id: true, name: true } },
-          },
+          include: MATCH_DETAIL_INCLUDE,
         });
       }
       return this.prisma.match.update({
         where: { id: matchId },
-        data: { startTime: data.startTime },
-        include: {
-          homeTeam: { select: { id: true, name: true } },
-          awayTeam: { select: { id: true, name: true } },
+        data: {
+          ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
+          ...schedulePatch,
         },
+        include: MATCH_DETAIL_INCLUDE,
       });
     }
 
@@ -861,6 +1169,7 @@ export class MatchesService {
         where: { id: matchId },
         data: {
           ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
+          ...schedulePatch,
           homeTeamId: nextHome,
           awayTeamId: nextAway,
           homeScore: null,
@@ -872,20 +1181,7 @@ export class MatchesService {
 
     return this.prisma.match.findUniqueOrThrow({
       where: { id: matchId },
-      include: {
-        homeTeam: { select: { id: true, name: true } },
-        awayTeam: { select: { id: true, name: true } },
-        events: {
-          select: {
-            id: true,
-            type: true,
-            minute: true,
-            playerId: true,
-            teamSide: true,
-            payload: true,
-          },
-        },
-      },
+      include: MATCH_DETAIL_INCLUDE,
     });
   }
 

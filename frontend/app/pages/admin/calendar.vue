@@ -22,6 +22,7 @@ definePageMeta({ layout: 'admin' })
 
 const router = useRouter()
 const toast = useToast()
+const { t } = useI18n()
 const { token, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
@@ -40,6 +41,7 @@ const eventColors = ref<Record<string, string>>({})
 const eventDurationsMin = ref<Record<string, number>>({})
 const editVisible = ref(false)
 const editSaving = ref(false)
+const editSubmitAttempted = ref(false)
 const editModel = ref<{
   eventId: string
   source: 'standalone' | 'tournament'
@@ -55,6 +57,7 @@ const editModel = ref<{
 } | null>(null)
 const createVisible = ref(false)
 const createSaving = ref(false)
+const createSubmitAttempted = ref(false)
 const createModel = ref<{
   startLocal: string
   endLocal: string
@@ -177,6 +180,54 @@ const tournamentOptions = computed(() => {
 })
 const statusFilterOptions = computed(() =>
   statusOptions.map((s) => ({ label: s.label, value: s.value })),
+)
+const editErrors = computed(() => {
+  const m = editModel.value
+  if (!m) return { startLocal: '', endLocal: '', range: '' }
+  const start = new Date(m.startLocal)
+  const end = new Date(m.endLocal)
+  const startOk = !Number.isNaN(start.getTime())
+  const endOk = !Number.isNaN(end.getTime())
+  const rangeOk = !m.locked && startOk && endOk ? end > start : true
+  return {
+    startLocal: startOk ? '' : t('admin.validation.required_start_time'),
+    endLocal: endOk ? '' : t('admin.validation.required_end_date'),
+    range: rangeOk ? '' : t('admin.validation.end_after_start'),
+  }
+})
+const canSaveEdit = computed(
+  () =>
+    !editErrors.value.startLocal &&
+    !editErrors.value.endLocal &&
+    !editErrors.value.range,
+)
+const createErrors = computed(() => {
+  const m = createModel.value
+  if (!m) return { homeTeamId: '', awayTeamId: '', sameTeams: '', startLocal: '', endLocal: '', range: '' }
+  const start = new Date(m.startLocal)
+  const end = new Date(m.endLocal)
+  const startOk = !Number.isNaN(start.getTime())
+  const endOk = !Number.isNaN(end.getTime())
+  return {
+    homeTeamId: m.homeTeamId ? '' : t('admin.validation.required'),
+    awayTeamId: m.awayTeamId ? '' : t('admin.validation.required'),
+    sameTeams:
+      !m.homeTeamId || !m.awayTeamId || m.homeTeamId !== m.awayTeamId
+        ? ''
+        : t('admin.validation.different_values'),
+    startLocal: startOk ? '' : t('admin.validation.required_start_time'),
+    endLocal: endOk ? '' : t('admin.validation.required_end_date'),
+    range: startOk && endOk && end > start ? '' : t('admin.validation.end_after_start'),
+  }
+})
+const canCreateFromSlot = computed(
+  () =>
+    !createErrors.value.homeTeamId &&
+    !createErrors.value.awayTeamId &&
+    !createErrors.value.sameTeams &&
+    !createErrors.value.startLocal &&
+    !createErrors.value.endLocal &&
+    !createErrors.value.range,
 )
 
 const calendarEvents = computed<EventInput[]>(() => {
@@ -344,12 +395,17 @@ function onEventClick(arg: any) {
     endLocal: toLocalDatetimeValue(endDate.toISOString()),
     color: eventColors.value[eventId] ?? defaultColor(meta.locked, meta.source),
   }
+  editSubmitAttempted.value = false
   editVisible.value = true
 }
 
 async function saveEventEdit() {
   const model = editModel.value
   if (!model) return
+  editSubmitAttempted.value = true
+  if (!canSaveEdit.value) {
+    return
+  }
   editSaving.value = true
   try {
     eventColors.value[model.eventId] = model.color
@@ -413,6 +469,7 @@ function onSelectRange(arg: any) {
     awayTeamId: '',
     color: '#10b981',
   }
+  createSubmitAttempted.value = false
   createVisible.value = true
   arg.view?.calendar?.unselect?.()
 }
@@ -420,20 +477,12 @@ function onSelectRange(arg: any) {
 async function createMatchFromSlot() {
   const m = createModel.value
   if (!m) return
-  if (!m.homeTeamId || !m.awayTeamId) {
-    toast.add({ severity: 'warn', summary: 'Выберите обе команды', life: 3000 })
-    return
-  }
-  if (m.homeTeamId === m.awayTeamId) {
-    toast.add({ severity: 'warn', summary: 'Команды должны быть разными', life: 3000 })
+  createSubmitAttempted.value = true
+  if (!canCreateFromSlot.value) {
     return
   }
   const start = new Date(m.startLocal)
   const end = new Date(m.endLocal)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
-    toast.add({ severity: 'warn', summary: 'Проверьте время начала/окончания', life: 3500 })
-    return
-  }
 
   createSaving.value = true
   try {
@@ -673,11 +722,13 @@ watch(
             v-model="editModel.startLocal"
             type="datetime-local"
             class="w-full"
+            :invalid="(editSubmitAttempted && !!editErrors.startLocal) || (editSubmitAttempted && !!editErrors.range)"
             :disabled="editModel.locked"
           />
           <p v-if="editModel.locked" class="mt-1 text-xs text-amber-600">
             Завершённые матчи нельзя сдвигать по дате.
           </p>
+          <p v-if="editSubmitAttempted && editErrors.startLocal" class="mt-0 text-[11px] leading-3 text-red-500">{{ editErrors.startLocal }}</p>
         </div>
 
         <div>
@@ -686,8 +737,11 @@ watch(
             v-model="editModel.endLocal"
             type="datetime-local"
             class="w-full"
+            :invalid="(editSubmitAttempted && !!editErrors.endLocal) || (editSubmitAttempted && !!editErrors.range)"
             :disabled="editModel.locked"
           />
+          <p v-if="editSubmitAttempted && editErrors.endLocal" class="mt-0 text-[11px] leading-3 text-red-500">{{ editErrors.endLocal }}</p>
+          <p v-if="editSubmitAttempted && editErrors.range" class="mt-0 text-[11px] leading-3 text-red-500">{{ editErrors.range }}</p>
         </div>
 
         <div>
@@ -701,7 +755,7 @@ watch(
 
         <div class="flex justify-end gap-2 pt-2">
           <Button label="Отмена" text @click="editVisible = false" />
-          <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" @click="saveEventEdit" />
+          <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" :disabled="editSaving || (editSubmitAttempted && !canSaveEdit)" @click="saveEventEdit" />
         </div>
       </div>
     </Dialog>
@@ -721,8 +775,10 @@ watch(
             option-label="label"
             option-value="value"
             class="w-full"
+            :invalid="(createSubmitAttempted && !!createErrors.homeTeamId) || (createSubmitAttempted && !!createErrors.sameTeams)"
             placeholder="Выберите команду"
           />
+          <p v-if="createSubmitAttempted && createErrors.homeTeamId" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.homeTeamId }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Команда 2</label>
@@ -732,16 +788,22 @@ watch(
             option-label="label"
             option-value="value"
             class="w-full"
+            :invalid="(createSubmitAttempted && !!createErrors.awayTeamId) || (createSubmitAttempted && !!createErrors.sameTeams)"
             placeholder="Выберите команду"
           />
+          <p v-if="createSubmitAttempted && createErrors.awayTeamId" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.awayTeamId }}</p>
+          <p v-if="createSubmitAttempted && createErrors.sameTeams" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.sameTeams }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Время начала</label>
-          <InputText v-model="createModel.startLocal" type="datetime-local" class="w-full" />
+          <InputText v-model="createModel.startLocal" type="datetime-local" class="w-full" :invalid="(createSubmitAttempted && !!createErrors.startLocal) || (createSubmitAttempted && !!createErrors.range)" />
+          <p v-if="createSubmitAttempted && createErrors.startLocal" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.startLocal }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Время окончания</label>
-          <InputText v-model="createModel.endLocal" type="datetime-local" class="w-full" />
+          <InputText v-model="createModel.endLocal" type="datetime-local" class="w-full" :invalid="(createSubmitAttempted && !!createErrors.endLocal) || (createSubmitAttempted && !!createErrors.range)" />
+          <p v-if="createSubmitAttempted && createErrors.endLocal" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.endLocal }}</p>
+          <p v-if="createSubmitAttempted && createErrors.range" class="mt-0 text-[11px] leading-3 text-red-500">{{ createErrors.range }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Цвет выделения</label>
@@ -749,7 +811,7 @@ watch(
         </div>
         <div class="flex justify-end gap-2 pt-2">
           <Button label="Отмена" text @click="createVisible = false" />
-          <Button label="Создать" icon="pi pi-check" :loading="createSaving" @click="createMatchFromSlot" />
+          <Button label="Создать" icon="pi pi-check" :loading="createSaving" :disabled="createSaving || (createSubmitAttempted && !canCreateFromSlot)" @click="createMatchFromSlot" />
         </div>
       </div>
     </Dialog>

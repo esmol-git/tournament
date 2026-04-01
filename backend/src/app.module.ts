@@ -19,8 +19,7 @@ import { PublicModule } from './public/public.module';
 import { seconds, ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import Redis from 'ioredis';
-import { TenantZoneGuard } from './auth/tenant-zone.guard';
-import { TenantParamConsistencyGuard } from './auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from './auth/tenant-subscription.guard';
 
 function truthyEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
@@ -116,9 +115,8 @@ function isOptionsRequest(context: ExecutionContext): boolean {
   controllers: [AppController],
   providers: [
     AppService,
+    TenantSubscriptionGuard,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_GUARD, useClass: TenantParamConsistencyGuard },
-    { provide: APP_GUARD, useClass: TenantZoneGuard },
   ],
 })
 export class AppModule {}

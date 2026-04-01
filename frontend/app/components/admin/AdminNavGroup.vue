@@ -89,12 +89,12 @@ const closePopover = () => {
   </div>
 
   <!-- Компакт: иконка + Popover со списком -->
-  <div v-else class="flex justify-center">
+  <div v-else class="flex w-full justify-center">
     <Button
       type="button"
       text
       rounded
-      class="!h-11 !w-11 !p-0"
+      class="!flex !h-11 !w-11 !items-center !justify-center !p-0"
       :class="
         childActive
           ? 'text-primary bg-surface-100 dark:bg-surface-800'
@@ -104,7 +104,10 @@ const closePopover = () => {
       :title="label"
       @click="openPopover"
     >
-      <span :class="[icon, 'text-[1.35rem]']" aria-hidden="true" />
+      <span
+        :class="[icon, 'inline-flex w-[1.35rem] justify-center text-[1.35rem] leading-none']"
+        aria-hidden="true"
+      />
     </Button>
     <Popover ref="popoverRef">
       <div class="flex min-w-[12rem] flex-col gap-0.5 py-1">

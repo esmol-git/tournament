@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
+import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useTenantId } from '~/composables/useTenantId'
 import { usePlayoffSlotLabels } from '~/composables/usePlayoffSlotLabels'
 import type { MatchRow, TournamentDetails } from '~/types/tournament-admin'
@@ -40,6 +41,8 @@ const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
 const toast = useToast()
 
+const { loadRefs, postponeReasonOptions } = useMatchProtocolReferences()
+
 const localTournament = ref<TournamentDetails | null>(null)
 const loading = ref(false)
 
@@ -53,6 +56,7 @@ const isManualFormat = computed(() => effectiveTournament.value?.format === 'MAN
 
 const manualMatchDialog = ref(false)
 const manualMatchSaving = ref(false)
+const manualMatchSubmitAttempted = ref(false)
 const manualMatchDate = ref<Date | null>(null)
 const manualMatchTime = ref<Date | null>(null)
 const manualMatchForm = reactive({
@@ -89,8 +93,10 @@ const manualGroupStageRequiresGroup = computed(
 
 const editMatchDialog = ref(false)
 const editMatchSaving = ref(false)
+const editMatchSubmitAttempted = ref(false)
 const editMatchDate = ref<Date | null>(null)
 const editMatchTime = ref<Date | null>(null)
+const editMatchOriginalStartMs = ref<number | null>(null)
 const editMatchForm = reactive({
   matchId: '',
   homeTeamId: '',
@@ -99,6 +105,7 @@ const editMatchForm = reactive({
   roundNumber: 1,
   groupId: '' as string,
   matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
+  scheduleChangeReasonId: '' as string,
 })
 
 const groupSelectOptions = computed(() => {
@@ -150,6 +157,7 @@ const tournamentTeamSelectOptions = computed(() =>
 )
 
 const openManualMatchDialog = () => {
+  manualMatchSubmitAttempted.value = false
   manualMatchForm.homeTeamId = ''
   manualMatchForm.awayTeamId = ''
   manualMatchForm.startTime = new Date()
@@ -163,34 +171,36 @@ const openManualMatchDialog = () => {
   manualMatchDialog.value = true
 }
 
-const submitManualMatch = async () => {
-  if (!token.value || !effectiveTournament.value) return
-  if (!manualMatchForm.homeTeamId || !manualMatchForm.awayTeamId || !manualMatchForm.startTime) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Заполните поля',
-      detail: 'Команды и дата/время начала обязательны.',
-      life: 4000,
-    })
-    return
-  }
-  if (manualMatchForm.homeTeamId === manualMatchForm.awayTeamId) {
-    toast.add({ severity: 'warn', summary: 'Выберите две разные команды', life: 4000 })
-    return
-  }
-  if (
+const manualMatchErrors = computed(() => ({
+  homeTeamId: manualMatchForm.homeTeamId ? '' : 'Выберите команду хозяев.',
+  awayTeamId: manualMatchForm.awayTeamId ? '' : 'Выберите команду гостей.',
+  startTime: manualMatchForm.startTime ? '' : 'Укажите дату и время начала матча.',
+  distinctTeams:
+    manualMatchForm.homeTeamId &&
+    manualMatchForm.awayTeamId &&
+    manualMatchForm.homeTeamId === manualMatchForm.awayTeamId
+      ? 'Нужно выбрать две разные команды.'
+      : '',
+  groupId:
     manualMatchForm.matchStage === 'GROUP' &&
     manualGroupStageRequiresGroup.value &&
     !manualMatchForm.groupId
-  ) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Укажите группу',
-      detail: 'Для турнира с несколькими группами выберите группу — иначе матч не попадёт в таблицу группы.',
-      life: 6000,
-    })
-    return
-  }
+      ? 'Для группового этапа выберите группу.'
+      : '',
+}))
+const canSubmitManualMatch = computed(
+  () =>
+    !manualMatchErrors.value.homeTeamId &&
+    !manualMatchErrors.value.awayTeamId &&
+    !manualMatchErrors.value.startTime &&
+    !manualMatchErrors.value.distinctTeams &&
+    !manualMatchErrors.value.groupId,
+)
+
+const submitManualMatch = async () => {
+  if (!token.value || !effectiveTournament.value) return
+  manualMatchSubmitAttempted.value = true
+  if (!canSubmitManualMatch.value) return
   manualMatchSaving.value = true
   try {
     const body: Record<string, unknown> = {
@@ -344,7 +354,7 @@ const allMatchesSorted = computed(() => {
   )
 })
 
-const openEditMatchDialog = (m: MatchRow) => {
+const openEditMatchDialog = async (m: MatchRow) => {
   if (isMatchEditLocked(m.status)) {
     toast.add({
       severity: 'info',
@@ -354,57 +364,77 @@ const openEditMatchDialog = (m: MatchRow) => {
     })
     return
   }
+  if (token.value) {
+    await loadRefs(authFetch, apiUrl, token.value, tenantId.value)
+  }
   editMatchForm.matchId = m.id
   editMatchForm.homeTeamId = m.homeTeam.id
   editMatchForm.awayTeamId = m.awayTeam.id
   editMatchForm.startTime = new Date(m.startTime)
+  editMatchOriginalStartMs.value = editMatchForm.startTime.getTime()
+  editMatchForm.scheduleChangeReasonId = ''
   const esp = splitStartTimeToDateAndTime(editMatchForm.startTime)
   editMatchDate.value = esp.date
   editMatchTime.value = esp.time
   editMatchForm.roundNumber = typeof m.roundNumber === 'number' ? m.roundNumber : 1
   editMatchForm.groupId = m.groupId ?? ''
   editMatchForm.matchStage = m.stage === 'PLAYOFF' ? 'PLAYOFF' : 'GROUP'
+  editMatchSubmitAttempted.value = false
   editMatchDialog.value = true
 }
 
+const editMatchStartChanged = computed(
+  () =>
+    editMatchOriginalStartMs.value != null &&
+    editMatchForm.startTime instanceof Date &&
+    editMatchForm.startTime.getTime() !== editMatchOriginalStartMs.value,
+)
+const editMatchErrors = computed(() => ({
+  startTime: editMatchForm.startTime ? '' : 'Время начала матча обязательно.',
+  homeTeamId:
+    isManualFormat.value && !editMatchForm.homeTeamId ? 'Выберите команду хозяев.' : '',
+  awayTeamId:
+    isManualFormat.value && !editMatchForm.awayTeamId ? 'Выберите команду гостей.' : '',
+  distinctTeams:
+    isManualFormat.value &&
+    editMatchForm.homeTeamId &&
+    editMatchForm.awayTeamId &&
+    editMatchForm.homeTeamId === editMatchForm.awayTeamId
+      ? 'Нужны две разные команды.'
+      : '',
+  groupId:
+    isManualFormat.value &&
+    manualGroupStageRequiresGroup.value &&
+    editMatchForm.matchStage === 'GROUP' &&
+    !editMatchForm.groupId
+      ? 'Для группового этапа выберите группу.'
+      : '',
+  scheduleChangeReasonId:
+    editMatchStartChanged.value && !editMatchForm.scheduleChangeReasonId
+      ? 'Выберите причину переноса.'
+      : '',
+}))
+const canSubmitEditMatch = computed(
+  () =>
+    !editMatchErrors.value.startTime &&
+    !editMatchErrors.value.homeTeamId &&
+    !editMatchErrors.value.awayTeamId &&
+    !editMatchErrors.value.distinctTeams &&
+    !editMatchErrors.value.groupId &&
+    !editMatchErrors.value.scheduleChangeReasonId,
+)
+
 const submitEditMatch = async () => {
   if (!token.value || !editMatchForm.matchId) return
-  if (!editMatchForm.startTime) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Укажите дату и время',
-      detail: 'Время начала матча обязательно.',
-      life: 4000,
-    })
-    return
-  }
-  if (isManualFormat.value) {
-    if (!editMatchForm.homeTeamId || !editMatchForm.awayTeamId) {
-      toast.add({ severity: 'warn', summary: 'Выберите обе команды', life: 4000 })
-      return
-    }
-    if (editMatchForm.homeTeamId === editMatchForm.awayTeamId) {
-      toast.add({ severity: 'warn', summary: 'Нужны две разные команды', life: 4000 })
-      return
-    }
-    if (
-      manualGroupStageRequiresGroup.value &&
-      editMatchForm.matchStage === 'GROUP' &&
-      !editMatchForm.groupId
-    ) {
-      toast.add({
-        severity: 'warn',
-        summary: 'Укажите группу',
-        detail: 'Для группового этапа при нескольких группах выберите группу матча.',
-        life: 6000,
-      })
-      return
-    }
-  }
+  editMatchSubmitAttempted.value = true
+  if (!canSubmitEditMatch.value) return
   editMatchSaving.value = true
   try {
     const body: Record<string, unknown> = {
       startTime: editMatchForm.startTime.toISOString(),
+    }
+    if (editMatchStartChanged.value) {
+      body.scheduleChangeReasonId = editMatchForm.scheduleChangeReasonId
     }
     if (isManualFormat.value) {
       body.homeTeamId = editMatchForm.homeTeamId
@@ -688,8 +718,18 @@ defineExpose({
             optionValue="value"
             class="w-full"
             placeholder="Команда"
+            :invalid="
+              (manualMatchSubmitAttempted || manualMatchForm.homeTeamId) &&
+              !!manualMatchErrors.homeTeamId
+            "
             :disabled="manualMatchSaving"
           />
+          <p
+            v-if="(manualMatchSubmitAttempted || manualMatchForm.homeTeamId) && manualMatchErrors.homeTeamId"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ manualMatchErrors.homeTeamId }}
+          </p>
         </div>
         <div>
           <label class="text-sm block mb-1">Гости</label>
@@ -700,8 +740,24 @@ defineExpose({
             optionValue="value"
             class="w-full"
             placeholder="Команда"
+            :invalid="
+              (manualMatchSubmitAttempted || manualMatchForm.awayTeamId) &&
+              (!!manualMatchErrors.awayTeamId || !!manualMatchErrors.distinctTeams)
+            "
             :disabled="manualMatchSaving"
           />
+          <p
+            v-if="(manualMatchSubmitAttempted || manualMatchForm.awayTeamId) && manualMatchErrors.awayTeamId"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ manualMatchErrors.awayTeamId }}
+          </p>
+          <p
+            v-else-if="(manualMatchSubmitAttempted || manualMatchForm.awayTeamId) && manualMatchErrors.distinctTeams"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ manualMatchErrors.distinctTeams }}
+          </p>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -711,6 +767,7 @@ defineExpose({
               class="w-full"
               dateFormat="dd.mm.yy"
               showIcon
+              :invalid="manualMatchSubmitAttempted && !!manualMatchErrors.startTime"
               :disabled="manualMatchSaving"
             />
           </div>
@@ -722,10 +779,17 @@ defineExpose({
               timeOnly
               hourFormat="24"
               showIcon
+              :invalid="manualMatchSubmitAttempted && !!manualMatchErrors.startTime"
               :disabled="manualMatchSaving"
             />
           </div>
         </div>
+        <p
+          v-if="manualMatchSubmitAttempted && manualMatchErrors.startTime"
+          class="mt-0 text-[11px] leading-3 text-red-500"
+        >
+          {{ manualMatchErrors.startTime }}
+        </p>
         <div
           class="grid gap-3"
           :class="manualMatchForm.matchStage === 'GROUP' ? 'grid-cols-2' : 'grid-cols-1'"
@@ -748,8 +812,15 @@ defineExpose({
               option-value="value"
               class="w-full"
               :placeholder="manualGroupStageRequiresGroup ? 'Выберите группу' : 'По желанию'"
+              :invalid="manualMatchSubmitAttempted && !!manualMatchErrors.groupId"
               :disabled="manualMatchSaving"
             />
+            <p
+              v-if="manualMatchSubmitAttempted && manualMatchErrors.groupId"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ manualMatchErrors.groupId }}
+            </p>
           </div>
         </div>
       </div>
@@ -760,6 +831,7 @@ defineExpose({
             label="Создать"
             icon="pi pi-check"
             :loading="manualMatchSaving"
+            :disabled="manualMatchSubmitAttempted && !canSubmitManualMatch"
             @click="submitManualMatch"
           />
         </div>
@@ -784,8 +856,18 @@ defineExpose({
               optionValue="value"
               class="w-full"
               placeholder="Команда"
+              :invalid="
+                (editMatchSubmitAttempted || editMatchForm.homeTeamId) &&
+                !!editMatchErrors.homeTeamId
+              "
               :disabled="editMatchSaving"
             />
+            <p
+              v-if="(editMatchSubmitAttempted || editMatchForm.homeTeamId) && editMatchErrors.homeTeamId"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ editMatchErrors.homeTeamId }}
+            </p>
           </div>
           <div>
             <label class="text-sm block mb-1">Гости</label>
@@ -796,8 +878,24 @@ defineExpose({
               optionValue="value"
               class="w-full"
               placeholder="Команда"
+              :invalid="
+                (editMatchSubmitAttempted || editMatchForm.awayTeamId) &&
+                (!!editMatchErrors.awayTeamId || !!editMatchErrors.distinctTeams)
+              "
               :disabled="editMatchSaving"
             />
+            <p
+              v-if="(editMatchSubmitAttempted || editMatchForm.awayTeamId) && editMatchErrors.awayTeamId"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ editMatchErrors.awayTeamId }}
+            </p>
+            <p
+              v-else-if="(editMatchSubmitAttempted || editMatchForm.awayTeamId) && editMatchErrors.distinctTeams"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ editMatchErrors.distinctTeams }}
+            </p>
           </div>
           <p class="text-xs text-muted-color">
             Если поменять пары, счёт и события матча на сервере сбрасываются.
@@ -811,6 +909,7 @@ defineExpose({
               class="w-full"
               dateFormat="dd.mm.yy"
               showIcon
+              :invalid="editMatchSubmitAttempted && !!editMatchErrors.startTime"
               :disabled="editMatchSaving"
             />
           </div>
@@ -822,8 +921,40 @@ defineExpose({
               timeOnly
               hourFormat="24"
               showIcon
+              :invalid="editMatchSubmitAttempted && !!editMatchErrors.startTime"
               :disabled="editMatchSaving"
             />
+          </div>
+        </div>
+        <p
+          v-if="editMatchSubmitAttempted && editMatchErrors.startTime"
+          class="mt-0 text-[11px] leading-3 text-red-500"
+        >
+          {{ editMatchErrors.startTime }}
+        </p>
+        <div class="space-y-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/50 dark:bg-surface-800/30 p-3">
+          <p class="text-xs text-muted-color">
+            При переносе времени можно указать причину (справочник «Причины переноса и отмены»).
+          </p>
+          <div>
+            <label class="text-sm block mb-1">Причина переноса</label>
+            <Select
+              v-model="editMatchForm.scheduleChangeReasonId"
+              :options="postponeReasonOptions"
+              option-label="label"
+              option-value="value"
+              show-clear
+              placeholder="Не выбрано"
+              class="w-full"
+              :invalid="editMatchSubmitAttempted && !!editMatchErrors.scheduleChangeReasonId"
+              :disabled="editMatchSaving"
+            />
+            <p
+              v-if="editMatchSubmitAttempted && editMatchErrors.scheduleChangeReasonId"
+              class="mt-0 text-[11px] leading-3 text-red-500"
+            >
+              {{ editMatchErrors.scheduleChangeReasonId }}
+            </p>
           </div>
         </div>
         <template v-if="isManualFormat">
@@ -850,8 +981,15 @@ defineExpose({
                     ? 'Выберите группу'
                     : 'По желанию'
                 "
+                :invalid="editMatchSubmitAttempted && !!editMatchErrors.groupId"
                 :disabled="editMatchSaving"
               />
+              <p
+                v-if="editMatchSubmitAttempted && editMatchErrors.groupId"
+                class="mt-0 text-[11px] leading-3 text-red-500"
+              >
+                {{ editMatchErrors.groupId }}
+              </p>
             </div>
           </div>
         </template>
@@ -863,6 +1001,7 @@ defineExpose({
             label="Сохранить"
             icon="pi pi-check"
             :loading="editMatchSaving"
+            :disabled="editMatchSubmitAttempted && !canSubmitEditMatch"
             @click="submitEditMatch"
           />
         </div>

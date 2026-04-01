@@ -12,12 +12,20 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { JwtPayload } from '../../auth/jwt.strategy';
+import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
 import { CreateTeamCategoryDto } from './dto/create-team-category.dto';
 import { UpdateTeamCategoryDto } from './dto/update-team-category.dto';
 import { TeamCategoriesService } from './team-categories.service';
 
 @ApiTags('team-categories')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller()
 export class TeamCategoriesController {
   constructor(private readonly teamCategoriesService: TeamCategoriesService) {}

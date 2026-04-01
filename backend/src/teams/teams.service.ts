@@ -73,95 +73,9 @@ export class TeamsService {
     teamId: string,
     playerId: string,
   ) {
-    const [team, player] = await Promise.all([
-      this.prisma.team.findFirst({
-        where: { id: teamId, tenantId },
-        select: {
-          id: true,
-          name: true,
-          category: true,
-        },
-      }),
-      this.prisma.player.findFirst({
-        where: { id: playerId, tenantId },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          birthDate: true,
-          gender: true,
-        },
-      }),
-    ]);
-    if (!team) throw new NotFoundException('Team not found');
-    if (!player) throw new NotFoundException('Player not found');
-    if (!team.category) return;
-    const category = await this.prisma.teamCategory.findFirst({
-      where: { tenantId, name: { equals: team.category, mode: 'insensitive' } },
-      select: {
-        name: true,
-        rules: {
-          select: {
-            type: true,
-            minBirthYear: true,
-            maxBirthYear: true,
-            requireBirthDate: true,
-            allowedGenders: true,
-          },
-        },
-      },
-    });
-    if (!category) return;
-    const rules = category.rules;
-
-    for (const rule of rules) {
-      if (rule.type === 'AGE') {
-        if (rule.requireBirthDate && !player.birthDate) {
-          throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires it`,
-          );
-        }
-        if (rule.minBirthYear != null) {
-          if (!player.birthDate) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires birth year ${rule.minBirthYear} or younger`,
-            );
-          }
-          const birthYear = player.birthDate.getFullYear();
-          if (birthYear < rule.minBirthYear) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" is too old for category "${category.name}". Required birth year: ${rule.minBirthYear}+`,
-            );
-          }
-        }
-        if (rule.maxBirthYear != null) {
-          if (!player.birthDate) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" has no birth date, but category "${category.name}" requires birth year ${rule.maxBirthYear} or older`,
-            );
-          }
-          const birthYear = player.birthDate.getFullYear();
-          if (birthYear > rule.maxBirthYear) {
-            throw new BadRequestException(
-              `Player "${player.lastName} ${player.firstName}" is too young for category "${category.name}". Max allowed birth year: ${rule.maxBirthYear}`,
-            );
-          }
-        }
-      }
-
-      if (rule.type === 'GENDER' && (rule.allowedGenders?.length ?? 0) > 0) {
-        if (!player.gender) {
-          throw new BadRequestException(
-            `Player "${player.lastName} ${player.firstName}" has no gender, but category "${category.name}" has gender restriction`,
-          );
-        }
-        if (!rule.allowedGenders.includes(player.gender)) {
-          throw new BadRequestException(
-            `Player "${player.lastName} ${player.firstName}" gender "${player.gender}" is not allowed for category "${category.name}"`,
-          );
-        }
-      }
-    }
+    void tenantId;
+    void teamId;
+    void playerId;
   }
 
   async list(
@@ -188,6 +102,15 @@ export class TeamsService {
         equals: query.category,
         mode: 'insensitive',
       };
+    }
+
+    const ageGroupIdQ = query.ageGroupId?.trim();
+    if (ageGroupIdQ) {
+      where.ageGroupId = ageGroupIdQ;
+    }
+    const regionIdQ = query.regionId?.trim();
+    if (regionIdQ) {
+      where.regionId = regionIdQ;
     }
 
     // MVP ограничения: TEAM_ADMIN видит только свои команды (назначенные через TeamAdmin)
@@ -217,6 +140,8 @@ export class TeamsService {
       const teamAdminUserIdParam =
         actorRole === 'TEAM_ADMIN' ? actorUserId : null;
       const categoryParam = query.category ?? null;
+      const ageGroupIdParam = query.ageGroupId?.trim() || null;
+      const regionIdParam = query.regionId?.trim() || null;
 
       const rows = (await this.prisma.$queryRaw<
         Array<{
@@ -228,6 +153,11 @@ export class TeamsService {
           coachName: string | null;
           playersCount: bigint | number;
           tournamentsCount: bigint | number;
+          ageGroup_id: string | null;
+          ageGroup_name: string | null;
+          ageGroup_shortLabel: string | null;
+          region_id: string | null;
+          region_name: string | null;
         }>
       >(Prisma.sql`
         SELECT
@@ -238,11 +168,20 @@ export class TeamsService {
           t."category",
           t."coachName",
           (SELECT COUNT(*) FROM "TeamPlayer" tp WHERE tp."teamId" = t."id") AS "playersCount",
-          (SELECT COUNT(*) FROM "TournamentTeam" tt WHERE tt."teamId" = t."id") AS "tournamentsCount"
+          (SELECT COUNT(*) FROM "TournamentTeam" tt WHERE tt."teamId" = t."id") AS "tournamentsCount",
+          ag."id" AS "ageGroup_id",
+          ag."name" AS "ageGroup_name",
+          ag."shortLabel" AS "ageGroup_shortLabel",
+          r."id" AS "region_id",
+          r."name" AS "region_name"
         FROM "Team" t
+        LEFT JOIN "AgeGroup" ag ON ag."id" = t."ageGroupId"
+        LEFT JOIN "Region" r ON r."id" = t."regionId"
         WHERE t."tenantId" = ${tenantId}
           AND (${nameParam}::text IS NULL OR t."name" ILIKE ('%' || ${nameParam} || '%'))
           AND (${categoryParam}::text IS NULL OR LOWER(COALESCE(t."category", '')) = LOWER(${categoryParam}))
+          AND (${ageGroupIdParam}::text IS NULL OR t."ageGroupId" = ${ageGroupIdParam})
+          AND (${regionIdParam}::text IS NULL OR t."regionId" = ${regionIdParam})
           AND (${tournamentIdParam}::text IS NULL OR EXISTS (
             SELECT 1 FROM "TournamentTeam" tt
             WHERE tt."teamId" = t."id" AND tt."tournamentId" = ${tournamentIdParam}
@@ -268,6 +207,20 @@ export class TeamsService {
           coachName: t.coachName,
           playersCount: Number(t.playersCount ?? 0),
           tournamentsCount: Number(t.tournamentsCount ?? 0),
+          ageGroupId: t.ageGroup_id,
+          ageGroup:
+            t.ageGroup_id && t.ageGroup_name
+              ? {
+                  id: t.ageGroup_id,
+                  name: t.ageGroup_name,
+                  shortLabel: t.ageGroup_shortLabel,
+                }
+              : null,
+          regionId: t.region_id,
+          region:
+            t.region_id && t.region_name
+              ? { id: t.region_id, name: t.region_name }
+              : null,
         })),
         total,
         page: pageResolved,
@@ -288,6 +241,10 @@ export class TeamsService {
       take,
       include: {
         _count: { select: { players: true, tournamentTeams: true } },
+        ageGroup: {
+          select: { id: true, name: true, shortLabel: true },
+        },
+        region: { select: { id: true, name: true } },
       },
     });
 
@@ -301,6 +258,16 @@ export class TeamsService {
         coachName: t.coachName,
         playersCount: t._count.players,
         tournamentsCount: t._count.tournamentTeams,
+        ageGroupId: t.ageGroupId,
+        ageGroup: t.ageGroup
+          ? {
+              id: t.ageGroup.id,
+              name: t.ageGroup.name,
+              shortLabel: t.ageGroup.shortLabel,
+            }
+          : null,
+        regionId: t.regionId,
+        region: t.region ? { id: t.region.id, name: t.region.name } : null,
       })),
       total,
       page: pageResolved,
@@ -318,12 +285,40 @@ export class TeamsService {
     const logoUrlCreate =
       dto.logoUrl === undefined || dto.logoUrl === '' ? undefined : dto.logoUrl;
 
+    let ageGroupIdToSet: string | undefined = undefined;
+    let derivedCategory: string | null = null;
+    const rawAg = dto.ageGroupId?.trim();
+    if (rawAg) {
+      const ag = await this.prisma.ageGroup.findFirst({
+        where: { id: rawAg, tenantId },
+        select: { id: true, name: true },
+      });
+      if (!ag) {
+        throw new BadRequestException('Возрастная группа не найдена');
+      }
+      ageGroupIdToSet = ag.id;
+      derivedCategory = ag.name;
+    }
+
+    let regionIdToSet: string | undefined = undefined;
+    const rawReg = dto.regionId?.trim();
+    if (rawReg) {
+      const rg = await this.prisma.region.findFirst({
+        where: { id: rawReg, tenantId },
+        select: { id: true },
+      });
+      if (!rg) {
+        throw new BadRequestException('Регион не найден');
+      }
+      regionIdToSet = rg.id;
+    }
+
     const team = await this.prisma.team.create({
       data: {
         tenantId,
         name: dto.name,
         slug: dto.slug,
-        category: dto.category,
+        category: derivedCategory,
         logoUrl: logoUrlCreate,
         coachName: dto.coachName,
         coachPhone: dto.coachPhone,
@@ -331,6 +326,8 @@ export class TeamsService {
         contactName: dto.contactName,
         contactPhone: dto.contactPhone,
         description: dto.description,
+        ageGroupId: ageGroupIdToSet,
+        regionId: regionIdToSet,
       },
     });
 
@@ -359,6 +356,43 @@ export class TeamsService {
           ? null
           : dto.logoUrl;
 
+    let ageGroupForUpdate: string | null | undefined = undefined;
+    let categoryForUpdate: string | null | undefined = undefined;
+    if (dto.ageGroupId !== undefined) {
+      if (dto.ageGroupId === null || dto.ageGroupId === '') {
+        ageGroupForUpdate = null;
+        categoryForUpdate = null;
+      } else {
+        const aid = String(dto.ageGroupId).trim();
+        const ag = await this.prisma.ageGroup.findFirst({
+          where: { id: aid, tenantId },
+          select: { id: true, name: true },
+        });
+        if (!ag) {
+          throw new BadRequestException('Возрастная группа не найдена');
+        }
+        ageGroupForUpdate = aid;
+        categoryForUpdate = ag.name;
+      }
+    }
+
+    let regionForUpdate: string | null | undefined = undefined;
+    if (dto.regionId !== undefined) {
+      if (dto.regionId === null || dto.regionId === '') {
+        regionForUpdate = null;
+      } else {
+        const rid = String(dto.regionId).trim();
+        const rg = await this.prisma.region.findFirst({
+          where: { id: rid, tenantId },
+          select: { id: true },
+        });
+        if (!rg) {
+          throw new BadRequestException('Регион не найден');
+        }
+        regionForUpdate = rid;
+      }
+    }
+
     const previousLogoUrl = team.logoUrl;
     const removeOldLogoFromS3 =
       !!previousLogoUrl &&
@@ -370,7 +404,9 @@ export class TeamsService {
       data: {
         name: dto.name,
         slug: dto.slug,
-        category: dto.category,
+        ...(categoryForUpdate !== undefined
+          ? { category: categoryForUpdate }
+          : {}),
         logoUrl: logoUrlResolved,
         coachName: dto.coachName,
         coachPhone: dto.coachPhone,
@@ -378,6 +414,10 @@ export class TeamsService {
         contactName: dto.contactName,
         contactPhone: dto.contactPhone,
         description: dto.description,
+        ...(ageGroupForUpdate !== undefined
+          ? { ageGroupId: ageGroupForUpdate }
+          : {}),
+        ...(regionForUpdate !== undefined ? { regionId: regionForUpdate } : {}),
       },
     });
 

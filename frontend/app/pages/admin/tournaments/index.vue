@@ -11,17 +11,28 @@ import type {
   UserLite,
 } from '~/types/admin/tournaments-index'
 import type { TeamLite } from '~/types/tournament-admin'
+import {
+  buildDefaultTournamentForm,
+  patchFormFromTournament,
+} from '~/composables/admin/useTournamentForm'
+import { appendUniqueById, buildTournamentListParams } from '~/composables/admin/useTournamentList'
+import { useTournamentReferences } from '~/composables/admin/useTournamentReferences'
 import { getApiErrorMessage, getApiErrorMessages } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { tournamentFormatLabel } from '~/utils/tournamentAdminUi'
 import { slugifyFromTitle } from '~/utils/slugify'
-import SelectButton from 'primevue/selectbutton'
+import AdminTournamentCard from '~/app/components/admin/tournaments/AdminTournamentCard.vue'
+import AdminTournamentFormDialog from '~/app/components/admin/tournaments/AdminTournamentFormDialog.vue'
+import AdminTournamentListFilters from '~/app/components/admin/tournaments/AdminTournamentListFilters.vue'
+import useVuelidate from '@vuelidate/core'
+import { required } from '@vuelidate/validators'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 definePageMeta({ layout: 'admin' })
 
 const router = useRouter()
 const toast = useToast()
+const { t } = useI18n()
 const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 
@@ -46,7 +57,8 @@ let tournamentsObserver: IntersectionObserver | null = null
 let detachScrollUnlock: (() => void) | null = null
 
 const showForm = ref(false)
-const saving = ref(false)
+const loadingEdit = ref(false)
+const savingForm = ref(false)
 const editingId = ref<string | null>(null)
 const isEdit = computed(() => !!editingId.value)
 const initialTeamIds = ref<string[]>([])
@@ -110,7 +122,7 @@ const onLogoFileChange = async (e: Event) => {
     form.logoUrl = imageUrl
 
     // Уже существующий турнир — сразу пишем logoUrl в API
-    if (editingId.value) {
+  if (editingId.value) {
       try {
         await authFetch(apiUrl(`/tournaments/${editingId.value}`), {
           method: 'PATCH',
@@ -188,15 +200,13 @@ const removeTournamentLogo = async (e: MouseEvent) => {
 
 const teamsLoading = ref(false)
 const teams = ref<TeamLite[]>([])
-const categoriesLoading = ref(false)
-const teamCategoryOptions = ref<Array<{ label: string; value: string }>>([])
 
-const formatOptions = [
+const formatOptions: { value: TournamentFormat; label: string }[] = [
   { value: 'SINGLE_GROUP', label: 'Единая группа (круговой турнир)' },
   { value: 'PLAYOFF', label: 'Сразу плей-офф (олимпийка)' },
   { value: 'GROUPS_PLUS_PLAYOFF', label: 'Группы + плей-офф' },
   { value: 'MANUAL', label: 'Только ручное расписание (без автогенерации)' },
-] as const satisfies { value: TournamentFormat; label: string }[]
+]
 
 const statusOptions = [
   { value: 'DRAFT' as const, label: 'Черновик' },
@@ -211,6 +221,11 @@ const statusTabOptions = [
 ]
 
 const statusFilter = ref<'all' | TournamentStatus>('all')
+/** Пустая строка — все сезоны */
+const seasonFilter = ref<string>('')
+/** Пустая строка — все типы соревнований */
+const competitionFilter = ref<string>('')
+const ageGroupFilter = ref<string>('')
 
 const hasMoreTournaments = computed(
   () => tournaments.value.length < tournamentsTotal.value,
@@ -237,36 +252,50 @@ function statusBadgeClass(s: TournamentStatus): string {
 
 const adminsLoading = ref(false)
 const users = ref<UserLite[]>([])
-
-const form = reactive({
-  name: '',
-  description: '',
-  category: '',
-  logoUrl: '',
-  format: 'SINGLE_GROUP' as TournamentFormat,
-  groupCount: 1,
-  playoffQualifiersPerGroup: 2,
-  status: 'DRAFT' as TournamentStatus,
-  startsAt: null as Date | null,
-  endsAt: null as Date | null,
-  intervalDays: 7,
-  allowedDays: [6, 0] as number[],
-  minTeams: 6,
-  pointsWin: 3,
-  pointsDraw: 1,
-  pointsLoss: 0,
-  adminIds: [] as string[],
-  teamIds: [] as string[],
+const {
+  seasonsList,
+  seasonsLoading,
+  competitionsList,
+  competitionsLoading,
+  ageGroupsList,
+  ageGroupsLoading,
+  stadiumsLoading,
+  refereesLoading,
+  seasonSelectOptions,
+  seasonFilterOptions,
+  competitionSelectOptions,
+  competitionFilterOptions,
+  ageGroupSelectOptions,
+  ageGroupFilterOptions,
+  stadiumSelectOptions,
+  refereeMultiOptions,
+  fetchSeasonsList,
+  fetchCompetitionsList,
+  fetchAgeGroupsList,
+  fetchStadiumsReferees,
+} = useTournamentReferences({
+  token,
+  tenantId,
+  apiUrl,
+  authFetch,
 })
+
+const form = reactive(buildDefaultTournamentForm())
+const submitAttempted = ref(false)
+const tournamentValidationRules = computed(() => ({
+  name: { required },
+  teamIds: {
+    required: (value: unknown) => Array.isArray(value) && value.length > 0,
+  },
+  logoUrl: {},
+  startsAt: {},
+  endsAt: {},
+  minTeams: {},
+  groupCount: {},
+}))
+const v$ = useVuelidate(tournamentValidationRules, form, { $autoDirty: true })
 
 const tournamentSlugGenerated = computed(() => slugifyFromTitle(form.name, 'tournament'))
-const tournamentCategorySelectOptions = computed(() => {
-  const value = form.category?.trim() || ''
-  if (!value) return teamCategoryOptions.value
-  if (teamCategoryOptions.value.some((o) => o.value === value)) return teamCategoryOptions.value
-  return [{ label: value, value }, ...teamCategoryOptions.value]
-})
-
 const impliedGroupCount = computed<number | null>(() => {
   switch (form.format) {
     case 'SINGLE_GROUP':
@@ -309,9 +338,24 @@ const minTeamsGridClass = computed(() => {
   return 'md:col-start-1'
 })
 const playoffTeamCountOptions = [4, 8, 16, 32, 64, 128, 256]
+const groupedPlayoffFormats: TournamentFormat[] = [
+  'GROUPS_PLUS_PLAYOFF',
+  'GROUPS_2',
+  'GROUPS_3',
+  'GROUPS_4',
+]
 
 function isPowerOfTwo(n: number) {
   return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 watch(
@@ -364,7 +408,7 @@ watch(
 )
 
 watch(
-  () => form.category,
+  () => form.ageGroupId,
   async () => {
     await fetchTeamsLite()
     const allowedIds = new Set((teams.value ?? []).map((t) => t.id))
@@ -374,7 +418,7 @@ watch(
       toast.add({
         severity: 'warn',
         summary: 'Состав обновлен',
-        detail: 'Команды другой категории убраны из турнира.',
+        detail: 'Команды из другой возрастной группы убраны из турнира.',
         life: 3500,
       })
     }
@@ -407,7 +451,7 @@ const minTeamsHintText = computed(() =>
 )
 
 const playoffPreview = computed(() => {
-  if (form.format !== 'GROUPS_PLUS_PLAYOFF' && form.format !== 'MANUAL') return null
+  if (!groupedPlayoffFormats.includes(form.format) && form.format !== 'MANUAL') return null
   if (form.format === 'MANUAL' && !manualPlayoffEnabled.value) return null
   const groups = Number(form.groupCount)
   const qualifiersPerGroup = Number(form.playoffQualifiersPerGroup)
@@ -429,7 +473,7 @@ const playoffPreview = computed(() => {
 })
 
 const groupedTeamsPreview = computed(() => {
-  if (form.format !== 'GROUPS_PLUS_PLAYOFF') return null
+  if (!groupedPlayoffFormats.includes(form.format)) return null
   const groups = Number(form.groupCount)
   const minTeams = Number(form.minTeams)
   if (!Number.isInteger(groups) || groups < 1) return null
@@ -451,7 +495,7 @@ const groupedTeamsPreview = computed(() => {
 })
 
 const groupedAndPlayoffHint = computed(() => {
-  if (form.format !== 'GROUPS_PLUS_PLAYOFF') return null
+  if (!groupedPlayoffFormats.includes(form.format)) return null
   const group = groupedTeamsPreview.value
   const playoff = playoffPreview.value
   if (!group && !playoff) return null
@@ -486,7 +530,7 @@ const manualGroupsHint = computed(() => {
 })
 
 const formatCalendarHint = computed<{ valid: boolean; text: string } | null>(() => {
-  if (form.format === 'GROUPS_PLUS_PLAYOFF') {
+  if (groupedPlayoffFormats.includes(form.format)) {
     if (!groupedAndPlayoffHint.value) return null
     return groupedAndPlayoffHint.value
   }
@@ -530,6 +574,10 @@ function syncNumericField(key: NumericFieldKey, value: unknown) {
   if (Number.isFinite(n)) form[key] = n
 }
 
+const onStatusFilterChange = (value: string) => {
+  statusFilter.value = value === 'all' ? 'all' : (value as TournamentStatus)
+}
+
 const fetchTournaments = async (opts: { reset?: boolean } = {}) => {
   if (!token.value) {
     loading.value = false
@@ -546,14 +594,15 @@ const fetchTournaments = async (opts: { reset?: boolean } = {}) => {
       apiUrl(`/tenants/${tenantId.value}/tournaments`),
       {
         headers: { Authorization: `Bearer ${token.value}` },
-        params: {
+        params: buildTournamentListParams({
           page: nextPage,
           pageSize: tournamentsPageSize,
-          ...(statusFilter.value !== 'all' ? { status: statusFilter.value } : {}),
-          ...(tournamentsSearch.value.trim()
-            ? { q: tournamentsSearch.value.trim() }
-            : {}),
-        },
+          statusFilter: statusFilter.value,
+          search: tournamentsSearch.value,
+          seasonId: seasonFilter.value,
+          competitionId: competitionFilter.value,
+          ageGroupId: ageGroupFilter.value,
+        }),
       },
     )
     const items = res.items ?? []
@@ -563,13 +612,7 @@ const fetchTournaments = async (opts: { reset?: boolean } = {}) => {
       tournaments.value = items
       return
     }
-    const seen = new Set(tournaments.value.map((t) => t.id))
-    for (const t of items) {
-      if (!seen.has(t.id)) {
-        seen.add(t.id)
-        tournaments.value.push(t)
-      }
-    }
+    tournaments.value = appendUniqueById(tournaments.value, items)
   } finally {
     if (reset) {
       await sleepRemainingAfter(MIN_SKELETON_DISPLAY_MS, loadStartedAt)
@@ -603,22 +646,6 @@ const fetchUsersLite = async () => {
   }
 }
 
-const fetchTeamCategories = async () => {
-  if (!token.value) return
-  categoriesLoading.value = true
-  try {
-    const res = await authFetch<Array<{ id: string; name: string; slug?: string | null }>>(
-      apiUrl(`/tenants/${tenantId.value}/team-categories`),
-      {
-        headers: { Authorization: `Bearer ${token.value}` },
-      },
-    )
-    teamCategoryOptions.value = res.map((c) => ({ label: c.name, value: c.name }))
-  } finally {
-    categoriesLoading.value = false
-  }
-}
-
 const fetchTeamsLite = async () => {
   if (!token.value) return
   teamsLoading.value = true
@@ -628,7 +655,7 @@ const fetchTeamsLite = async () => {
       {
       headers: { Authorization: `Bearer ${token.value}` },
       params: {
-        ...(form.category ? { category: form.category } : {}),
+        ...(form.ageGroupId.trim() ? { ageGroupId: form.ageGroupId.trim() } : {}),
       },
       },
     )
@@ -641,95 +668,45 @@ const fetchTeamsLite = async () => {
 }
 
 const openCreate = async () => {
+  submitAttempted.value = false
   editingId.value = null
   initialTeamIds.value = []
-  form.name = ''
-  form.description = ''
-  form.category = ''
-  form.logoUrl = ''
-  form.format = 'SINGLE_GROUP'
-  form.groupCount = 1
-  form.playoffQualifiersPerGroup = 2
-  form.status = 'DRAFT'
-  form.startsAt = null
-  form.endsAt = null
-  form.intervalDays = 7
-  form.allowedDays = [6, 0]
-  form.minTeams = 6
-  form.pointsWin = 3
-  form.pointsDraw = 1
-  form.pointsLoss = 0
-  form.adminIds = []
-  form.teamIds = []
+  Object.assign(form, buildDefaultTournamentForm())
   manualPlayoffEnabled.value = false
+  v$.value.$reset()
   showForm.value = true
   if (!users.value.length) await fetchUsersLite()
-  if (!teamCategoryOptions.value.length) await fetchTeamCategories()
+  if (!seasonsList.value.length) await fetchSeasonsList()
+  if (!competitionsList.value.length) await fetchCompetitionsList()
+  if (!ageGroupsList.value.length) await fetchAgeGroupsList()
   await fetchTeamsLite()
-}
-
-function normalizeLegacyGroupsFormat(
-  format: TournamentFormat,
-  groupCount: number,
-): { format: TournamentFormat; groupCount: number } {
-  switch (format) {
-    case 'GROUPS_2':
-      return { format: 'GROUPS_PLUS_PLAYOFF', groupCount: Math.max(groupCount, 2) }
-    case 'GROUPS_3':
-      return { format: 'GROUPS_PLUS_PLAYOFF', groupCount: Math.max(groupCount, 3) }
-    case 'GROUPS_4':
-      return { format: 'GROUPS_PLUS_PLAYOFF', groupCount: Math.max(groupCount, 4) }
-    default:
-      return { format, groupCount }
-  }
+  await fetchStadiumsReferees()
 }
 
 const openEdit = async (t: TournamentRow) => {
   if (!token.value) return
+  submitAttempted.value = false
   editingId.value = t.id
-  saving.value = true
+  loadingEdit.value = true
   try {
     const res = await authFetch<TournamentDetails>(apiUrl(`/tournaments/${t.id}`), {
       headers: { Authorization: `Bearer ${token.value}` },
     })
 
-    form.name = res.name
-    form.description = res.description ?? ''
-    form.category = (res as any).category ?? ''
-    form.logoUrl = res.logoUrl ?? ''
-    const normalized = normalizeLegacyGroupsFormat(res.format, (res.groupCount ?? 1) as number)
-    form.format = normalized.format
-    form.groupCount = normalized.groupCount
-    form.playoffQualifiersPerGroup = (res as any).playoffQualifiersPerGroup ?? 2
-    form.status = res.status
-    form.startsAt = res.startsAt ? new Date(res.startsAt) : null
-    form.endsAt = res.endsAt ? new Date(res.endsAt) : null
-    form.intervalDays = res.intervalDays ?? 7
-    form.allowedDays = Array.isArray(res.allowedDays) ? res.allowedDays : []
-    form.minTeams = res.minTeams ?? 2
-    form.pointsWin = res.pointsWin ?? 3
-    form.pointsDraw = res.pointsDraw ?? 1
-    form.pointsLoss = res.pointsLoss ?? 0
-    form.adminIds = Array.isArray(res.members) ? res.members.map((m) => m.userId) : []
+    const mapped = patchFormFromTournament(form, res)
+    initialTeamIds.value = mapped.initialTeamIds
+    manualPlayoffEnabled.value = mapped.manualPlayoffEnabled
 
-    const anyRes: any = res as any
-    const ids = Array.isArray(anyRes.tournamentTeams)
-      ? anyRes.tournamentTeams.map((x: any) => x.teamId).filter(Boolean)
-      : []
-    form.teamIds = ids
-    initialTeamIds.value = [...ids]
-    manualPlayoffEnabled.value =
-      normalized.format === 'MANUAL'
-        ? Array.isArray((res as any).matches) &&
-          (res as any).matches.some((m: any) => m?.stage === 'PLAYOFF')
-        : false
-
+    v$.value.$reset()
     showForm.value = true
     if (!users.value.length) await fetchUsersLite()
-    if (!teamCategoryOptions.value.length) await fetchTeamCategories()
+    if (!seasonsList.value.length) await fetchSeasonsList()
+    if (!competitionsList.value.length) await fetchCompetitionsList()
+    if (!ageGroupsList.value.length) await fetchAgeGroupsList()
     await fetchTeamsLite()
+    await fetchStadiumsReferees()
   } finally {
-    saving.value = false
+    loadingEdit.value = false
   }
 }
 
@@ -739,8 +716,8 @@ const syncTournamentTeams = async (tournamentId: string) => {
   if (!token.value) return
   const next = new Set(form.teamIds)
   const prev = new Set(initialTeamIds.value)
-  const toAdd = [...next].filter((id) => !prev.has(id))
-  const toRemove = [...prev].filter((id) => !next.has(id))
+  const toAdd = [...next].filter((id): id is string => typeof id === 'string' && !prev.has(id))
+  const toRemove = [...prev].filter((id): id is string => typeof id === 'string' && !next.has(id))
 
   for (const teamId of toAdd) {
     if (teamId.startsWith('team-')) continue
@@ -760,78 +737,88 @@ const syncTournamentTeams = async (tournamentId: string) => {
   initialTeamIds.value = [...form.teamIds]
 }
 
-const saveTournament = async () => {
-  if (!token.value) return
-  if (!form.name.trim()) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Название не заполнено',
-      detail: 'Укажите название турнира.',
-      life: 3500,
-    })
-    return
-  }
-  if (!form.teamIds.length) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Не выбраны команды',
-      detail: 'Добавьте хотя бы одну команду для создания турнира.',
-      life: 4000,
-    })
-    return
-  }
-  if (form.teamIds.length !== form.minTeams) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Проверь количество команд',
-      detail: `Нужно выбрать ровно ${form.minTeams} команд. Сейчас выбрано: ${form.teamIds.length}.`,
-      life: 5000,
-    })
-    return
-  }
-  if (form.startsAt && form.endsAt && form.startsAt > form.endsAt) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Проверь даты',
-      detail: 'Дата начала не может быть позже даты окончания.',
-      life: 4000,
-    })
-    return
-  }
+const tournamentFormErrors = computed(() => {
+  const name = form.name.trim()
+  const logoUrl = form.logoUrl.trim()
+
+  const nameError = name ? '' : t('admin.validation.required_name')
+  const logoUrlError =
+    logoUrl && !isHttpUrl(logoUrl)
+      ? t('admin.validation.invalid_url')
+      : ''
+  const teamsError =
+    !form.teamIds.length
+      ? 'Добавьте хотя бы одну команду для создания турнира.'
+      : form.teamIds.length !== form.minTeams
+        ? `Нужно выбрать ровно ${form.minTeams} команд. Сейчас выбрано: ${form.teamIds.length}.`
+        : ''
+  const datesError =
+    form.startsAt && form.endsAt && form.startsAt > form.endsAt
+      ? t('admin.validation.end_after_start')
+      : ''
+
+  let formatError = ''
   if (form.format === 'PLAYOFF' && (form.minTeams < 4 || !isPowerOfTwo(form.minTeams))) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Некорректное количество команд',
-      detail: 'Для олимпийки укажите 4, 8, 16, 32, 64, 128 и т.д.',
-      life: 4500,
-    })
-    return
-  }
-  if (form.format === 'PLAYOFF' && !playoffTeamCountOptions.includes(form.minTeams)) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Некорректное количество команд',
-      detail: 'Для олимпийки доступны только: 4, 8, 16, 32, 64, 128, 256.',
-      life: 4500,
-    })
-    return
-  }
-  if (
-    form.format === 'GROUPS_PLUS_PLAYOFF' &&
+    formatError = 'Для олимпийки укажите 4, 8, 16, 32, 64, 128 и т.д.'
+  } else if (form.format === 'PLAYOFF' && !playoffTeamCountOptions.includes(form.minTeams)) {
+    formatError = 'Для олимпийки доступны только: 4, 8, 16, 32, 64, 128, 256.'
+  } else if (
+    groupedPlayoffFormats.includes(form.format) &&
     (!Number.isInteger(form.groupCount) ||
       form.groupCount < 1 ||
       form.minTeams < form.groupCount * 2 ||
       form.minTeams % form.groupCount !== 0)
   ) {
-    toast.add({
-      severity: 'warn',
-      summary: 'Некорректное количество команд',
-      detail: `Для ${form.groupCount} групп количество команд должно быть кратно числу групп и не меньше ${form.groupCount * 2}.`,
-      life: 5000,
-    })
+    formatError = `Для ${form.groupCount} групп количество команд должно быть кратно числу групп и не меньше ${form.groupCount * 2}.`
+  } else if (
+    groupedPlayoffFormats.includes(form.format) &&
+    (!Number.isInteger(form.playoffQualifiersPerGroup) ||
+      form.playoffQualifiersPerGroup < 1 ||
+      form.playoffQualifiersPerGroup > 8 ||
+      !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
+  ) {
+    const total = form.groupCount * form.playoffQualifiersPerGroup
+    formatError = `Сетка плей-офф невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128 или 256.`
+  } else if (
+    form.format === 'MANUAL' &&
+    manualPlayoffEnabled.value &&
+    (!Number.isInteger(form.playoffQualifiersPerGroup) ||
+      form.playoffQualifiersPerGroup < 1 ||
+      form.playoffQualifiersPerGroup > 8 ||
+      !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
+  ) {
+    const total = form.groupCount * form.playoffQualifiersPerGroup
+    formatError = `Для ручного турнира с плей-офф сетка невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128 или 256.`
+  }
+
+  const firstError = nameError || logoUrlError || teamsError || datesError || formatError
+  return { nameError, logoUrlError, teamsError, datesError, formatError, firstError }
+})
+
+const canSaveTournament = computed(
+  () =>
+    !!token.value &&
+    !loadingEdit.value &&
+    !savingForm.value &&
+    !v$.value.$invalid &&
+    !tournamentFormErrors.value.firstError,
+)
+const showNameError = computed(
+  () => (submitAttempted.value || v$.value.name.$dirty) && !!tournamentFormErrors.value.nameError,
+)
+const showTeamsError = computed(
+  () => (submitAttempted.value || v$.value.teamIds.$dirty) && !!tournamentFormErrors.value.teamsError,
+)
+const saveTournament = async () => {
+  if (!token.value) return
+  submitAttempted.value = true
+  v$.value.$touch()
+  const name = form.name.trim()
+  const logoUrl = form.logoUrl.trim()
+  if (!canSaveTournament.value) {
     return
   }
-  saving.value = true
+  savingForm.value = true
   try {
     const playoffQualifiersForBody =
       form.format === 'MANUAL' && !manualPlayoffEnabled.value
@@ -839,11 +826,10 @@ const saveTournament = async () => {
         : form.playoffQualifiersPerGroup
 
     const body = {
-      name: form.name,
+      name,
       slug: tournamentSlugGenerated.value,
       description: form.description || undefined,
-      category: form.category || undefined,
-      logoUrl: form.logoUrl || undefined,
+      logoUrl: logoUrl || undefined,
       format: form.format,
       groupCount: form.format === 'PLAYOFF' ? 0 : form.groupCount,
       playoffQualifiersPerGroup: playoffQualifiersForBody,
@@ -857,6 +843,11 @@ const saveTournament = async () => {
       pointsDraw: form.pointsDraw,
       pointsLoss: form.pointsLoss,
       admins: form.adminIds.map((id) => ({ userId: id })),
+      stadiumId: form.stadiumId.trim() ? form.stadiumId : null,
+      seasonId: form.seasonId.trim() ? form.seasonId.trim() : null,
+      competitionId: form.competitionId.trim() ? form.competitionId.trim() : null,
+      ageGroupId: form.ageGroupId.trim() ? form.ageGroupId.trim() : null,
+      refereeIds: form.refereeIds,
     }
 
     let id: string
@@ -891,7 +882,7 @@ const saveTournament = async () => {
       })
     }
   } finally {
-    saving.value = false
+    savingForm.value = false
   }
 }
 
@@ -963,6 +954,14 @@ const goToTournament = (t: TournamentRow) => {
   router.push(`/admin/tournaments/${t.id}`)
 }
 
+const openTournamentNews = (t: TournamentRow) => {
+  router.push({ path: '/admin/news', query: { tournament: t.id } })
+}
+
+const openTournamentGallery = (t: TournamentRow) => {
+  router.push({ path: '/admin/gallery', query: { tournament: t.id } })
+}
+
 onMounted(() => {
   if (typeof window !== 'undefined') {
     syncWithStorage()
@@ -973,7 +972,9 @@ onMounted(() => {
     }
   }
   void fetchTournaments({ reset: true })
-  void fetchTeamCategories()
+  void fetchSeasonsList()
+  void fetchCompetitionsList()
+  void fetchAgeGroupsList()
 
   if (typeof window !== 'undefined') {
     const unlockAndMaybeLoad = () => {
@@ -1041,6 +1042,18 @@ watch(loadMoreAnchor, (el) => {
 watch(statusFilter, () => {
   void fetchTournaments({ reset: true })
 })
+
+watch(seasonFilter, () => {
+  void fetchTournaments({ reset: true })
+})
+
+watch(competitionFilter, () => {
+  void fetchTournaments({ reset: true })
+})
+
+watch(ageGroupFilter, () => {
+  void fetchTournaments({ reset: true })
+})
 </script>
 
 <template>
@@ -1091,95 +1104,49 @@ watch(statusFilter, () => {
       </div>
     </div>
     <div v-else class="space-y-3">
-      <div
-        v-if="tournamentsTotal || tournamentsSearch || statusFilter !== 'all'"
-        class="flex flex-col gap-3 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 px-4 py-3"
-      >
-        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <span class="text-sm font-medium text-surface-700 dark:text-surface-200">Статус</span>
-          <SelectButton
-            v-model="statusFilter"
-            :options="statusTabOptions"
-            option-label="label"
-            option-value="value"
-            class="tournament-status-filter w-full sm:w-auto [&_.p-button]:flex-1 sm:[&_.p-button]:flex-initial"
-          />
-        </div>
-        <InputText
-          :model-value="tournamentsSearch"
-          class="w-full"
-          placeholder="Поиск турнира по названию"
-          @update:model-value="onTournamentsSearchInput"
-        />
-        <div class="text-xs text-muted-color">
-          Загружено {{ tournaments.length }} из {{ tournamentsTotal }}
-        </div>
-      </div>
+      <AdminTournamentListFilters
+        v-if="
+          tournamentsTotal ||
+          tournamentsSearch ||
+          statusFilter !== 'all' ||
+          seasonFilter !== '' ||
+          competitionFilter !== '' ||
+          ageGroupFilter !== ''
+        "
+        :tournamentsTotal="tournamentsTotal"
+        :tournamentsLoaded="tournaments.length"
+        :tournamentsSearch="tournamentsSearch"
+        :statusFilter="statusFilter"
+        :statusTabOptions="statusTabOptions"
+        :seasonFilter="seasonFilter"
+        :seasonFilterOptions="seasonFilterOptions"
+        :seasonsLoading="seasonsLoading"
+        :competitionFilter="competitionFilter"
+        :competitionFilterOptions="competitionFilterOptions"
+        :competitionsLoading="competitionsLoading"
+        :ageGroupFilter="ageGroupFilter"
+        :ageGroupFilterOptions="ageGroupFilterOptions"
+        :ageGroupsLoading="ageGroupsLoading"
+        @update:statusFilter="onStatusFilterChange"
+        @update:seasonFilter="(v) => (seasonFilter = v)"
+        @update:competitionFilter="(v) => (competitionFilter = v)"
+        @update:ageGroupFilter="(v) => (ageGroupFilter = v)"
+        @searchInput="onTournamentsSearchInput"
+      />
 
-      <div
+      <AdminTournamentCard
         v-for="t in tournaments"
         :key="t.id"
-        class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4"
-      >
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex items-start gap-5">
-            <div
-              class="w-40 h-40 shrink-0 rounded-xl border border-surface-200 dark:border-surface-600 bg-surface-100 dark:bg-surface-800 overflow-hidden"
-            >
-            <img
-              v-if="t.logoUrl"
-              :src="t.logoUrl"
-              alt="Логотип"
-              class="block h-full w-full object-cover"
-            />
-            <div v-else class="h-full w-full" aria-label="Нет логотипа"></div>
-          </div>
-
-          <div class="min-w-0">
-            <button class="text-primary hover:underline text-left" @click="goToTournament(t)">
-              <div class="text-base font-medium truncate">{{ t.name || 'Открыть турнир' }}</div>
-            </button>
-            <div class="text-xs text-muted-color">/{{ t.slug }}</div>
-
-            <div class="mt-3 space-y-2 text-sm">
-              <div class="flex items-baseline gap-2">
-                <div class="w-20 text-xs text-muted-color">Формат</div>
-                <div class="font-medium text-surface-900 dark:text-surface-100">{{ tournamentFormatLabel(t.format) }}</div>
-              </div>
-              <div class="flex items-center gap-2">
-                <div class="w-20 shrink-0 text-xs text-muted-color">Статус</div>
-                <span
-                  class="inline-flex max-w-full items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
-                  :class="statusBadgeClass(t.status)"
-                >
-                  {{ statusLabel(t.status) }}
-                </span>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <div class="w-20 text-xs text-muted-color">Команд</div>
-                <div class="font-medium text-surface-900 dark:text-surface-100">{{ t.teamsCount }}</div>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <div class="w-20 text-xs text-muted-color">Даты</div>
-                <div class="font-medium text-surface-900 dark:text-surface-100">
-                  <span v-if="t.startsAt">{{ new Date(t.startsAt).toLocaleDateString() }}</span>
-                  <span v-else class="text-muted-color">—</span>
-                  <span class="text-muted-color"> → </span>
-                  <span v-if="t.endsAt">{{ new Date(t.endsAt).toLocaleDateString() }}</span>
-                  <span v-else class="text-muted-color">—</span>
-                </div>
-              </div>
-            </div>
-          </div>
-          </div>
-
-          <div class="flex flex-col gap-2 shrink-0 items-end">
-            <Button icon="pi pi-external-link" text size="small" @click="goToTournament(t)" aria-label="Открыть" />
-            <Button icon="pi pi-pencil" text size="small" @click="openEdit(t)" aria-label="Редактировать" />
-            <Button icon="pi pi-trash" text severity="danger" size="small" @click="openDeleteDialog(t)" aria-label="Удалить" />
-          </div>
-        </div>
-      </div>
+        :tournament="t"
+        :formatLabel="tournamentFormatLabel(t.format)"
+        :statusLabel="statusLabel(t.status)"
+        :statusClass="statusBadgeClass(t.status)"
+        @open="goToTournament"
+        @edit="openEdit"
+        @delete="openDeleteDialog"
+        @news="openTournamentNews"
+        @gallery="openTournamentGallery"
+      />
 
       <div
         v-if="!loading && tournamentsTotal > 0 && !tournaments.length"
@@ -1198,13 +1165,15 @@ watch(statusFilter, () => {
       />
     </div>
 
-    <Dialog
+    <AdminTournamentFormDialog
       :visible="showForm"
       @update:visible="(v) => (showForm = v)"
-      modal
-      :header="isEdit ? 'Редактировать турнир' : 'Создать турнир'"
-      :style="{ width: '46rem', maxWidth: 'min(46rem, calc(100vw - 2rem))' }"
-      :contentStyle="{ paddingTop: '1.75rem' }"
+      :isEdit="isEdit"
+      :saving="savingForm || loadingEdit"
+      :submitAttempted="submitAttempted"
+      :canSave="canSaveTournament"
+      @cancel="showForm = false"
+      @save="saveTournament"
     >
       <div class="flex flex-col gap-4">
         <!-- Основное -->
@@ -1214,52 +1183,61 @@ watch(statusFilter, () => {
           <h3 class="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-color">Основное</h3>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <!-- Left: превью логотипа -->
-        <div class="md:col-span-1 h-full relative">
-          <button
-            type="button"
-            class="w-full h-full min-h-[10rem] overflow-hidden rounded-xl border border-surface-200 dark:border-surface-600 bg-surface-0 dark:bg-surface-900 flex items-center justify-center relative leading-none"
-            :class="
-              logoUploading || logoRemoving
-                ? 'cursor-wait opacity-80'
-                : 'cursor-pointer'
-            "
-            :disabled="logoUploading || logoRemoving"
-            @click="triggerLogoPick"
-            aria-label="Загрузить или заменить картинку турнира"
+        <div class="md:col-span-1 space-y-3">
+          <div
+            class="relative overflow-hidden rounded-xl border border-surface-200 bg-surface-100 dark:border-surface-600 dark:bg-surface-800"
           >
-            <img
-              v-if="form.logoUrl && !logoUploading && !logoRemoving"
-              :src="form.logoUrl"
-              alt="Логотип"
-              class="absolute inset-0 w-full h-full object-cover"
-            />
-            <div
-              v-else-if="!logoUploading && !logoRemoving"
-              class="relative flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+            <button
+              type="button"
+              class="relative block aspect-[4/3] w-full"
+              :class="logoUploading || logoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer'"
+              :disabled="logoUploading || logoRemoving"
+              @click="triggerLogoPick"
+              aria-label="Загрузить или заменить картинку турнира"
             >
-              <i class="pi pi-image text-3xl opacity-60" aria-hidden="true" />
-              <span class="text-xs">Нажми, чтобы загрузить логотип</span>
-            </div>
-            <div
-              v-if="logoUploading || logoRemoving"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 dark:bg-surface-900/90 text-sm text-surface-700 dark:text-surface-200"
-            >
-              <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
-              <span>{{ logoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
-            </div>
-          </button>
+              <img
+                v-if="form.logoUrl && !logoUploading && !logoRemoving"
+                :src="form.logoUrl"
+                alt="Логотип"
+                class="absolute inset-0 h-full w-full object-cover"
+              />
+              <div
+                v-else-if="!logoUploading && !logoRemoving"
+                class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+              >
+                <i class="pi pi-image text-3xl opacity-60" aria-hidden="true" />
+                <span class="text-xs">Нажми, чтобы загрузить логотип</span>
+              </div>
+              <div
+                v-if="logoUploading || logoRemoving"
+                class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 text-sm text-surface-700 dark:bg-surface-900/90 dark:text-surface-200"
+              >
+                <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
+                <span>{{ logoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
+              </div>
+            </button>
+          </div>
 
-          <Button
-            v-if="form.logoUrl && !logoUploading && !logoRemoving"
-            type="button"
-            icon="pi pi-trash"
-            rounded
-            severity="danger"
-            text
-            class="!absolute top-2 right-2 z-10 !h-9 !w-9 !min-w-9 shadow-sm bg-surface-0/90 dark:bg-surface-900/90 hover:!bg-surface-0 dark:hover:!bg-surface-900"
-            aria-label="Удалить логотип"
-            @click="removeTournamentLogo"
-          />
+          <div class="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              icon="pi pi-upload"
+              label="Загрузить"
+              severity="secondary"
+              :loading="logoUploading"
+              :disabled="logoUploading || logoRemoving"
+              @click="triggerLogoPick"
+            />
+            <Button
+              v-if="form.logoUrl && !logoUploading && !logoRemoving"
+              type="button"
+              icon="pi pi-trash"
+              label="Убрать"
+              text
+              severity="danger"
+              @click="removeTournamentLogo"
+            />
+          </div>
 
           <input
             ref="logoFileInput"
@@ -1272,10 +1250,15 @@ watch(statusFilter, () => {
 
         <!-- Right: title + dates -->
         <div class="space-y-4 md:col-span-1">
-          <FloatLabel variant="on" class="block">
-            <InputText id="t_name" v-model="form.name" class="w-full" />
-            <label for="t_name">Название</label>
-          </FloatLabel>
+          <div class="space-y-0.5">
+            <FloatLabel variant="on" class="block">
+              <InputText id="t_name" v-model="form.name" class="w-full" :invalid="showNameError" />
+              <label for="t_name">Название</label>
+            </FloatLabel>
+            <p v-if="showNameError" class="text-[11px] leading-3 text-red-500">
+              {{ tournamentFormErrors.nameError }}
+            </p>
+          </div>
 
           <FloatLabel variant="on" class="block">
             <InputText
@@ -1330,10 +1313,10 @@ watch(statusFilter, () => {
           class="rounded-xl border border-surface-200 bg-surface-0 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900 md:p-5"
         >
           <h3 class="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-color">Описание</h3>
-          <FloatLabel variant="on" class="block">
-            <Textarea id="t_desc" v-model="form.description" class="w-full" rows="3" />
-            <label for="t_desc">Текст для участников</label>
-          </FloatLabel>
+          <div>
+            <label for="t_desc" class="mb-1 block text-sm">Текст для участников</label>
+            <AdminMarkdownEditor input-id="t_desc" v-model="form.description" :rows="3" />
+          </div>
         </section>
 
         <!-- Формат и календарь -->
@@ -1360,31 +1343,6 @@ watch(statusFilter, () => {
                   class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                   aria-label="Подсказка: формат турнира"
                   v-tooltip.top="formatFieldHintText"
-                  @click.prevent
-                >
-                  <i class="pi pi-info-circle text-sm" aria-hidden="true" />
-                </button>
-              </label>
-            </FloatLabel>
-
-            <FloatLabel variant="on" class="block">
-              <Select
-                inputId="t_category"
-                v-model="form.category"
-                :options="tournamentCategorySelectOptions"
-                option-label="label"
-                option-value="value"
-                class="w-full"
-                :loading="categoriesLoading"
-                showClear
-              />
-              <label for="t_category" class="has-tooltip flex items-center gap-1.5">
-                <span>Категория турнира</span>
-                <button
-                  type="button"
-                  class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
-                  aria-label="Подсказка: категория турнира"
-                  v-tooltip.top="'Если категория выбрана, в турнир можно добавить только команды этой категории.'"
                   @click.prevent
                 >
                   <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -1544,6 +1502,88 @@ watch(statusFilter, () => {
           </div>
         </section>
 
+        <!-- Площадка и судьи -->
+        <section
+          class="rounded-xl border border-surface-200 bg-surface-0 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900 md:p-5"
+        >
+          <h3 class="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-color">
+            Площадка и судьи
+          </h3>
+          <p class="mb-3 text-xs text-muted-color">
+            Заполните справочники «Стадионы» и «Судьи», затем выберите площадку и судей. Сезон, тип
+            соревнования и возрастная группа («Сезоны», «Соревнования», «Возрастные группы») задают
+            контекст турнира для фильтров и публичного каталога.
+          </p>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <FloatLabel variant="on" class="block min-w-0">
+              <Select
+                inputId="t_seasonId"
+                v-model="form.seasonId"
+                :options="seasonSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :loading="seasonsLoading"
+              />
+              <label for="t_seasonId">Сезон</label>
+            </FloatLabel>
+            <FloatLabel variant="on" class="block min-w-0">
+              <Select
+                inputId="t_competitionId"
+                v-model="form.competitionId"
+                :options="competitionSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :loading="competitionsLoading"
+              />
+              <label for="t_competitionId">Тип соревнования</label>
+            </FloatLabel>
+            <FloatLabel variant="on" class="block min-w-0">
+              <Select
+                inputId="t_ageGroupId"
+                v-model="form.ageGroupId"
+                :options="ageGroupSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :loading="ageGroupsLoading"
+              />
+              <label for="t_ageGroupId">Возрастная группа</label>
+            </FloatLabel>
+          </div>
+          <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <FloatLabel variant="on" class="block min-w-0">
+              <Select
+                inputId="t_stadiumId"
+                v-model="form.stadiumId"
+                :options="stadiumSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :loading="stadiumsLoading"
+              />
+              <label for="t_stadiumId">Стадион</label>
+            </FloatLabel>
+            <FloatLabel variant="on" class="block min-w-0">
+              <MultiSelect
+                inputId="t_refereeIds"
+                v-model="form.refereeIds"
+                :options="refereeMultiOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :loading="refereesLoading"
+                placeholder="Выбрать судей"
+                filter
+                :maxSelectedLabels="0"
+                selectedItemsLabel="Выбрано: {0}"
+              />
+              <label for="t_refereeIds">Судьи турнира</label>
+            </FloatLabel>
+          </div>
+        </section>
+
         <!-- Участники и доступ -->
         <section
           class="rounded-xl border border-surface-200 bg-surface-0 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900 md:p-5"
@@ -1552,7 +1592,7 @@ watch(statusFilter, () => {
             Участники и доступ
           </h3>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <FloatLabel variant="on" class="block">
+            <FloatLabel variant="on" class="block min-w-0">
               <MultiSelect
                 inputId="t_adminIds"
                 v-model="form.adminIds"
@@ -1569,7 +1609,7 @@ watch(statusFilter, () => {
               <label for="t_adminIds">Админы турнира</label>
             </FloatLabel>
 
-            <FloatLabel variant="on" class="block md:col-span-2">
+            <FloatLabel variant="on" class="block min-w-0">
               <MultiSelect
                 inputId="t_teamIds"
                 v-model="form.teamIds"
@@ -1579,13 +1619,17 @@ watch(statusFilter, () => {
                 option-value="id"
                 class="w-full"
                 placeholder="Выбрать команды"
-                :emptyMessage="form.category ? 'Нет команд в выбранной категории' : 'Нет доступных команд'"
+                :emptyMessage="form.ageGroupId ? 'Нет команд в выбранной возрастной группе' : 'Нет доступных команд'"
                 filter
                 :maxSelectedLabels="0"
                 selectedItemsLabel="Выбрано: {0}"
+                :invalid="showTeamsError"
               />
               <label for="t_teamIds">Команды</label>
             </FloatLabel>
+            <p v-if="showTeamsError" class="mt-0 text-[11px] leading-4 text-red-500">
+              {{ tournamentFormErrors.teamsError }}
+            </p>
           </div>
         </section>
 
@@ -1634,21 +1678,11 @@ watch(statusFilter, () => {
         </section>
       </div>
 
-      <template #footer>
-        <div class="flex justify-end gap-2">
-          <Button label="Отмена" text @click="showForm = false" />
-          <Button
-            :label="isEdit ? 'Сохранить' : 'Создать'"
-            icon="pi pi-check"
-            :loading="saving"
-            @click="saveTournament"
-          />
-        </div>
-      </template>
-    </Dialog>
+    </AdminTournamentFormDialog>
 
     <Dialog
-      v-model:visible="deleteDialogVisible"
+      :visible="deleteDialogVisible"
+      @update:visible="(v) => (deleteDialogVisible = v)"
       modal
       header="Удалить турнир?"
       :style="{ width: '24rem' }"

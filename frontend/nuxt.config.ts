@@ -54,7 +54,16 @@ export default defineNuxtConfig({
     },
   },
   // Tailwind module сам подключает ~/assets/css/tailwind.css по умолчанию
+  /**
+   * Hybrid rendering: SSR только для главной (`/`). Остальное — SPA (CSR), в т.ч. админка и публичные `/{tenant}/…`.
+   * Упрощает сессию/cookies/middleware без гидратации; при росте проекта индексацию/SEO можно точечно включить.
+   * Правило `/` должно идти до `/**`, чтобы корень не попал под catch-all.
+   */
   ssr: true,
+  routeRules: {
+    '/': { ssr: true },
+    '/**': { ssr: false },
+  },
   vite: {
     server: {
       // Для локального multi-tenant через поддомены (lvh.me / localtest.me)
@@ -78,6 +87,7 @@ export default defineNuxtConfig({
       title: 'Tournament Platform',
       charset: 'utf-8',
       viewport: 'width=device-width, initial-scale=1',
+      link: [{ rel: 'icon', type: 'image/png', href: '/logo.png' }],
       htmlAttrs: {
         lang: 'ru',
       },

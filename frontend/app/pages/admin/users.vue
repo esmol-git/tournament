@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { helpers, minLength, required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { USER_ROLE_LABELS_RU, userRoleLabelRu } from '~/constants/userRoles'
@@ -16,6 +18,7 @@ const router = useRouter()
 const { token, user, syncWithStorage, loggedIn, authFetch, fetchMe } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
+const { t } = useI18n()
 const metaStore = useMetaStore()
 
 /** Роли, которые может назначать только платформа / не через админку тенанта. */
@@ -57,6 +60,7 @@ const search = ref('')
 const role = ref<string | ''>('')
 
 const showForm = ref(false)
+const saving = ref(false)
 const editingUser = ref<UserRow | null>(null)
 
 const form = reactive({
@@ -67,6 +71,73 @@ const form = reactive({
   password: '',
   role: 'USER',
 })
+const submitAttempted = ref(false)
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const userRules = computed(() => ({
+  username: { required, minLength: minLength(3) },
+  name: { required, minLength: minLength(3) },
+  email: {
+    requiredWhenCreate: helpers.withMessage(
+      'email required',
+      (v: unknown) => isEdit.value || String(v ?? '').trim().length > 0,
+    ),
+    emailWhenCreate: helpers.withMessage(
+      'email invalid',
+      (v: unknown) => isEdit.value || EMAIL_RE.test(String(v ?? '').trim()),
+    ),
+  },
+  password: {
+    minLengthWhenRequired: helpers.withMessage(
+      'password min',
+      (v: unknown) => {
+        const s = String(v ?? '')
+        if (isEdit.value) return !s || s.length >= 6
+        return s.length >= 6
+      },
+    ),
+  },
+}))
+const v$ = useVuelidate(userRules, form, { $autoDirty: true })
+const formErrors = computed(() => ({
+  username: form.username.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
+  name: form.name.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
+  email:
+    isEdit.value
+      ? ''
+      : !form.email.trim()
+        ? t('admin.validation.required')
+        : EMAIL_RE.test(form.email.trim())
+          ? ''
+          : t('admin.validation.invalid_email'),
+  password:
+    isEdit.value
+      ? form.password && form.password.length < 6
+        ? t('admin.validation.min_chars', { min: 6 })
+        : ''
+      : form.password.length >= 6
+        ? ''
+        : t('admin.validation.min_chars', { min: 6 }),
+}))
+const canSaveUser = computed(
+  () =>
+    !v$.value.$invalid &&
+    !formErrors.value.username &&
+    !formErrors.value.name &&
+    !formErrors.value.email &&
+    !formErrors.value.password,
+)
+const showUsernameError = computed(
+  () => (submitAttempted.value || v$.value.username.$dirty) && !!formErrors.value.username,
+)
+const showNameError = computed(
+  () => (submitAttempted.value || v$.value.name.$dirty) && !!formErrors.value.name,
+)
+const showEmailError = computed(
+  () => !isEdit.value && (submitAttempted.value || v$.value.email.$dirty) && !!formErrors.value.email,
+)
+const showPasswordError = computed(
+  () => (submitAttempted.value || v$.value.password.$dirty) && !!formErrors.value.password,
+)
 
 const isEdit = computed(() => !!editingUser.value)
 
@@ -89,6 +160,7 @@ const fetchUsers = async () => {
         pageSize: pageSize.value,
         search: search.value || undefined,
         role: role.value || undefined,
+        excludeSelf: true,
       },
     })
 
@@ -101,6 +173,7 @@ const fetchUsers = async () => {
 }
 
 const openCreate = () => {
+  submitAttempted.value = false
   editingUser.value = null
   form.email = ''
   form.username = ''
@@ -108,10 +181,12 @@ const openCreate = () => {
   form.lastName = ''
   form.password = ''
   form.role = 'USER'
+  v$.value.$reset()
   showForm.value = true
 }
 
 const openEdit = (user: UserRow) => {
+  submitAttempted.value = false
   editingUser.value = user
   form.email = user.email
   form.username = user.username
@@ -119,11 +194,17 @@ const openEdit = (user: UserRow) => {
   form.lastName = user.lastName ?? ''
   form.password = ''
   form.role = user.role
+  v$.value.$reset()
   showForm.value = true
 }
 
 const saveUser = async () => {
   if (!token.value) return
+  submitAttempted.value = true
+  v$.value.$touch()
+  if (!canSaveUser.value) {
+    return
+  }
   const body: any = {
     username: form.username,
     name: form.name,
@@ -138,20 +219,25 @@ const saveUser = async () => {
     body.password = form.password
   }
 
-  if (isEdit.value) {
-    await authFetch(apiUrl(`/users/${editingUser.value!.id}`), {
-      method: 'PATCH',
-      body,
-    })
-  } else {
-    await authFetch(apiUrl('/users'), {
-      method: 'POST',
-      body,
-    })
-  }
+  saving.value = true
+  try {
+    if (isEdit.value) {
+      await authFetch(apiUrl(`/users/${editingUser.value!.id}`), {
+        method: 'PATCH',
+        body,
+      })
+    } else {
+      await authFetch(apiUrl('/users'), {
+        method: 'POST',
+        body,
+      })
+    }
 
-  showForm.value = false
-  await fetchUsers()
+    showForm.value = false
+    await fetchUsers()
+  } finally {
+    saving.value = false
+  }
 }
 
 const deleteUserConfirmOpen = ref(false)
@@ -420,15 +506,18 @@ onMounted(() => {
       <div class="flex flex-col gap-3">
         <div>
           <label class="text-sm block mb-1">Логин</label>
-          <InputText v-model="form.username" class="w-full" />
+          <InputText v-model="form.username" class="w-full" :invalid="showUsernameError" />
+          <p v-if="showUsernameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.username }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Email</label>
-          <InputText v-model="form.email" class="w-full" :disabled="isEdit" />
+          <InputText v-model="form.email" class="w-full" :disabled="isEdit" :invalid="showEmailError" />
+          <p v-if="showEmailError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.email }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Имя</label>
-          <InputText v-model="form.name" class="w-full" />
+          <InputText v-model="form.name" class="w-full" :invalid="showNameError" />
+          <p v-if="showNameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.name }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Фамилия</label>
@@ -441,10 +530,12 @@ onMounted(() => {
           <Password
             v-model="form.password"
             class="block w-full"
+            :invalid="showPasswordError"
             input-class="w-full"
             toggleMask
             :feedback="false"
           />
+          <p v-if="showPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.password }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Роль</label>
@@ -461,6 +552,7 @@ onMounted(() => {
           <Button
             :label="isEdit ? 'Сохранить' : 'Создать'"
             icon="pi pi-check"
+            :disabled="saving || (submitAttempted && !canSaveUser)"
             @click="saveUser"
           />
         </div>

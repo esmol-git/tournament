@@ -17,6 +17,10 @@ export function usePublicTenantContext() {
   const route = useRoute()
 
   const { apiUrl } = useApiUrl()
+  const selectedTidByTenant = useState<Record<string, string | null>>(
+    'public-selected-tid-by-tenant',
+    () => ({}),
+  )
 
   const rawTenant = computed(() => {
     const v = route.params.tenant
@@ -45,7 +49,12 @@ export function usePublicTenantContext() {
     return typeof v === 'string' && v.trim() ? v : null
   })
 
-  const selectedTid = computed(() => tidFromQuery.value ?? tidFallback.value ?? null)
+  const selectedTid = computed(() => {
+    const q = tidFromQuery.value
+    if (q) return q
+    const byTenant = selectedTidByTenant.value[tenantSlug.value] ?? null
+    return byTenant ?? tidFallback.value ?? null
+  })
 
   async function ensureTenantResolved() {
     if (resolved.value) return
@@ -113,6 +122,18 @@ export function usePublicTenantContext() {
       resolved.value = false
       tenantNotFound.value = false
     },
+  )
+
+  watch(
+    [() => tenantSlug.value, () => tidFromQuery.value] as const,
+    ([slug, tid]) => {
+      const key = String(slug || '').trim()
+      if (!key) return
+      if (tid && tid.trim()) {
+        selectedTidByTenant.value[key] = tid.trim()
+      }
+    },
+    { immediate: true },
   )
 
   return { rawTenant, tenantSlug, selectedTid, ensureTenantResolved, tenantNotFound }

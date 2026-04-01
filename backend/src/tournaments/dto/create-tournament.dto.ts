@@ -11,6 +11,7 @@ import {
   Matches,
   Max,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -134,6 +135,18 @@ export class CreateTournamentDto {
 
   @ApiProperty({
     required: false,
+    example: 2,
+    description:
+      'How many round-robin cycles each pair should play in group stage (1..4)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(4)
+  roundRobinCycles?: number;
+
+  @ApiProperty({
+    required: false,
     example: 50,
     description: 'Match duration in minutes',
   })
@@ -212,4 +225,54 @@ export class CreateTournamentDto {
   @ValidateNested({ each: true })
   @Type(() => TournamentAdminDto)
   admins?: TournamentAdminDto[];
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Stadium from tenant directory (optional)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  stadiumId?: string | null;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Сезон из справочника тенанта (опционально)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @IsString()
+  seasonId?: string | null;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Тип соревнования из справочника (чемпионат, кубок и т.д., опционально)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @IsString()
+  competitionId?: string | null;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Возрастная группа из справочника (опционально)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @IsString()
+  ageGroupId?: string | null;
+
+  @ApiProperty({
+    required: false,
+    type: [String],
+    description: 'Referee directory ids from tenant',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  refereeIds?: string[];
 }

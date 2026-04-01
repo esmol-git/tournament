@@ -5,6 +5,10 @@ export interface TeamRow {
   slug: string | null
   rating?: number | null
   category: string | null
+  ageGroupId?: string | null
+  ageGroup?: { id: string; name: string; shortLabel?: string | null } | null
+  regionId?: string | null
+  region?: { id: string; name: string } | null
   logoUrl: string | null
   coachName: string | null
   playersCount: number

@@ -22,13 +22,24 @@ import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'node:crypto';
 import { extname } from 'node:path';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { encodeRasterImageToWebp } from './encode-raster-to-webp';
 import { StorageService } from './storage.service';
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-/** Префикс ключа в бакете: media (по умолчанию), tournaments, teams, players */
-const UPLOAD_FOLDERS = ['media', 'tournaments', 'teams', 'players'] as const;
+/** Префикс ключа в бакете: media, docs, tournaments, teams, players, news, gallery */
+const UPLOAD_FOLDERS = [
+  'media',
+  'docs',
+  'tournaments',
+  'teams',
+  'players',
+  'news',
+  'gallery',
+] as const;
 type UploadFolder = (typeof UPLOAD_FOLDERS)[number];
 
 function resolveUploadFolder(raw: string | undefined): UploadFolder {
@@ -65,7 +76,12 @@ function safeExtension(
 
 @ApiTags('upload')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller('upload')
 export class StorageController {
   constructor(
@@ -83,7 +99,8 @@ export class StorageController {
     name: 'folder',
     required: false,
     enum: UPLOAD_FOLDERS,
-    description: 'Префикс пути: media (default), tournaments, teams, players',
+    description:
+      'Префикс пути: media (default), docs, tournaments, teams, players, news, gallery',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -96,7 +113,7 @@ export class StorageController {
           type: 'string',
           enum: [...UPLOAD_FOLDERS],
           description:
-            'Префикс пути в бакете: media | tournaments | teams | players',
+            'Префикс пути в бакете: media | docs | tournaments | teams | players | news | gallery',
         },
       },
     },

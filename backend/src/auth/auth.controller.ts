@@ -14,10 +14,11 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { PlatformLoginDto } from './dto/platform-login.dto';
 import { RefreshDto } from './dto/refresh.dto';
-import { AuthGuard } from '@nestjs/passport';
 import { seconds, Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { JwtPayload } from './jwt.strategy';
+import { TenantParamConsistencyGuard } from './tenant-param-consistency.guard';
+import { TenantZoneGuard } from './tenant-zone.guard';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -58,7 +59,7 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(JwtAuthGuard, TenantParamConsistencyGuard, TenantZoneGuard)
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: { user: JwtPayload }) {
     return this.authService.logout(req.user.sub);
@@ -72,7 +73,7 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, TenantParamConsistencyGuard, TenantZoneGuard)
   async me(@Req() req: { user: JwtPayload }) {
     return this.authService.me(req.user.sub);
   }

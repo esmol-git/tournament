@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
@@ -21,6 +23,7 @@ const router = useRouter()
 const { token, user, syncWithStorage, loggedIn, authFetch, authFetchBlob } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
+const { t } = useI18n()
 const tenantId = useTenantId()
 
 /** Амплуа в форме — общий справочник `constants/playerPositions` */
@@ -152,7 +155,40 @@ const buildPlayersQueryParams = (
 
 const csvDownloading = ref(false)
 const csvImporting = ref(false)
-const csvFileInput = ref<HTMLInputElement | null>(null)
+const xlsxDownloading = ref(false)
+const xlsxImporting = ref(false)
+type TransferFormat = 'csv' | 'xlsx'
+type ImportFieldKey =
+  | 'lastName'
+  | 'firstName'
+  | 'birthDate'
+  | 'gender'
+  | 'position'
+  | 'phone'
+  | 'bioNumber'
+  | 'team'
+  | 'biography'
+  | 'photoUrl'
+const transferFormatOptions = [
+  { value: 'xlsx' as const, label: 'Excel (.xlsx)' },
+  { value: 'csv' as const, label: 'CSV (.csv)' },
+]
+const exportFormat = ref<TransferFormat>('xlsx')
+const importFormat = ref<TransferFormat>('xlsx')
+const importDialogVisible = ref(false)
+const importFileInput = ref<HTMLInputElement | null>(null)
+const importFile = ref<File | null>(null)
+const importFileName = computed(() => importFile.value?.name ?? '')
+const transferBusy = computed(
+  () =>
+    csvDownloading.value || xlsxDownloading.value || csvImporting.value || xlsxImporting.value,
+)
+const importBusy = computed(() => csvImporting.value || xlsxImporting.value)
+const importAccept = computed(() =>
+  importFormat.value === 'csv'
+    ? '.csv,text/csv'
+    : '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+)
 
 /** Соответствует query `mode` на POST .../players/import/csv */
 const csvImportMode = ref<'upsert' | 'createOnly' | 'updateOnly'>('upsert')
@@ -170,6 +206,77 @@ const csvImportModeOptions = [
     label: 'Только обновить по id (без id — пропустить)',
   },
 ]
+const importFieldOptions: Array<{ value: ImportFieldKey; label: string }> = [
+  { value: 'lastName', label: 'Фамилия' },
+  { value: 'firstName', label: 'Имя' },
+  { value: 'birthDate', label: 'Дата рождения' },
+  { value: 'gender', label: 'Пол' },
+  { value: 'position', label: 'Амплуа' },
+  { value: 'phone', label: 'Телефон' },
+  { value: 'bioNumber', label: 'Номер игрока' },
+  { value: 'team', label: 'Команда (teamId/teamName)' },
+  { value: 'biography', label: 'Биография' },
+  { value: 'photoUrl', label: 'Ссылка на фото' },
+]
+const importSelectedFields = ref<ImportFieldKey[]>(
+  importFieldOptions.map((option) => option.value),
+)
+const allImportFieldsSelected = computed(
+  () => importSelectedFields.value.length === importFieldOptions.length,
+)
+const importModeFieldsValid = computed(
+  () =>
+    csvImportMode.value === 'updateOnly' ||
+    (importSelectedFields.value.includes('lastName') &&
+      importSelectedFields.value.includes('firstName')),
+)
+
+const selectAllImportFields = () => {
+  importSelectedFields.value = importFieldOptions.map((option) => option.value)
+}
+
+type ImportErrorRow = {
+  row: number
+  message: string
+  field?: string
+  code?: string
+  value?: string
+}
+
+type ImportResult = {
+  created: number
+  updated: number
+  skipped: number
+  errors: ImportErrorRow[]
+}
+
+const buildImportPreview = (errors: ImportErrorRow[]) =>
+  errors
+    .slice(0, 5)
+    .map((x) => {
+      const meta = [x.field, x.code].filter(Boolean).join('/')
+      return `${x.row}${meta ? ` [${meta}]` : ''} (${x.message})`
+    })
+    .join('; ')
+
+const showImportToast = (res: ImportResult) => {
+  const errList = res.errors ?? []
+  const errCount = errList.length
+  const skipped = res.skipped ?? 0
+  const preview =
+    errCount > 0
+      ? ` Строки с ошибками: ${buildImportPreview(errList)}${errCount > 5 ? '…' : ''}`
+      : ''
+
+  toast.add({
+    severity: errCount ? 'warn' : 'success',
+    summary: errCount ? 'Импорт завершён с ошибками' : 'Импорт выполнен',
+    detail: `Создано: ${res.created}, обновлено: ${res.updated}${
+      skipped ? `, пропущено: ${skipped}` : ''
+    }.${preview}`,
+    life: errCount ? 12000 : 5000,
+  })
+}
 
 const downloadPlayersCsv = async () => {
   if (!token.value) return
@@ -204,67 +311,129 @@ const downloadPlayersCsv = async () => {
   }
 }
 
-const triggerCsvImport = () => {
-  if (csvImporting.value) return
-  csvFileInput.value?.click()
+const downloadPlayersXlsx = async () => {
+  if (!token.value) return
+  xlsxDownloading.value = true
+  try {
+    const params = buildPlayersFilterSortParams()
+    const blob = await authFetchBlob(apiUrl(`/tenants/${tenantId.value}/players/export/xlsx`), {
+      params,
+    })
+    const href = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = href
+    a.download = 'players-export.xlsx'
+    a.click()
+    URL.revokeObjectURL(href)
+    toast.add({
+      severity: 'success',
+      summary: 'XLSX скачан',
+      detail: 'Файл сформирован на сервере по текущим фильтрам и сортировке.',
+      life: 5000,
+    })
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось скачать XLSX',
+      detail: getApiErrorMessage(err),
+      life: 6000,
+    })
+  } finally {
+    xlsxDownloading.value = false
+  }
 }
 
-const onCsvFileChange = async (e: Event) => {
+const downloadPlayersByFormat = async () => {
+  if (exportFormat.value === 'csv') {
+    await downloadPlayersCsv()
+    return
+  }
+  await downloadPlayersXlsx()
+}
+
+const triggerImportFilePick = () => {
+  if (importBusy.value) return
+  importFileInput.value?.click()
+}
+
+const onImportFileChange = (e: Event) => {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !token.value) return
+  importFile.value = file ?? null
+}
 
-  csvImporting.value = true
+const runPlayersImport = async (
+  format: TransferFormat,
+  file: File,
+  fields: ImportFieldKey[],
+) => {
+  if (!token.value) return
+  if (format === 'csv') csvImporting.value = true
+  else xlsxImporting.value = true
   try {
     const fd = new FormData()
     fd.append('file', file)
-    const importPath = `/tenants/${tenantId.value}/players/import/csv`
-    const q =
-      csvImportMode.value === 'upsert'
-        ? ''
-        : `?mode=${encodeURIComponent(csvImportMode.value)}`
-    const res = await authFetch<{
-      created: number
-      updated: number
-      skipped: number
-      errors: Array<{ row: number; message: string }>
-    }>(apiUrl(`${importPath}${q}`), {
+    const importPath = `/tenants/${tenantId.value}/players/import/${format}`
+    const qParts: string[] = []
+    if (csvImportMode.value !== 'upsert') {
+      qParts.push(`mode=${encodeURIComponent(csvImportMode.value)}`)
+    }
+    qParts.push(`fields=${encodeURIComponent(fields.join(','))}`)
+    const q = qParts.length ? `?${qParts.join('&')}` : ''
+    const res = await authFetch<ImportResult>(apiUrl(`${importPath}${q}`), {
       method: 'POST',
       body: fd,
     })
 
     await fetchPlayers()
-
-    const errList = res.errors ?? []
-    const errCount = errList.length
-    const skipped = res.skipped ?? 0
-    const preview =
-      errCount > 0
-        ? ` Строки с ошибками: ${errList
-            .slice(0, 5)
-            .map((x) => `${x.row} (${x.message})`)
-            .join('; ')}${errCount > 5 ? '…' : ''}`
-        : ''
-
-    toast.add({
-      severity: errCount ? 'warn' : 'success',
-      summary: errCount ? 'Импорт завершён с ошибками' : 'Импорт выполнен',
-      detail: `Создано: ${res.created}, обновлено: ${res.updated}${
-        skipped ? `, пропущено: ${skipped}` : ''
-      }.${preview}`,
-      life: errCount ? 12000 : 5000,
-    })
+    showImportToast(res)
+    importDialogVisible.value = false
+    importFile.value = null
   } catch (err: unknown) {
     toast.add({
       severity: 'error',
-      summary: 'Импорт CSV не удался',
+      summary: `Импорт ${format.toUpperCase()} не удался`,
       detail: getApiErrorMessage(err),
       life: 7000,
     })
   } finally {
-    csvImporting.value = false
+    if (format === 'csv') csvImporting.value = false
+    else xlsxImporting.value = false
   }
+}
+
+const submitImport = async () => {
+  const file = importFile.value
+  if (!file) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Файл не выбран',
+      detail: 'Выберите CSV/XLSX файл перед запуском импорта.',
+      life: 5000,
+    })
+    return
+  }
+  if (!importSelectedFields.value.length) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Поля не выбраны',
+      detail: 'Отметьте хотя бы одно поле для импорта.',
+      life: 5000,
+    })
+    return
+  }
+  if (!importModeFieldsValid.value) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Недостаточно полей для выбранного режима',
+      detail:
+        'Для режимов createOnly/upsert отметьте минимум поля "Фамилия" и "Имя".',
+      life: 6000,
+    })
+    return
+  }
+  await runPlayersImport(importFormat.value, file, importSelectedFields.value)
 }
 
 const fetchPlayers = async () => {
@@ -374,6 +543,90 @@ const form = reactive({
   /** одна команда или пусто */
   teamId: '',
 })
+const submitAttempted = ref(false)
+const playerValidationRules = computed(() => ({
+  firstName: { required },
+  lastName: { required },
+  birthDate: {},
+  phone: {},
+}))
+const v$ = useVuelidate(playerValidationRules, form, { $autoDirty: true })
+
+function formatRuPhone(input: string): string {
+  const digits = input.replace(/\D/g, '')
+  if (!digits) return ''
+  let core = digits
+  if (core.length === 11 && (core.startsWith('7') || core.startsWith('8'))) {
+    core = core.slice(1)
+  }
+  if (core.length > 10) core = core.slice(0, 10)
+  const p1 = core.slice(0, 3)
+  const p2 = core.slice(3, 6)
+  const p3 = core.slice(6, 8)
+  const p4 = core.slice(8, 10)
+  let out = '+7'
+  if (p1) out += ` (${p1}`
+  if (p1.length === 3) out += ')'
+  if (p2) out += ` ${p2}`
+  if (p3) out += `-${p3}`
+  if (p4) out += `-${p4}`
+  return out
+}
+
+function normalizeRuPhoneForApi(input: string): string {
+  let digits = input.replace(/\D/g, '')
+  if (!digits) return ''
+  if (digits.length === 10) digits = `7${digits}`
+  if (digits.length === 11 && digits.startsWith('8')) digits = `7${digits.slice(1)}`
+  if (!(digits.length === 11 && digits.startsWith('7'))) return ''
+  return `+${digits}`
+}
+
+function validatePlayerForm(): string | null {
+  if (!form.lastName.trim()) return t('admin.validation.required_last_name')
+  if (!form.firstName.trim()) return t('admin.validation.required_first_name')
+  if (form.birthDate && form.birthDate.getTime() > Date.now()) {
+    return t('admin.validation.date_not_future')
+  }
+  if (form.phone.trim() && !normalizeRuPhoneForApi(form.phone)) {
+    return t('admin.validation.invalid_phone_ru')
+  }
+  return null
+}
+const playerFormErrors = computed(() => ({
+  lastName: form.lastName.trim() ? '' : t('admin.validation.required_last_name'),
+  firstName: form.firstName.trim() ? '' : t('admin.validation.required_first_name'),
+  birthDate:
+    form.birthDate && form.birthDate.getTime() > Date.now()
+      ? t('admin.validation.date_not_future')
+      : '',
+  phone:
+    form.phone.trim() && !normalizeRuPhoneForApi(form.phone)
+      ? t('admin.validation.invalid_phone_ru')
+      : '',
+}))
+const canSavePlayer = computed(
+  () =>
+    !!token.value &&
+    !saving.value &&
+    !v$.value.$invalid &&
+    !playerFormErrors.value.lastName &&
+    !playerFormErrors.value.firstName &&
+    !playerFormErrors.value.birthDate &&
+    !playerFormErrors.value.phone,
+)
+const showLastNameError = computed(
+  () => (submitAttempted.value || v$.value.lastName.$dirty) && !!playerFormErrors.value.lastName,
+)
+const showFirstNameError = computed(
+  () => (submitAttempted.value || v$.value.firstName.$dirty) && !!playerFormErrors.value.firstName,
+)
+const showBirthDateError = computed(
+  () => (submitAttempted.value || v$.value.birthDate.$dirty) && !!playerFormErrors.value.birthDate,
+)
+const showPhoneError = computed(
+  () => (submitAttempted.value || v$.value.phone.$dirty) && !!playerFormErrors.value.phone,
+)
 
 const listFilterTeamSelectOptions = useTeamSelectOptions(
   listFilterTeamsLoaded,
@@ -403,6 +656,7 @@ const teamSelectOptions = useTeamSelectOptions(
 )
 
 const openCreate = () => {
+  submitAttempted.value = false
   selectedTeamCache.value = null
   editingId.value = null
   form.firstName = ''
@@ -415,10 +669,12 @@ const openCreate = () => {
   form.photoUrl = ''
   form.biography = ''
   form.teamId = ''
+  v$.value.$reset()
   showForm.value = true
 }
 
 const openEdit = (p: PlayerRow) => {
+  submitAttempted.value = false
   selectedTeamCache.value = p.team ?? null
   editingId.value = p.id
   form.firstName = p.firstName ?? ''
@@ -426,11 +682,12 @@ const openEdit = (p: PlayerRow) => {
   form.birthDate = p.birthDate ? new Date(p.birthDate) : null
   form.gender = p.gender ?? ''
   form.position = p.position ?? ''
-  form.phone = p.phone ?? ''
+  form.phone = formatRuPhone(p.phone ?? '')
   form.bioNumber = p.bioNumber ?? ''
   form.photoUrl = p.photoUrl ?? ''
   form.biography = p.biography ?? ''
   form.teamId = p.team?.id ?? ''
+  v$.value.$reset()
   showForm.value = true
 }
 
@@ -549,14 +806,20 @@ const removePlayerPhoto = async (e: MouseEvent) => {
 
 const savePlayer = async () => {
   if (!token.value) return
+  submitAttempted.value = true
+  v$.value.$touch()
+  if (!canSavePlayer.value) {
+    return
+  }
   saving.value = true
   try {
+    const normalizedPhone = normalizeRuPhoneForApi(form.phone)
     const payload: any = {
-      firstName: form.firstName,
-      lastName: form.lastName,
+      firstName: form.firstName.trim(),
+      lastName: form.lastName.trim(),
       gender: form.gender || undefined,
       position: form.position || undefined,
-      phone: form.phone || undefined,
+      phone: normalizedPhone || undefined,
       birthDate: form.birthDate ? toYmd(form.birthDate) : undefined,
       bioNumber: form.bioNumber || undefined,
       biography: form.biography || undefined,
@@ -636,6 +899,13 @@ async function confirmDeletePlayer() {
   }
 }
 
+watch(importDialogVisible, (value) => {
+  if (!value) {
+    importFile.value = null
+    if (importFileInput.value) importFileInput.value.value = ''
+  }
+})
+
 onMounted(() => {
   if (typeof window !== 'undefined') {
     syncWithStorage()
@@ -659,42 +929,6 @@ onMounted(() => {
       </div>
       <div class="flex flex-wrap items-center gap-2 justify-end">
         <Button
-          label="Скачать CSV"
-          icon="pi pi-download"
-          outlined
-          severity="secondary"
-          :loading="csvDownloading"
-          :disabled="csvImporting"
-          @click="downloadPlayersCsv"
-        />
-        <FloatLabel variant="on" class="min-w-0 w-full max-w-[20rem] sm:max-w-[22rem]">
-          <Select
-            v-model="csvImportMode"
-            :options="csvImportModeOptions"
-            option-label="label"
-            option-value="value"
-            class="w-full"
-            :disabled="csvImporting"
-          />
-          <label>Режим импорта CSV</label>
-        </FloatLabel>
-        <Button
-          label="Загрузить CSV"
-          icon="pi pi-upload"
-          outlined
-          severity="secondary"
-          :loading="csvImporting"
-          :disabled="csvDownloading"
-          @click="triggerCsvImport"
-        />
-        <input
-          ref="csvFileInput"
-          type="file"
-          accept=".csv,text/csv"
-          class="hidden"
-          @change="onCsvFileChange"
-        />
-        <Button
           label="Обновить"
           icon="pi pi-refresh"
           text
@@ -705,6 +939,169 @@ onMounted(() => {
         <Button label="Создать" icon="pi pi-plus" @click="openCreate" />
       </div>
     </header>
+
+    <div
+      class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-3 sm:p-4"
+    >
+      <div class="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(16rem,20rem)_1fr] xl:items-end">
+        <FloatLabel variant="on" class="min-w-0">
+          <Select
+            v-model="exportFormat"
+            :options="transferFormatOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            :disabled="transferBusy"
+          />
+          <label>Формат экспорта</label>
+        </FloatLabel>
+        <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+          <Button
+            label="Экспорт"
+            icon="pi pi-download"
+            outlined
+            severity="secondary"
+            size="small"
+            :loading="csvDownloading || xlsxDownloading"
+            :disabled="transferBusy"
+            @click="downloadPlayersByFormat"
+          />
+          <Button
+            label="Импорт"
+            icon="pi pi-upload"
+            severity="secondary"
+            size="small"
+            :loading="importBusy"
+            :disabled="transferBusy"
+            @click="importDialogVisible = true"
+          />
+        </div>
+      </div>
+      <p class="mt-2 text-xs text-muted-color">
+        Экспорт учитывает текущие фильтры и сортировку. Режим и формат импорта выбираются в диалоге импорта.
+      </p>
+    </div>
+
+    <Dialog
+      :visible="importDialogVisible"
+      modal
+      header="Импорт игроков"
+      class="w-full max-w-2xl"
+      @update:visible="importDialogVisible = $event"
+    >
+      <div class="pt-2 space-y-4">
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <FloatLabel variant="on">
+            <Select
+              v-model="importFormat"
+              :options="transferFormatOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+              :disabled="importBusy"
+            />
+            <label>Формат файла</label>
+          </FloatLabel>
+          <FloatLabel variant="on">
+            <Select
+              v-model="csvImportMode"
+              :options="csvImportModeOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+              :disabled="importBusy"
+            />
+            <label>Режим импорта</label>
+          </FloatLabel>
+        </div>
+
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 p-3">
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <p class="text-sm font-medium text-surface-800 dark:text-surface-100">
+              Поля для импорта
+            </p>
+            <Button
+              v-if="!allImportFieldsSelected"
+              label="Выбрать все"
+              icon="pi pi-check-square"
+              text
+              size="small"
+              severity="secondary"
+              :disabled="importBusy"
+              @click="selectAllImportFields"
+            />
+          </div>
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label
+              v-for="field in importFieldOptions"
+              :key="field.value"
+              :for="`import_field_${field.value}`"
+              class="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-200"
+            >
+              <Checkbox
+                :input-id="`import_field_${field.value}`"
+                v-model="importSelectedFields"
+                :value="field.value"
+                :disabled="importBusy"
+              />
+              <span>{{ field.label }}</span>
+            </label>
+          </div>
+          <p class="mt-2 text-xs text-muted-color">
+            Будут обновлены только выбранные поля. В режиме updateOnly это удобно для точечных правок.
+          </p>
+          <p
+            v-if="!importModeFieldsValid"
+            class="mt-1 text-xs text-red-500"
+          >
+            Для режимов createOnly/upsert обязательно выберите поля «Фамилия» и «Имя».
+          </p>
+        </div>
+
+        <div class="rounded-lg border border-dashed border-surface-300 dark:border-surface-600 p-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <Button
+              label="Выбрать файл"
+              icon="pi pi-paperclip"
+              outlined
+              severity="secondary"
+              :disabled="importBusy"
+              @click="triggerImportFilePick"
+            />
+            <span class="text-sm text-muted-color">
+              {{ importFileName || 'Файл не выбран' }}
+            </span>
+          </div>
+          <p class="mt-2 text-xs text-muted-color">
+            Поддерживается один файл в формате {{ importFormat.toUpperCase() }}.
+          </p>
+          <input
+            ref="importFileInput"
+            type="file"
+            :accept="importAccept"
+            class="hidden"
+            @change="onImportFileChange"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <Button
+          label="Отмена"
+          text
+          severity="secondary"
+          :disabled="importBusy"
+          @click="importDialogVisible = false"
+        />
+        <Button
+          label="Запустить импорт"
+          icon="pi pi-check"
+          :loading="importBusy"
+          :disabled="!importFile || !importSelectedFields.length || !importModeFieldsValid || importBusy"
+          @click="submitImport"
+        />
+      </template>
+    </Dialog>
 
     <div
       class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-12 xl:items-end"
@@ -937,53 +1334,61 @@ onMounted(() => {
       :contentStyle="{ paddingTop: '1.75rem' }"
     >
       <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div class="md:col-span-1 flex items-stretch relative">
-          <button
-            type="button"
-            class="w-full h-full min-h-44 overflow-hidden rounded-xl bg-surface-0 flex items-center justify-center relative leading-none"
-            :class="[
-              photoUploading || photoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer',
-              form.photoUrl && !photoUploading && !photoRemoving
-                ? 'border-0'
-                : 'border border-surface-200',
-            ]"
-            :disabled="photoUploading || photoRemoving"
-            @click="triggerPhotoPick"
-            aria-label="Загрузить или заменить фото игрока"
+        <div class="md:col-span-1 space-y-3">
+          <div
+            class="relative overflow-hidden rounded-xl border border-surface-200 bg-surface-100 dark:border-surface-600 dark:bg-surface-800"
           >
-            <img
-              v-if="form.photoUrl && !photoUploading && !photoRemoving"
-              :src="form.photoUrl"
-              alt="Фото игрока"
-              class="absolute inset-0 w-full h-full object-cover"
-            />
-            <div
-              v-else-if="!photoUploading && !photoRemoving"
-              class="relative flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+            <button
+              type="button"
+              class="relative block aspect-[4/5] w-full"
+              :class="photoUploading || photoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer'"
+              :disabled="photoUploading || photoRemoving"
+              @click="triggerPhotoPick"
+              aria-label="Загрузить или заменить фото игрока"
             >
-              <i class="pi pi-image text-2xl opacity-60" aria-hidden="true" />
-              <span class="text-xs">Нажми, чтобы загрузить фото</span>
-            </div>
-            <div
-              v-if="photoUploading || photoRemoving"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 text-sm text-surface-700"
-            >
-              <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
-              <span>{{ photoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
-            </div>
-          </button>
+              <img
+                v-if="form.photoUrl && !photoUploading && !photoRemoving"
+                :src="form.photoUrl"
+                alt="Фото игрока"
+                class="absolute inset-0 h-full w-full object-cover"
+              />
+              <div
+                v-else-if="!photoUploading && !photoRemoving"
+                class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+              >
+                <i class="pi pi-image text-2xl opacity-60" aria-hidden="true" />
+                <span class="text-xs">Нажми, чтобы загрузить фото</span>
+              </div>
+              <div
+                v-if="photoUploading || photoRemoving"
+                class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 text-sm text-surface-700 dark:bg-surface-900/90 dark:text-surface-200"
+              >
+                <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
+                <span>{{ photoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
+              </div>
+            </button>
+          </div>
 
-          <Button
-            v-if="form.photoUrl && !photoUploading && !photoRemoving"
-            type="button"
-            icon="pi pi-trash"
-            rounded
-            severity="danger"
-            text
-            class="!absolute top-2 right-2 z-10 !h-9 !w-9 !min-w-9 shadow-sm bg-surface-0/90 hover:!bg-surface-0"
-            aria-label="Удалить фото"
-            @click="removePlayerPhoto"
-          />
+          <div class="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              icon="pi pi-upload"
+              label="Загрузить"
+              severity="secondary"
+              :loading="photoUploading"
+              :disabled="photoUploading || photoRemoving"
+              @click="triggerPhotoPick"
+            />
+            <Button
+              v-if="form.photoUrl && !photoUploading && !photoRemoving"
+              type="button"
+              icon="pi pi-trash"
+              label="Убрать"
+              text
+              severity="danger"
+              @click="removePlayerPhoto"
+            />
+          </div>
 
           <input
             ref="photoFileInput"
@@ -996,18 +1401,29 @@ onMounted(() => {
         <div class="space-y-4 md:col-span-2">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FloatLabel variant="on" class="block">
-              <InputText v-model="form.lastName" class="w-full" />
+              <InputText v-model="form.lastName" class="w-full" :invalid="showLastNameError" />
               <label>Фамилия</label>
             </FloatLabel>
             <FloatLabel variant="on" class="block">
-              <InputText v-model="form.firstName" class="w-full" />
+              <InputText v-model="form.firstName" class="w-full" :invalid="showFirstNameError" />
               <label>Имя</label>
             </FloatLabel>
           </div>
+          <div class="-mt-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <p v-if="showLastNameError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.lastName }}</p>
+            <p v-if="showFirstNameError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.firstName }}</p>
+          </div>
           <FloatLabel variant="on" class="block">
-            <DatePicker v-model="form.birthDate" class="w-full" dateFormat="yy-mm-dd" showIcon />
+            <DatePicker
+              v-model="form.birthDate"
+              class="w-full"
+              dateFormat="yy-mm-dd"
+              showIcon
+              :invalid="showBirthDateError"
+            />
             <label>Дата рождения</label>
           </FloatLabel>
+          <p v-if="showBirthDateError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.birthDate }}</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FloatLabel variant="on" class="block">
               <Select
@@ -1068,23 +1484,35 @@ onMounted(() => {
           </div>
 
           <FloatLabel variant="on" class="block">
-            <InputText v-model="form.phone" class="w-full" />
+            <InputMask
+              v-model="form.phone"
+              class="w-full"
+              mask="+7 (999) 999-99-99"
+              :invalid="showPhoneError"
+              autoClear
+              placeholder="+7 (___) ___-__-__"
+            />
             <label>Мобильный телефон</label>
           </FloatLabel>
+          <p v-if="showPhoneError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.phone }}</p>
         </div>
 
         <div class="md:col-span-3">
-          <FloatLabel variant="on" class="block">
-            <Textarea v-model="form.biography" class="w-full" rows="6" />
-            <label>Биография</label>
-          </FloatLabel>
+          <label for="player_bio" class="mb-1 block text-sm">Биография</label>
+          <AdminMarkdownEditor input-id="player_bio" v-model="form.biography" :rows="6" />
         </div>
       </div>
 
       <template #footer>
         <div class="flex justify-end gap-2">
           <Button label="Отмена" text @click="showForm = false" />
-          <Button :label="isEdit ? 'Сохранить' : 'Создать'" icon="pi pi-check" :loading="saving" @click="savePlayer" />
+          <Button
+            :label="isEdit ? 'Сохранить' : 'Создать'"
+            icon="pi pi-check"
+            :loading="saving"
+            :disabled="saving || (submitAttempted && !canSavePlayer)"
+            @click="savePlayer"
+          />
         </div>
       </template>
     </Dialog>

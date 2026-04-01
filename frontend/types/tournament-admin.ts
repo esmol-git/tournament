@@ -12,6 +12,7 @@ export interface TournamentDetails {
   endsAt?: string | null
   intervalDays: number
   allowedDays: number[]
+  roundRobinCycles: number
   matchDurationMinutes: number
   matchBreakMinutes: number
   simultaneousMatches: number
@@ -37,6 +38,42 @@ export interface TournamentDetails {
     role: string
     user: { id: string; email: string; name: string; role: string }
   }[]
+  stadiumId?: string | null
+  stadium?: {
+    id: string
+    name: string
+    city?: string | null
+    address?: string | null
+  } | null
+  seasonId?: string | null
+  season?: { id: string; name: string; code?: string | null } | null
+  competitionId?: string | null
+  competition?: { id: string; name: string; code?: string | null } | null
+  ageGroupId?: string | null
+  ageGroup?: {
+    id: string
+    name: string
+    shortLabel?: string | null
+    code?: string | null
+  } | null
+  tournamentReferees?: Array<{
+    refereeId: string
+    referee: {
+      id: string
+      firstName: string
+      lastName: string
+      phone?: string | null
+    }
+  }>
+  referenceDocuments?: Array<{
+    id: string
+    title: string
+    code?: string | null
+    url?: string | null
+    note?: string | null
+    sortOrder: number
+    tournamentId?: string | null
+  }>
   matches: {
     id: string
     startTime: string
@@ -49,6 +86,14 @@ export interface TournamentDetails {
     awayTeam: { id: string; name: string }
     homeScore?: number | null
     awayScore?: number | null
+    scheduleChangeReasonId?: string | null
+    scheduleChangeNote?: string | null
+    scheduleChangeReason?: {
+      id: string
+      name: string
+      code?: string | null
+      scope: string
+    } | null
     events?: {
       id: string
       type: string
@@ -56,6 +101,12 @@ export interface TournamentDetails {
       playerId?: string | null
       teamSide?: 'HOME' | 'AWAY' | null
       payload?: Record<string, unknown> | null
+      protocolEventTypeId?: string | null
+      protocolEventType?: {
+        id: string
+        name: string
+        mapsToType: string
+      } | null
     }[]
   }[]
   matchNumberById?: Record<string, number>

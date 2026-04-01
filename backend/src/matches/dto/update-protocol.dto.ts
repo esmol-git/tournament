@@ -12,7 +12,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-class ProtocolEventDto {
+export class ProtocolEventDto {
   @ApiProperty({ enum: MatchEventType, example: MatchEventType.GOAL })
   @IsEnum(MatchEventType)
   type: MatchEventType;
@@ -41,6 +41,11 @@ class ProtocolEventDto {
   @IsOptional()
   @IsObject()
   payload?: Record<string, any>;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  protocolEventTypeId?: string;
 }
 
 export class UpdateProtocolDto {
@@ -69,4 +74,15 @@ export class UpdateProtocolDto {
   @ValidateNested({ each: true })
   @Type(() => ProtocolEventDto)
   events?: ProtocolEventDto[];
+
+  /** При переводе матча в «Отменён» — из справочника причин. */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  scheduleChangeReasonId?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  scheduleChangeNote?: string;
 }

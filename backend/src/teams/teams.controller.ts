@@ -12,6 +12,9 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTeamDto } from './dto/create-team.dto';
 import { TeamQueryDto } from './dto/team-query.dto';
@@ -23,7 +26,12 @@ import { UpdateTeamPlayerDto } from './dto/update-team-player.dto';
 import { TeamsService } from './teams.service';
 
 @ApiTags('teams')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller()
 export class TeamsController {
   constructor(private readonly teamsService: TeamsService) {}

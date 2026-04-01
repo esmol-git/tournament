@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { helpers, minLength, required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantStore } from '~/stores/tenant'
@@ -13,6 +15,7 @@ const router = useRouter()
 const tenantStore = useTenantStore()
 const { apiUrl } = useApiUrl()
 const { clearSession, setSession } = useAuth()
+const { t } = useI18n()
 
 /** Slug из публичного /[tenant]/… или NUXT_PUBLIC_DEFAULT_TENANT_SLUG */
 function tenantSlugFromHostname(): string | null {
@@ -46,10 +49,14 @@ const error = ref<string | null>(null)
 
 const tenantResolveReady = ref(false)
 const resolvedTenantFromUrl = ref<{ tenantSlug: string | null; blocked: boolean } | null>(null)
+const submitAttempted = ref(false)
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const toggleMode = () => {
   error.value = null
+  submitAttempted.value = false
   mode.value = mode.value === 'login' ? 'register' : 'login'
+  v$.value.$reset()
 }
 
 const tenantSlugDetected = computed(() => {
@@ -63,6 +70,129 @@ const tenantSlugDetected = computed(() => {
 
 const requiresTenantSlugInput = computed(
   () => mode.value === 'login' && tenantResolveReady.value && !tenantSlugDetected.value,
+)
+const authRules = computed(() => ({
+  username: { required, minLength: minLength(3) },
+  password: {
+    required,
+    minLength: minLength(mode.value === 'register' ? 6 : 3),
+  },
+  tenantSlugManual: {
+    requiredWhenNeeded: helpers.withMessage(
+      'tenant required',
+      (v: unknown) => !requiresTenantSlugInput.value || String(v ?? '').trim().length > 0,
+    ),
+    minLengthWhenNeeded: helpers.withMessage(
+      'tenant min',
+      (v: unknown) => !requiresTenantSlugInput.value || String(v ?? '').trim().length >= 3,
+    ),
+  },
+  email: {
+    requiredWhenRegister: helpers.withMessage(
+      'email required',
+      (v: unknown) => mode.value !== 'register' || String(v ?? '').trim().length > 0,
+    ),
+    emailWhenRegister: helpers.withMessage(
+      'email invalid',
+      (v: unknown) => mode.value !== 'register' || EMAIL_RE.test(String(v ?? '').trim()),
+    ),
+  },
+  firstName: {
+    requiredWhenRegister: helpers.withMessage(
+      'firstName required',
+      (v: unknown) => mode.value !== 'register' || String(v ?? '').trim().length > 0,
+    ),
+  },
+  lastName: {
+    requiredWhenRegister: helpers.withMessage(
+      'lastName required',
+      (v: unknown) => mode.value !== 'register' || String(v ?? '').trim().length > 0,
+    ),
+  },
+  tenantName: {
+    requiredWhenRegister: helpers.withMessage(
+      'tenantName required',
+      (v: unknown) => mode.value !== 'register' || String(v ?? '').trim().length > 0,
+    ),
+  },
+}))
+const v$ = useVuelidate(
+  authRules,
+  { username, password, tenantSlugManual, email, firstName, lastName, tenantName },
+  { $autoDirty: true },
+)
+const authErrors = computed(() => ({
+  username: username.value.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
+  password:
+    password.value.length >= (mode.value === 'register' ? 6 : 3)
+      ? ''
+      : t('admin.validation.min_chars', { min: mode.value === 'register' ? 6 : 3 }),
+  tenantSlugManual:
+    !requiresTenantSlugInput.value
+      ? ''
+      : tenantSlugManual.value.trim().length >= 3
+        ? ''
+        : t('admin.validation.min_chars', { min: 3 }),
+  email:
+    mode.value !== 'register'
+      ? ''
+      : !email.value.trim()
+        ? t('admin.validation.required')
+        : EMAIL_RE.test(email.value.trim())
+          ? ''
+          : t('admin.validation.invalid_email'),
+  firstName: mode.value !== 'register' || firstName.value.trim() ? '' : t('admin.validation.required_first_name'),
+  lastName: mode.value !== 'register' || lastName.value.trim() ? '' : t('admin.validation.required_last_name'),
+  tenantName:
+    mode.value !== 'register' || tenantName.value.trim()
+      ? ''
+      : t('admin.validation.required_name'),
+}))
+const canSubmit = computed(
+  () =>
+    !loading.value &&
+    (mode.value !== 'login' || tenantResolveReady.value) &&
+    !v$.value.$invalid &&
+    !authErrors.value.username &&
+    !authErrors.value.password &&
+    !authErrors.value.tenantSlugManual &&
+    !authErrors.value.email &&
+    !authErrors.value.firstName &&
+    !authErrors.value.lastName &&
+    !authErrors.value.tenantName,
+)
+const showUsernameError = computed(
+  () => (submitAttempted.value || v$.value.username.$dirty) && !!authErrors.value.username,
+)
+const showPasswordError = computed(
+  () => (submitAttempted.value || v$.value.password.$dirty) && !!authErrors.value.password,
+)
+const showTenantSlugError = computed(
+  () =>
+    requiresTenantSlugInput.value &&
+    (submitAttempted.value || v$.value.tenantSlugManual.$dirty) &&
+    !!authErrors.value.tenantSlugManual,
+)
+const showEmailError = computed(
+  () => mode.value === 'register' && (submitAttempted.value || v$.value.email.$dirty) && !!authErrors.value.email,
+)
+const showFirstNameError = computed(
+  () =>
+    mode.value === 'register' &&
+    (submitAttempted.value || v$.value.firstName.$dirty) &&
+    !!authErrors.value.firstName,
+)
+const showLastNameError = computed(
+  () =>
+    mode.value === 'register' &&
+    (submitAttempted.value || v$.value.lastName.$dirty) &&
+    !!authErrors.value.lastName,
+)
+const showTenantNameError = computed(
+  () =>
+    mode.value === 'register' &&
+    (submitAttempted.value || v$.value.tenantName.$dirty) &&
+    !!authErrors.value.tenantName,
 )
 
 function buildTenantAdminUrl(tenantSlug: string): string | null {
@@ -92,6 +222,9 @@ function buildTenantAdminUrl(tenantSlug: string): string | null {
 
 const submit = async () => {
   if (mode.value === 'login' && !tenantResolveReady.value) return
+  submitAttempted.value = true
+  v$.value.$touch()
+  if (!canSubmit.value) return
 
   loading.value = true
   error.value = null
@@ -116,7 +249,7 @@ const submit = async () => {
 
       if (!detected) {
         if (!manual) {
-          error.value = 'Укажите slug организации для входа (например: acme).'
+          error.value = t('admin.validation.required')
           return
         }
         body.tenantSlug = manual
@@ -200,41 +333,47 @@ onMounted(async () => {
     <div class="flex flex-col gap-4">
       <div v-if="mode === 'register'" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <FloatLabel variant="on">
-          <InputText id="firstName" v-model="firstName" class="w-full" />
+          <InputText id="firstName" v-model="firstName" class="w-full" :invalid="showFirstNameError" />
           <label for="firstName">Имя</label>
         </FloatLabel>
+        <p v-if="showFirstNameError" class="-mt-2 text-[11px] leading-3 text-red-500">{{ authErrors.firstName }}</p>
         <FloatLabel variant="on">
-          <InputText id="lastName" v-model="lastName" class="w-full" />
+          <InputText id="lastName" v-model="lastName" class="w-full" :invalid="showLastNameError" />
           <label for="lastName">Фамилия</label>
         </FloatLabel>
+        <p v-if="showLastNameError" class="-mt-2 text-[11px] leading-3 text-red-500">{{ authErrors.lastName }}</p>
       </div>
 
       <div v-if="mode === 'register'">
         <FloatLabel variant="on">
-          <InputText id="tenantName" v-model="tenantName" class="w-full" />
+          <InputText id="tenantName" v-model="tenantName" class="w-full" :invalid="showTenantNameError" />
           <label for="tenantName">Название организации</label>
         </FloatLabel>
+        <p v-if="showTenantNameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ authErrors.tenantName }}</p>
       </div>
 
       <div>
         <FloatLabel variant="on">
-          <InputText id="username" v-model="username" class="w-full" />
+          <InputText id="username" v-model="username" class="w-full" :invalid="showUsernameError" />
           <label for="username">Логин</label>
         </FloatLabel>
+        <p v-if="showUsernameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ authErrors.username }}</p>
       </div>
 
       <div v-if="requiresTenantSlugInput">
         <FloatLabel variant="on">
-          <InputText id="tenantSlug" v-model="tenantSlugManual" class="w-full" />
+          <InputText id="tenantSlug" v-model="tenantSlugManual" class="w-full" :invalid="showTenantSlugError" />
           <label for="tenantSlug">Slug организации (например: acme)</label>
         </FloatLabel>
+        <p v-if="showTenantSlugError" class="mt-0 text-[11px] leading-3 text-red-500">{{ authErrors.tenantSlugManual }}</p>
       </div>
 
       <div v-if="mode === 'register'">
         <FloatLabel variant="on">
-          <InputText id="email" v-model="email" type="email" class="w-full" />
+          <InputText id="email" v-model="email" type="email" class="w-full" :invalid="showEmailError" />
           <label for="email">Email</label>
         </FloatLabel>
+        <p v-if="showEmailError" class="mt-0 text-[11px] leading-3 text-red-500">{{ authErrors.email }}</p>
       </div>
 
       <div class="w-full">
@@ -242,6 +381,7 @@ onMounted(async () => {
           <Password
             inputId="password"
             v-model="password"
+            :invalid="showPasswordError"
             toggleMask
             :feedback="false"
             class="block w-full"
@@ -249,6 +389,7 @@ onMounted(async () => {
           />
           <label for="password">Пароль</label>
         </FloatLabel>
+        <p v-if="showPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ authErrors.password }}</p>
       </div>
 
       <p v-if="mode === 'register'" class="text-xs text-muted-color">
@@ -264,6 +405,7 @@ onMounted(async () => {
           :label="mode === 'login' ? 'Войти' : 'Создать организацию'"
           icon="pi pi-check"
           :loading="loading"
+          :disabled="loading || (submitAttempted && !canSubmit)"
           class="w-full justify-center"
           @click="submit"
         />

@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
-import { UserRole } from '@prisma/client';
+import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
+import { Prisma, UserRole } from '@prisma/client';
 
 @Injectable()
 export class PlatformService {
@@ -48,6 +49,9 @@ export class PlatformService {
         slug: t.slug,
         blocked: t.blocked,
         createdAt: t.createdAt,
+        subscriptionPlan: t.subscriptionPlan,
+        subscriptionStatus: t.subscriptionStatus,
+        subscriptionEndsAt: t.subscriptionEndsAt,
         usersCount: t._count.users,
         tournamentsCount: t._count.tournaments,
         teamsCount: t._count.teams,
@@ -57,6 +61,51 @@ export class PlatformService {
       total,
       page,
       pageSize,
+    };
+  }
+
+  async updateTenantSubscription(id: string, dto: PatchTenantSubscriptionDto) {
+    const exists = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    const data: Prisma.TenantUpdateInput = {};
+
+    if (dto.subscriptionPlan !== undefined) {
+      data.subscriptionPlan = dto.subscriptionPlan;
+    }
+    if (dto.subscriptionStatus !== undefined) {
+      data.subscriptionStatus = dto.subscriptionStatus;
+    }
+    if (dto.subscriptionEndsAt !== undefined) {
+      data.subscriptionEndsAt =
+        dto.subscriptionEndsAt === null
+          ? null
+          : new Date(dto.subscriptionEndsAt);
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('No subscription fields to update');
+    }
+
+    const tenant = await this.prisma.tenant.update({
+      where: { id },
+      data,
+    });
+
+    return {
+      id: tenant.id,
+      name: tenant.name,
+      slug: tenant.slug,
+      blocked: tenant.blocked,
+      createdAt: tenant.createdAt,
+      subscriptionPlan: tenant.subscriptionPlan,
+      subscriptionStatus: tenant.subscriptionStatus,
+      subscriptionEndsAt: tenant.subscriptionEndsAt,
     };
   }
 

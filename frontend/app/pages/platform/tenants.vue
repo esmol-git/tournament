@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import useVuelidate from '@vuelidate/core'
+import { helpers } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { getApiErrorMessage } from '~/utils/apiError'
+import {
+  SUBSCRIPTION_PLAN_LABELS_RU,
+  SUBSCRIPTION_STATUS_LABELS_RU,
+  formatSubscriptionPlanLabel,
+  formatSubscriptionStatusLabel,
+} from '~/utils/subscriptionPlanLabels'
 
 definePageMeta({
   layout: 'platform',
@@ -14,6 +22,9 @@ interface PlatformTenantRow {
   slug: string
   blocked: boolean
   createdAt: string
+  subscriptionPlan: string
+  subscriptionStatus: string
+  subscriptionEndsAt: string | null
   usersCount: number
   tournamentsCount: number
   teamsCount: number
@@ -35,6 +46,7 @@ interface PlatformTenantUserRow {
 const { token, authFetch, syncWithStorage } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
+const { t } = useI18n()
 const loading = ref(false)
 const search = ref('')
 const tenants = ref<PlatformTenantRow[]>([])
@@ -46,7 +58,45 @@ const usersLoading = ref(false)
 const selectedTenant = ref<PlatformTenantRow | null>(null)
 const tenantUsers = ref<PlatformTenantUserRow[]>([])
 
+const subscriptionDialogVisible = ref(false)
+const subscriptionRow = ref<PlatformTenantRow | null>(null)
+const editPlan = ref('FREE')
+const editStatus = ref('NONE')
+const editEndsAt = ref<Date | null>(null)
+const editNoEndsAt = ref(true)
+const subscriptionSubmitAttempted = ref(false)
+
 const first = computed(() => (page.value - 1) * pageSize.value)
+
+const planSelectOptions = computed(() =>
+  Object.entries(SUBSCRIPTION_PLAN_LABELS_RU).map(([value, label]) => ({ value, label })),
+)
+const statusSelectOptions = computed(() =>
+  Object.entries(SUBSCRIPTION_STATUS_LABELS_RU).map(([value, label]) => ({ value, label })),
+)
+const subscriptionRules = computed(() => ({
+  editEndsAt: {
+    requiredWhenHasEndDate: helpers.withMessage(
+      'end date required',
+      (v: unknown) => editNoEndsAt.value || v instanceof Date,
+    ),
+  },
+}))
+const subscriptionV$ = useVuelidate(subscriptionRules, { editEndsAt }, { $autoDirty: true })
+const subscriptionErrors = computed(() => ({
+  editEndsAt:
+    editNoEndsAt.value || editEndsAt.value
+      ? ''
+      : t('admin.validation.required_end_date'),
+}))
+const canSaveSubscription = computed(
+  () => !subscriptionV$.value.$invalid && !subscriptionErrors.value.editEndsAt,
+)
+const showSubscriptionEndDateError = computed(
+  () =>
+    (subscriptionSubmitAttempted.value || subscriptionV$.value.editEndsAt.$dirty) &&
+    !!subscriptionErrors.value.editEndsAt,
+)
 
 async function fetchTenants() {
   if (!token.value) return
@@ -113,6 +163,15 @@ async function confirmDeleteTenant() {
   }
 }
 
+function formatSubscriptionEnds(iso: string | null): string {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
 function buildTenantLoginUrl(tenantSlug: string): string {
   if (!process.client) {
     return `/${tenantSlug}/admin/login`
@@ -126,6 +185,46 @@ function buildTenantLoginUrl(tenantSlug: string): string {
   const isSubdomain = parts.length >= 3
   const baseDomain = isSubdomain ? parts.slice(1).join('.') : hostname
   return `${protocol}//${tenantSlug}.${baseDomain}${p}/admin/login`
+}
+
+function openSubscriptionDialog(row: PlatformTenantRow) {
+  subscriptionSubmitAttempted.value = false
+  subscriptionRow.value = row
+  editPlan.value = row.subscriptionPlan
+  editStatus.value = row.subscriptionStatus
+  editNoEndsAt.value = !row.subscriptionEndsAt
+  editEndsAt.value = row.subscriptionEndsAt ? new Date(row.subscriptionEndsAt) : null
+  subscriptionV$.value.$reset()
+  subscriptionDialogVisible.value = true
+}
+
+async function saveSubscription() {
+  const row = subscriptionRow.value
+  if (!token.value || !row) return
+  subscriptionSubmitAttempted.value = true
+  subscriptionV$.value.$touch()
+  if (!canSaveSubscription.value) return
+  try {
+    await authFetch(apiUrl(`/platform/tenants/${row.id}/subscription`), {
+      method: 'PATCH',
+      body: {
+        subscriptionPlan: editPlan.value,
+        subscriptionStatus: editStatus.value,
+        subscriptionEndsAt: editNoEndsAt.value ? null : editEndsAt.value?.toISOString() ?? null,
+      },
+    })
+    subscriptionDialogVisible.value = false
+    subscriptionRow.value = null
+    toast.add({ severity: 'success', summary: 'Подписка обновлена', life: 3000 })
+    await fetchTenants()
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось сохранить',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
+  }
 }
 
 async function openTenantUsers(row: PlatformTenantRow) {
@@ -192,6 +291,15 @@ onMounted(async () => {
     >
       <Column field="name" header="Организация" />
       <Column field="slug" header="Slug" />
+      <Column header="Тариф">
+        <template #body="{ data }">{{ formatSubscriptionPlanLabel(data.subscriptionPlan) }}</template>
+      </Column>
+      <Column header="Подписка">
+        <template #body="{ data }">{{ formatSubscriptionStatusLabel(data.subscriptionStatus) }}</template>
+      </Column>
+      <Column header="Оплачено до">
+        <template #body="{ data }">{{ formatSubscriptionEnds(data.subscriptionEndsAt) }}</template>
+      </Column>
       <Column header="Пользователи">
         <template #body="{ data }">{{ data.usersCount }}</template>
       </Column>
@@ -211,9 +319,17 @@ onMounted(async () => {
           {{ data.superAdminsCount }}
         </template>
       </Column>
-      <Column header="Действия" style="width: 10rem">
+      <Column header="Действия" style="width: 12rem">
         <template #body="{ data }">
-          <div class="flex justify-end gap-1">
+          <div class="flex justify-end gap-1 flex-wrap">
+            <Button
+              icon="pi pi-credit-card"
+              text
+              rounded
+              severity="secondary"
+              title="Подписка и тариф"
+              @click="openSubscriptionDialog(data)"
+            />
             <Button
               icon="pi pi-users"
               text
@@ -251,6 +367,72 @@ onMounted(async () => {
       :message="deleteTenantMessage"
       @confirm="confirmDeleteTenant"
     />
+
+    <Dialog
+      v-model:visible="subscriptionDialogVisible"
+      modal
+      :style="{ width: '28rem', maxWidth: '95vw' }"
+      header="Подписка организации"
+    >
+      <div v-if="subscriptionRow" class="flex flex-col gap-4">
+        <p class="text-sm text-muted-color">
+          {{ subscriptionRow.name }} ({{ subscriptionRow.slug }})
+        </p>
+        <div>
+          <label class="block text-sm font-medium mb-1">Тариф</label>
+          <Select
+            v-model="editPlan"
+            :options="planSelectOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            placeholder="Тариф"
+          />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">Статус подписки</label>
+          <Select
+            v-model="editStatus"
+            :options="statusSelectOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            placeholder="Статус"
+          />
+        </div>
+        <div class="flex items-center gap-2">
+          <Checkbox v-model="editNoEndsAt" binary input-id="sub-no-end" />
+          <label for="sub-no-end" class="text-sm">Без даты окончания</label>
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">Оплачено до</label>
+          <DatePicker
+            v-model="editEndsAt"
+            show-time
+            hour-format="24"
+            date-format="dd.mm.yy"
+            :disabled="editNoEndsAt"
+            :invalid="showSubscriptionEndDateError"
+            class="w-full"
+          />
+          <p
+            v-if="showSubscriptionEndDateError"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ subscriptionErrors.editEndsAt }}
+          </p>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <Button label="Отмена" severity="secondary" @click="subscriptionDialogVisible = false" />
+          <Button
+            label="Сохранить"
+            icon="pi pi-check"
+            :disabled="subscriptionSubmitAttempted && !canSaveSubscription"
+            @click="saveSubscription"
+          />
+        </div>
+      </div>
+    </Dialog>
 
     <Dialog
       v-model:visible="usersDialogVisible"

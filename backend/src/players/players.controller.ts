@@ -17,6 +17,9 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
+import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
+import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreatePlayerDto } from './dto/create-player.dto';
 import { PlayersFilterQueryDto } from './dto/players-filter-query.dto';
@@ -24,7 +27,12 @@ import { UpdatePlayerDto } from './dto/update-player.dto';
 import { PlayersService } from './players.service';
 
 @ApiTags('players')
-@UseGuards(JwtAuthGuard)
+@UseGuards(
+  JwtAuthGuard,
+  TenantSubscriptionGuard,
+  TenantParamConsistencyGuard,
+  TenantZoneGuard,
+)
 @Controller()
 export class PlayersController {
   constructor(private readonly playersService: PlayersService) {}
@@ -48,6 +56,24 @@ export class PlayersController {
     });
   }
 
+  @Get('tenants/:tenantId/players/export/xlsx')
+  async exportXlsx(
+    @Param('tenantId') tenantId: string,
+    @Req() req: { user: JwtPayload },
+    @Query() query: PlayersFilterQueryDto,
+  ) {
+    const { body, filename } = await this.playersService.exportXlsx(
+      tenantId,
+      req.user.sub,
+      req.user.role as any,
+      query,
+    );
+    return new StreamableFile(body, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${filename}"`,
+    });
+  }
+
   @Post('tenants/:tenantId/players/import/csv')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
@@ -60,6 +86,7 @@ export class PlayersController {
     @Req() req: { user: JwtPayload },
     @UploadedFile() file: Express.Multer.File,
     @Query('mode') mode?: string,
+    @Query('fields') fields?: string,
   ) {
     if (!file?.buffer?.length) {
       throw new BadRequestException('Загрузите CSV-файл (поле file)');
@@ -71,6 +98,34 @@ export class PlayersController {
       req.user.role as any,
       text,
       mode,
+      fields,
+    );
+  }
+
+  @Post('tenants/:tenantId/players/import/xlsx')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 8 * 1024 * 1024 },
+    }),
+  )
+  async importXlsx(
+    @Param('tenantId') tenantId: string,
+    @Req() req: { user: JwtPayload },
+    @UploadedFile() file: Express.Multer.File,
+    @Query('mode') mode?: string,
+    @Query('fields') fields?: string,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Загрузите XLSX-файл (поле file)');
+    }
+    return this.playersService.importXlsx(
+      tenantId,
+      req.user.sub,
+      req.user.role as any,
+      file.buffer,
+      mode,
+      fields,
     );
   }
 

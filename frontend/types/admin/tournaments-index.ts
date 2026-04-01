@@ -22,6 +22,17 @@ export interface TournamentRow {
   status: TournamentStatus
   teamsCount: number
   logoUrl?: string | null
+  seasonId?: string | null
+  season?: { id: string; name: string; code?: string | null } | null
+  competitionId?: string | null
+  competition?: { id: string; name: string; code?: string | null } | null
+  ageGroupId?: string | null
+  ageGroup?: {
+    id: string
+    name: string
+    shortLabel?: string | null
+    code?: string | null
+  } | null
 }
 
 export interface TournamentListResponse {
@@ -52,6 +63,33 @@ export interface TournamentDetails {
   pointsDraw: number
   pointsLoss: number
   members: { userId: string; role: string }[]
+  stadiumId?: string | null
+  stadium?: {
+    id: string
+    name: string
+    city?: string | null
+    address?: string | null
+  } | null
+  seasonId?: string | null
+  season?: { id: string; name: string; code?: string | null } | null
+  competitionId?: string | null
+  competition?: { id: string; name: string; code?: string | null } | null
+  ageGroupId?: string | null
+  ageGroup?: {
+    id: string
+    name: string
+    shortLabel?: string | null
+    code?: string | null
+  } | null
+  tournamentReferees?: Array<{
+    refereeId: string
+    referee: {
+      id: string
+      firstName: string
+      lastName: string
+      phone?: string | null
+    }
+  }>
 }
 
 export interface UserLite {

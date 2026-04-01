@@ -8,6 +8,7 @@ import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
 const props = defineProps<{
   tournamentId: string
   groupId?: string | null
+  teamLogos?: Record<string, string>
 }>()
 
 const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
@@ -21,6 +22,13 @@ const rows = ref<TableRow[]>([])
 const matches = ref<MatchRow[]>([])
 
 const sortedRows = computed(() => rows.value.slice().sort((a, b) => a.position - b.position))
+const playedMatchesCount = computed(() =>
+  (matches.value ?? []).filter((m) => {
+    if (m.stage === 'PLAYOFF') return false
+    if (props.groupId) return m.groupId === props.groupId
+    return m.homeScore != null && m.awayScore != null
+  }).length,
+)
 
 type ResultVariant = 'wins' | 'draws' | 'losses'
 type TeamResultToken = {
@@ -32,12 +40,28 @@ type TeamResultToken = {
 function resultTokenClass(variant: ResultVariant) {
   switch (variant) {
     case 'wins':
-      return 'inline-flex items-center justify-center rounded-md border border-green-200 bg-green-50 px-2 py-1 text-xs font-semibold text-green-800'
+      return 'inline-flex items-center justify-center rounded-md border border-[#d2e2f7] bg-[#eef5ff] px-2 py-1 text-xs font-semibold text-[#1a5a8c]'
     case 'draws':
-      return 'inline-flex items-center justify-center rounded-md border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs font-semibold text-yellow-800'
+      return 'inline-flex items-center justify-center rounded-md border border-[#d7c8e8] bg-[#f6f0ff] px-2 py-1 text-xs font-semibold text-[#6f3fa3]'
     case 'losses':
-      return 'inline-flex items-center justify-center rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-800'
+      return 'inline-flex items-center justify-center rounded-md border border-[#f2c5d6] bg-[#fff2f7] px-2 py-1 text-xs font-semibold text-[#c80a48]'
   }
+}
+
+const TEAM_PLACEHOLDER_SRC = '/placeholders/team.svg'
+
+function resolveTeamLogo(teamId: string | null | undefined) {
+  if (!teamId) return TEAM_PLACEHOLDER_SRC
+  const logo = props.teamLogos?.[teamId]
+  if (typeof logo === 'string' && logo.trim().length > 0) return logo
+  return TEAM_PLACEHOLDER_SRC
+}
+
+function handleTeamLogoError(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLImageElement)) return
+  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
+  target.src = TEAM_PLACEHOLDER_SRC
 }
 
 const resultsByTeamId = computed<Record<string, TeamResultToken[]>>(() => {
@@ -127,11 +151,11 @@ watch(
 </script>
 
 <template>
-  <div class="rounded-2xl border border-surface-200 bg-surface-0 p-4">
+  <div class="rounded-2xl border border-[#b7c7dd] bg-white p-4">
     <div class="flex items-center justify-between gap-3">
       <div>
-        <div class="text-sm font-semibold text-surface-900">Прогресс</div>
-        <div class="text-xs text-muted-color mt-1">Все результаты турнира по командам.</div>
+        <div class="text-sm font-semibold text-[#123c67]">Прогресс</div>
+        <div class="mt-1 text-xs text-[#4f6b8c]">Все результаты турнира по командам.</div>
       </div>
     </div>
 
@@ -139,20 +163,40 @@ watch(
       {{ errorText }}
     </div>
 
-    <div v-else-if="loading" class="mt-4 text-sm text-muted-color">
-      Загрузка результатов...
+    <div v-else-if="loading" class="mt-4 space-y-2">
+      <div class="grid grid-cols-[1fr_2fr] gap-3 rounded-xl border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2">
+        <Skeleton width="6rem" height="0.8rem" />
+        <Skeleton width="7rem" height="0.8rem" />
+      </div>
+      <div
+        v-for="i in 6"
+        :key="`progress-sk-${i}`"
+        class="grid grid-cols-[1fr_2fr] items-start gap-3 rounded-xl border border-[#e1e8f2] bg-white px-3 py-3"
+      >
+        <Skeleton width="8rem" height="0.9rem" />
+        <div class="flex gap-2">
+          <Skeleton width="2.2rem" height="1.6rem" />
+          <Skeleton width="2.2rem" height="1.6rem" />
+          <Skeleton width="2.2rem" height="1.6rem" />
+        </div>
+      </div>
     </div>
 
-    <div v-else-if="!sortedRows.length" class="mt-4 py-10 text-center text-muted-color">
+    <div v-else-if="!sortedRows.length" class="mt-4 rounded-xl border border-[#b7c7dd] bg-[#f8fbff] py-10 text-center text-[#4f6b8c]">
       Пока нет команд.
     </div>
 
-    <div v-else class="mt-4 overflow-hidden rounded-xl border border-surface-200">
+    <div v-else class="mt-4 overflow-hidden rounded-xl border border-[#b7c7dd]">
+      <div
+        v-if="playedMatchesCount === 0"
+        class="border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs text-[#4f6b8c]"
+      >
+        Матчей с зафиксированным счетом пока нет. Прогресс заполнится после первых игр.
+      </div>
       <div class="grid grid-cols-1">
         <div
-          class="grid grid-cols-[4rem_1fr_2fr] gap-3 bg-surface-100 border-b border-surface-200 px-3 py-2 text-xs font-semibold text-surface-800"
+          class="grid grid-cols-[1fr_2fr] gap-3 border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs font-semibold text-[#123c67]"
         >
-          <div>Команда</div>
           <div>Название</div>
           <div>Результаты</div>
         </div>
@@ -160,13 +204,19 @@ watch(
         <div
           v-for="r in sortedRows"
           :key="r.teamId"
-          class="grid grid-cols-[4rem_1fr_2fr] gap-3 items-start px-3 py-3 border-b border-surface-200 bg-surface-0"
+          class="grid grid-cols-[1fr_2fr] items-start gap-3 border-b border-[#e1e8f2] px-3 py-3 odd:bg-white even:bg-[#f9fbff]"
         >
-          <div class="text-sm font-semibold text-surface-800">
-            Команда {{ r.position }}
-          </div>
-          <div class="min-w-0">
-            <div class="truncate text-sm font-medium text-surface-900">{{ r.teamName }}</div>
+          <div class="flex min-w-0 items-center gap-2">
+            <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
+              <img
+                :src="resolveTeamLogo(r.teamId)"
+                :alt="r.teamName"
+                class="h-full w-full object-cover"
+                loading="lazy"
+                @error="handleTeamLogoError"
+              />
+            </div>
+            <div class="truncate text-sm font-medium text-[#123c67]">#{{ r.position }} {{ r.teamName }}</div>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <span
@@ -179,7 +229,7 @@ watch(
 
             <span
               v-if="(resultsByTeamId[r.teamId] ?? []).length === 0"
-              class="text-sm text-muted-color"
+              class="text-sm text-[#4f6b8c]"
             >
               —
             </span>

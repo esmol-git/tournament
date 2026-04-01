@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { useAuth } from '~/composables/useAuth'
+import { useTabQuerySync } from '~/composables/useTabQuerySync'
 import { useApiUrl } from '~/composables/useApiUrl'
+import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useTenantId } from '~/composables/useTenantId'
+import useVuelidate from '@vuelidate/core'
+import { helpers, required } from '@vuelidate/validators'
 import type { MatchRow, TenantTournamentMatchRow } from '~/types/tournament-admin'
 import type { TournamentListResponse, TournamentRow } from '~/types/admin/tournaments-index'
 import type { TeamLite } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { toYmdLocal } from '~/utils/dateYmd'
 import {
   formatDateTimeNoSeconds,
   formatMatchScoreDisplay,
   isMatchEditLocked,
   statusLabel,
+  statusOptions,
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -19,9 +25,12 @@ definePageMeta({ layout: 'admin' })
 
 const router = useRouter()
 const toast = useToast()
+const { t } = useI18n()
 const { token, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
+
+const { loadRefs, postponeReasonOptions } = useMatchProtocolReferences()
 
 const loading = ref(false)
 const standaloneMatches = ref<MatchRow[]>([])
@@ -29,9 +38,19 @@ const teams = ref<TeamLite[]>([])
 const tournaments = ref<TournamentRow[]>([])
 
 const activeTab = ref(0)
+const { syncFromRoute: syncMatchesTabFromRoute } = useTabQuerySync(activeTab, [
+  'standalone',
+  'tournament',
+] as const)
 const loadingTournamentMatches = ref(false)
 const tournamentMatches = ref<TenantTournamentMatchRow[]>([])
+const tournamentMatchesTotal = ref(0)
+const tournamentMatchesPage = ref(1)
+const tournamentMatchesPageSize = ref(25)
 const tournamentMatchFilterId = ref<string>('')
+const tournamentMatchStatusFilter = ref<string>('')
+const tournamentMatchTeamFilterId = ref<string>('')
+const tournamentMatchDateRange = ref<Date[] | null>(null)
 const detachingTournamentMatchId = ref<string | null>(null)
 
 const protocolStandalone = ref(true)
@@ -61,35 +80,152 @@ function shouldHideUnknownPlayoffMatch(m: TenantTournamentMatchRow) {
 const visibleTournamentMatches = computed(() =>
   tournamentMatches.value.filter((m) => !shouldHideUnknownPlayoffMatch(m)),
 )
-const visibleTournamentMatchesWithIndex = computed(() =>
-  visibleTournamentMatches.value.map((m, index) => ({
+const visibleTournamentMatchesWithIndex = computed(() => {
+  const offset = (tournamentMatchesPage.value - 1) * tournamentMatchesPageSize.value
+  return visibleTournamentMatches.value.map((m, index) => ({
     ...m,
-    matchNumber: index + 1,
-  })),
-)
+    matchNumber: offset + index + 1,
+  }))
+})
 
 const teamOptions = computed(() =>
   teams.value.map((t) => ({ label: t.name, value: t.id })),
 )
 
+const tournamentStatusFilterOptions = computed(() => [
+  { label: 'Все статусы', value: '' },
+  ...statusOptions.map((s) => ({ label: s.label, value: s.value })),
+])
+
+const tournamentTeamFilterOptions = computed(() => [
+  { label: 'Все команды', value: '' },
+  ...teamOptions.value,
+])
+
+/** Подсветка в колонке «Матч», когда выбран фильтр по команде. */
+function isTournamentListTeamHighlighted(teamId: string) {
+  const fid = tournamentMatchTeamFilterId.value
+  return fid !== '' && fid === teamId
+}
+
 const attachTournamentByMatchId = reactive<Record<string, string>>({})
 
 const createOpen = ref(false)
 const createSaving = ref(false)
+const createSubmitAttempted = ref(false)
 const createForm = reactive({
   homeTeamId: '',
   awayTeamId: '',
   startTime: null as Date | null,
 })
+const createRules = computed(() => ({
+  homeTeamId: { required },
+  awayTeamId: { required },
+  startTime: { required },
+}))
+const createV$ = useVuelidate(createRules, createForm, { $autoDirty: true })
+const createFormErrors = computed(() => ({
+  homeTeamId: createForm.homeTeamId ? '' : t('admin.validation.required'),
+  awayTeamId: createForm.awayTeamId ? '' : t('admin.validation.required'),
+  startTime: createForm.startTime ? '' : t('admin.validation.required_start_time'),
+  sameTeams:
+    !createForm.homeTeamId ||
+    !createForm.awayTeamId ||
+    createForm.homeTeamId !== createForm.awayTeamId
+      ? ''
+      : t('admin.validation.different_values'),
+}))
+const canCreateMatch = computed(
+  () =>
+    !createV$.value.$invalid &&
+    !createFormErrors.value.homeTeamId &&
+    !createFormErrors.value.awayTeamId &&
+    !createFormErrors.value.startTime &&
+    !createFormErrors.value.sameTeams,
+)
+const showCreateHomeError = computed(
+  () => (createSubmitAttempted.value || createV$.value.homeTeamId.$dirty) && !!createFormErrors.value.homeTeamId,
+)
+const showCreateAwayError = computed(
+  () => (createSubmitAttempted.value || createV$.value.awayTeamId.$dirty) && !!createFormErrors.value.awayTeamId,
+)
+const showCreateStartError = computed(
+  () => (createSubmitAttempted.value || createV$.value.startTime.$dirty) && !!createFormErrors.value.startTime,
+)
+const showCreateSameTeamsError = computed(
+  () => createSubmitAttempted.value && !!createFormErrors.value.sameTeams,
+)
 
 const editOpen = ref(false)
 const editSaving = ref(false)
+const editOriginalStartMs = ref<number | null>(null)
+const editSubmitAttempted = ref(false)
 const editForm = reactive({
   matchId: '',
   homeTeamId: '',
   awayTeamId: '',
   startTime: null as Date | null,
+  scheduleChangeReasonId: '' as string,
 })
+const editStartChanged = computed(
+  () =>
+    editForm.startTime != null &&
+    editOriginalStartMs.value != null &&
+    editForm.startTime.getTime() !== editOriginalStartMs.value,
+)
+const editRules = computed(() => ({
+  homeTeamId: { required },
+  awayTeamId: { required },
+  startTime: { required },
+  scheduleChangeReasonId: {
+    requiredWhenStartChanged: helpers.withMessage(
+      'reason required',
+      (v: unknown) => !editStartChanged.value || !!String(v ?? '').trim(),
+    ),
+  },
+}))
+const editV$ = useVuelidate(editRules, editForm, { $autoDirty: true })
+const editFormErrors = computed(() => ({
+  homeTeamId: editForm.homeTeamId ? '' : t('admin.validation.required'),
+  awayTeamId: editForm.awayTeamId ? '' : t('admin.validation.required'),
+  startTime: editForm.startTime ? '' : t('admin.validation.required_start_time'),
+  sameTeams:
+    !editForm.homeTeamId ||
+    !editForm.awayTeamId ||
+    editForm.homeTeamId !== editForm.awayTeamId
+      ? ''
+      : t('admin.validation.different_values'),
+  scheduleChangeReasonId:
+    !editStartChanged.value || editForm.scheduleChangeReasonId
+      ? ''
+      : t('admin.validation.required_reason'),
+}))
+const canEditMatch = computed(
+  () =>
+    !editV$.value.$invalid &&
+    !editFormErrors.value.homeTeamId &&
+    !editFormErrors.value.awayTeamId &&
+    !editFormErrors.value.startTime &&
+    !editFormErrors.value.sameTeams &&
+    !editFormErrors.value.scheduleChangeReasonId,
+)
+const showEditHomeError = computed(
+  () => (editSubmitAttempted.value || editV$.value.homeTeamId.$dirty) && !!editFormErrors.value.homeTeamId,
+)
+const showEditAwayError = computed(
+  () => (editSubmitAttempted.value || editV$.value.awayTeamId.$dirty) && !!editFormErrors.value.awayTeamId,
+)
+const showEditStartError = computed(
+  () => (editSubmitAttempted.value || editV$.value.startTime.$dirty) && !!editFormErrors.value.startTime,
+)
+const showEditSameTeamsError = computed(
+  () => editSubmitAttempted.value && !!editFormErrors.value.sameTeams,
+)
+const showEditScheduleReasonError = computed(
+  () =>
+    (editSubmitAttempted.value || editV$.value.scheduleChangeReasonId.$dirty) &&
+    !!editFormErrors.value.scheduleChangeReasonId,
+)
 
 const protocolOpen = ref(false)
 const protocolMatch = ref<MatchRow | null>(null)
@@ -122,11 +258,22 @@ const fetchTournamentMatchesList = async () => {
   loadingTournamentMatches.value = true
   try {
     const params = new URLSearchParams()
-    params.set('page', '1')
-    params.set('pageSize', '100')
+    params.set('page', String(tournamentMatchesPage.value))
+    params.set('pageSize', String(tournamentMatchesPageSize.value))
     params.set('excludeUndeterminedPlayoff', 'true')
     if (tournamentMatchFilterId.value) {
       params.set('tournamentId', tournamentMatchFilterId.value)
+    }
+    if (tournamentMatchStatusFilter.value) {
+      params.set('status', tournamentMatchStatusFilter.value)
+    }
+    if (tournamentMatchTeamFilterId.value) {
+      params.set('teamId', tournamentMatchTeamFilterId.value)
+    }
+    const dr = tournamentMatchDateRange.value
+    if (Array.isArray(dr) && dr[0]) {
+      params.set('dateFrom', toYmdLocal(dr[0]))
+      if (dr[1]) params.set('dateTo', toYmdLocal(dr[1]))
     }
     const res = await authFetch<{
       items: TenantTournamentMatchRow[]
@@ -135,6 +282,7 @@ const fetchTournamentMatchesList = async () => {
       headers: { Authorization: `Bearer ${token.value}` },
     })
     tournamentMatches.value = res.items ?? []
+    tournamentMatchesTotal.value = typeof res.total === 'number' ? res.total : res.items?.length ?? 0
   } catch (e: unknown) {
     toast.add({
       severity: 'error',
@@ -143,9 +291,16 @@ const fetchTournamentMatchesList = async () => {
       life: 6000,
     })
     tournamentMatches.value = []
+    tournamentMatchesTotal.value = 0
   } finally {
     loadingTournamentMatches.value = false
   }
+}
+
+function onTournamentPaginatorPage(e: { first: number; rows: number; page: number }) {
+  tournamentMatchesPage.value = e.page + 1
+  tournamentMatchesPageSize.value = e.rows
+  void fetchTournamentMatchesList()
 }
 
 const fetchTeams = async () => {
@@ -188,20 +343,19 @@ const fetchTournaments = async () => {
 }
 
 const openCreate = () => {
+  createSubmitAttempted.value = false
   createForm.homeTeamId = ''
   createForm.awayTeamId = ''
   createForm.startTime = new Date()
+  createV$.value.$reset()
   createOpen.value = true
 }
 
 const submitCreate = async () => {
   if (!token.value) return
-  if (!createForm.homeTeamId || !createForm.awayTeamId || !createForm.startTime) {
-    toast.add({ severity: 'warn', summary: 'Заполните команды и время', life: 4000 })
-    return
-  }
-  if (createForm.homeTeamId === createForm.awayTeamId) {
-    toast.add({ severity: 'warn', summary: 'Нужны две разные команды', life: 4000 })
+  createSubmitAttempted.value = true
+  createV$.value.$touch()
+  if (!canCreateMatch.value) {
     return
   }
   createSaving.value = true
@@ -230,7 +384,7 @@ const submitCreate = async () => {
   }
 }
 
-const openEdit = (m: MatchRow) => {
+const openEdit = async (m: MatchRow) => {
   if (isMatchEditLocked(m.status)) {
     toast.add({
       severity: 'info',
@@ -240,31 +394,43 @@ const openEdit = (m: MatchRow) => {
     })
     return
   }
+  if (token.value) {
+    await loadRefs(authFetch, apiUrl, token.value, tenantId.value)
+  }
   editForm.matchId = m.id
   editForm.homeTeamId = m.homeTeam.id
   editForm.awayTeamId = m.awayTeam.id
   editForm.startTime = new Date(m.startTime)
+  editOriginalStartMs.value = editForm.startTime.getTime()
+  editForm.scheduleChangeReasonId = ''
+  editSubmitAttempted.value = false
+  editV$.value.$reset()
   editOpen.value = true
 }
 
 const submitEdit = async () => {
   if (!token.value || !editForm.matchId || !editForm.startTime) return
-  if (editForm.homeTeamId === editForm.awayTeamId) {
-    toast.add({ severity: 'warn', summary: 'Нужны две разные команды', life: 4000 })
+  editSubmitAttempted.value = true
+  editV$.value.$touch()
+  if (!canEditMatch.value) {
     return
   }
   editSaving.value = true
   try {
+    const body: Record<string, unknown> = {
+      startTime: editForm.startTime.toISOString(),
+      homeTeamId: editForm.homeTeamId,
+      awayTeamId: editForm.awayTeamId,
+    }
+    if (editStartChanged.value) {
+      body.scheduleChangeReasonId = editForm.scheduleChangeReasonId
+    }
     await authFetch(
       apiUrl(`/tenants/${tenantId.value}/standalone-matches/${editForm.matchId}`),
       {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token.value}` },
-        body: {
-          startTime: editForm.startTime.toISOString(),
-          homeTeamId: editForm.homeTeamId,
-          awayTeamId: editForm.awayTeamId,
-        },
+        body,
       },
     )
     editOpen.value = false
@@ -449,9 +615,23 @@ async function confirmDetachTournamentMatch() {
   }
 }
 
-watch(tournamentMatchFilterId, () => {
-  if (activeTab.value === 1) void fetchTournamentMatchesList()
-})
+let tournamentListFiltersTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  [
+    tournamentMatchFilterId,
+    tournamentMatchStatusFilter,
+    tournamentMatchTeamFilterId,
+    tournamentMatchDateRange,
+  ],
+  () => {
+    tournamentMatchesPage.value = 1
+    if (tournamentListFiltersTimer) clearTimeout(tournamentListFiltersTimer)
+    tournamentListFiltersTimer = setTimeout(() => {
+      if (activeTab.value === 1) void fetchTournamentMatchesList()
+    }, 350)
+  },
+  { deep: true },
+)
 
 watch(activeTab, (i) => {
   if (i === 1) void fetchTournamentMatchesList()
@@ -466,6 +646,8 @@ onMounted(async () => {
     }
   }
   await Promise.all([fetchTeams(), fetchTournaments(), fetchStandalone()])
+  syncMatchesTabFromRoute()
+  if (activeTab.value === 1) void fetchTournamentMatchesList()
 })
 </script>
 
@@ -514,52 +696,70 @@ onMounted(async () => {
         Пока нет свободных матчей.
       </div>
 
-      <DataTable v-else :value="standaloneMatches" dataKey="id" stripedRows class="mt-4">
-        <Column field="startTime" header="Начало" style="min-width: 10rem">
+      <DataTable
+        v-else
+        :value="standaloneMatches"
+        dataKey="id"
+        stripedRows
+        size="small"
+        class="mt-4"
+      >
+        <Column field="startTime" header="Начало" style="width: 9.5rem; min-width: 9rem">
           <template #body="{ data }">
-            {{ formatDateTimeNoSeconds(data.startTime) }}
+            <span class="tabular-nums text-sm">{{ formatDateTimeNoSeconds(data.startTime) }}</span>
           </template>
         </Column>
-        <Column header="Хозяева" style="min-width: 8rem">
+        <Column header="Матч" style="min-width: 12rem; max-width: 22rem">
           <template #body="{ data }">
-            {{ data.homeTeam.name }}
+            <div class="flex items-baseline gap-1.5 min-w-0 text-sm">
+              <span class="font-medium truncate" :title="data.homeTeam.name">{{ data.homeTeam.name }}</span>
+              <span class="text-muted-color shrink-0 text-xs">—</span>
+              <span class="font-medium truncate" :title="data.awayTeam.name">{{ data.awayTeam.name }}</span>
+            </div>
           </template>
         </Column>
-        <Column header="Гости" style="min-width: 8rem">
+        <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
           <template #body="{ data }">
-            {{ data.awayTeam.name }}
-          </template>
-        </Column>
-        <Column header="Счёт" style="width: 5rem">
-          <template #body="{ data }">
-            <span v-if="data.homeScore !== null && data.awayScore !== null">
+            <span
+              v-if="data.homeScore !== null && data.awayScore !== null"
+              class="tabular-nums text-sm font-medium whitespace-nowrap"
+            >
               {{ formatMatchScoreDisplay(data) }}
             </span>
             <span v-else class="text-muted-color">—</span>
           </template>
         </Column>
-        <Column header="Статус" style="width: 8rem">
+        <Column header="Статус" style="width: 7.5rem">
           <template #body="{ data }">
-            <span :class="statusPillClass(data.status)">{{ statusLabel(data.status) }}</span>
+            <span :class="statusPillClass(data.status)" class="!text-[11px] !py-0.5 !px-1.5">
+              {{ statusLabel(data.status) }}
+            </span>
           </template>
         </Column>
-        <Column header="Прикрепить к турниру (MANUAL)" style="min-width: 14rem">
+        <Column style="min-width: 11.5rem; width: 13rem">
+          <template #header>
+            <span v-tooltip.top="'Только турниры с ручным расписанием (MANUAL)'">К турниру</span>
+          </template>
           <template #body="{ data }">
-            <div class="flex flex-wrap items-center gap-2">
+            <div class="flex items-center gap-1.5">
               <Select
                 v-model="attachTournamentByMatchId[data.id]"
                 :options="manualTournaments.map((t) => ({ label: t.name, value: t.id }))"
                 optionLabel="label"
                 optionValue="value"
-                class="min-w-[12rem]"
+                class="flex-1 min-w-0 max-w-[10rem]"
+                size="small"
                 placeholder="Турнир"
                 :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
               />
               <Button
-                label="Прикрепить"
                 icon="pi pi-link"
+                severity="secondary"
+                outlined
                 size="small"
+                class="!shrink-0 !w-8 !h-8 !p-0"
                 :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
+                v-tooltip.top="'Прикрепить'"
                 @click="attachToTournament(data)"
               />
             </div>
@@ -567,25 +767,29 @@ onMounted(async () => {
         </Column>
         <Column
           header="Действия"
-          style="min-width: 11rem"
-          headerClass="text-right"
+          style="width: 7rem"
+          headerClass="text-right !text-xs !font-normal !text-muted-color"
           :headerStyle="{ textAlign: 'right' }"
         >
           <template #body="{ data }">
-            <div class="w-full flex flex-wrap gap-1 justify-end">
+            <div class="flex items-center justify-end gap-0">
               <Button
-                label="Протокол"
-                icon="pi pi-pencil"
+                icon="pi pi-book"
                 text
+                rounded
                 size="small"
+                class="!w-8 !h-8"
+                v-tooltip.top="'Протокол'"
                 @click="openProtocolStandalone(data)"
               />
               <Button
-                label="Изменить"
                 icon="pi pi-calendar"
                 text
+                rounded
                 size="small"
+                class="!w-8 !h-8"
                 :disabled="isMatchEditLocked(data.status)"
+                v-tooltip.top="'Дата и время'"
                 @click="openEdit(data)"
               />
               <Button
@@ -594,8 +798,10 @@ onMounted(async () => {
                 text
                 rounded
                 size="small"
+                class="!w-8 !h-8"
                 :disabled="isMatchEditLocked(data.status)"
                 :loading="deletingId === data.id"
+                v-tooltip.top="'Удалить'"
                 @click="requestDeleteMatch(data)"
               />
             </div>
@@ -607,8 +813,8 @@ onMounted(async () => {
 
       <TabPanel header="В турнирах">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 space-y-4">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div class="flex flex-col gap-1 sm:max-w-md">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 sm:items-end">
+            <div class="flex flex-col gap-1 min-w-0">
               <label class="text-xs font-medium text-muted-color">Турнир</label>
               <Select
                 v-model="tournamentMatchFilterId"
@@ -619,89 +825,173 @@ onMounted(async () => {
                 option-label="label"
                 option-value="value"
                 class="w-full"
+                size="small"
                 placeholder="Все турниры"
+                filter
+              />
+            </div>
+            <div class="flex flex-col gap-1 min-w-0">
+              <label class="text-xs font-medium text-muted-color">Статус</label>
+              <Select
+                v-model="tournamentMatchStatusFilter"
+                :options="tournamentStatusFilterOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                size="small"
+                placeholder="Все статусы"
+              />
+            </div>
+            <div class="flex flex-col gap-1 min-w-0">
+              <label class="text-xs font-medium text-muted-color">Команда</label>
+              <Select
+                v-model="tournamentMatchTeamFilterId"
+                :options="tournamentTeamFilterOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                size="small"
+                placeholder="Любая"
+                filter
+              />
+            </div>
+            <div class="flex flex-col gap-1 min-w-0">
+              <label class="text-xs font-medium text-muted-color">Период (начало матча)</label>
+              <DatePicker
+                v-model="tournamentMatchDateRange"
+                selection-mode="range"
+                date-format="dd.mm.yy"
+                show-icon
+                icon-display="input"
+                class="w-full"
+                size="small"
+                placeholder="С — По"
               />
             </div>
           </div>
 
           <div v-if="loadingTournamentMatches" class="text-sm text-muted-color">Загрузка…</div>
-          <div v-else-if="!visibleTournamentMatches.length" class="text-sm text-muted-color">
-            Нет матчей в турнирах (с учётом фильтра).
+          <div
+            v-else-if="!tournamentMatchesTotal"
+            class="text-sm text-muted-color"
+          >
+            Нет матчей по выбранным фильтрам.
           </div>
 
-          <DataTable v-else :value="visibleTournamentMatchesWithIndex" data-key="id" striped-rows>
-            <Column header="#" style="width: 4rem">
+          <template v-else>
+          <DataTable :value="visibleTournamentMatchesWithIndex" data-key="id" striped-rows size="small">
+            <Column header="#" style="width: 2.75rem">
               <template #body="{ data }">
-                {{ data.matchNumber }}
+                <span class="tabular-nums text-sm text-muted-color">{{ data.matchNumber }}</span>
               </template>
             </Column>
-            <Column field="startTime" header="Начало" style="min-width: 10rem">
+            <Column field="startTime" header="Начало" style="width: 9.5rem; min-width: 9rem">
               <template #body="{ data }">
-                {{ formatDateTimeNoSeconds(data.startTime) }}
+                <span class="tabular-nums text-sm">{{ formatDateTimeNoSeconds(data.startTime) }}</span>
               </template>
             </Column>
-            <Column header="Турнир" style="min-width: 10rem">
+            <Column header="Турнир" style="min-width: 8rem; max-width: 14rem">
               <template #body="{ data }">
                 <NuxtLink
                   :to="`/admin/tournaments/${data.tournament.id}`"
-                  class="text-primary hover:underline font-medium"
+                  class="text-primary hover:underline font-medium text-sm truncate block"
+                  :title="data.tournament.name"
                 >
                   {{ data.tournament.name }}
                 </NuxtLink>
               </template>
             </Column>
-            <Column header="Хозяева" style="min-width: 8rem">
+            <Column header="Матч" style="min-width: 12rem; max-width: 22rem">
               <template #body="{ data }">
-                {{ data.homeTeam.name }}
+                <div class="flex items-baseline gap-1.5 min-w-0 text-sm">
+                  <span
+                    class="font-medium truncate rounded px-0.5 transition-colors"
+                    :class="
+                      isTournamentListTeamHighlighted(data.homeTeam.id)
+                        ? 'bg-primary/20 text-primary'
+                        : ''
+                    "
+                    :title="data.homeTeam.name"
+                  >
+                    {{ data.homeTeam.name }}
+                  </span>
+                  <span class="text-muted-color shrink-0 text-xs">—</span>
+                  <span
+                    class="font-medium truncate rounded px-0.5 transition-colors"
+                    :class="
+                      isTournamentListTeamHighlighted(data.awayTeam.id)
+                        ? 'bg-primary/20 text-primary'
+                        : ''
+                    "
+                    :title="data.awayTeam.name"
+                  >
+                    {{ data.awayTeam.name }}
+                  </span>
+                </div>
               </template>
             </Column>
-            <Column header="Гости" style="min-width: 8rem">
+            <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
               <template #body="{ data }">
-                {{ data.awayTeam.name }}
-              </template>
-            </Column>
-            <Column header="Счёт" style="width: 5rem">
-              <template #body="{ data }">
-                <span v-if="data.homeScore !== null && data.awayScore !== null">
+                <span
+                  v-if="data.homeScore !== null && data.awayScore !== null"
+                  class="tabular-nums text-sm font-medium whitespace-nowrap"
+                >
                   {{ formatMatchScoreDisplay(data) }}
                 </span>
                 <span v-else class="text-muted-color">—</span>
               </template>
             </Column>
-            <Column header="Статус" style="width: 8rem">
+            <Column header="Статус" style="width: 7.5rem">
               <template #body="{ data }">
-                <span :class="statusPillClass(data.status)">{{ statusLabel(data.status) }}</span>
+                <span :class="statusPillClass(data.status)" class="!text-[11px] !py-0.5 !px-1.5">
+                  {{ statusLabel(data.status) }}
+                </span>
               </template>
             </Column>
             <Column
               header="Действия"
-              style="min-width: 12rem"
-              headerClass="text-right"
+              style="width: 5.5rem"
+              headerClass="text-right !text-xs !font-normal !text-muted-color"
               :headerStyle="{ textAlign: 'right' }"
             >
               <template #body="{ data }">
-                <div class="w-full flex flex-wrap gap-1 justify-end">
+                <div class="flex items-center justify-end gap-0">
                   <Button
-                    label="Протокол"
-                    icon="pi pi-pencil"
+                    icon="pi pi-book"
                     text
+                    rounded
                     size="small"
+                    class="!w-8 !h-8"
+                    v-tooltip.top="'Протокол'"
                     @click="openProtocolFromTournament(data)"
                   />
                   <Button
                     v-if="data.tournament.format === 'MANUAL'"
-                    label="Открепить"
                     icon="pi pi-unlock"
                     text
+                    rounded
                     size="small"
+                    class="!w-8 !h-8"
                     :disabled="isMatchEditLocked(data.status)"
                     :loading="detachingTournamentMatchId === data.id"
+                    v-tooltip.top="'Открепить от турнира'"
                     @click="requestDetachTournamentMatch(data)"
                   />
                 </div>
               </template>
             </Column>
           </DataTable>
+          <Paginator
+            v-if="tournamentMatchesTotal > tournamentMatchesPageSize"
+            class="border-t border-surface-200 dark:border-surface-700 mt-0 rounded-b-xl"
+            :rows="tournamentMatchesPageSize"
+            :total-records="tournamentMatchesTotal"
+            :first="(tournamentMatchesPage - 1) * tournamentMatchesPageSize"
+            :rows-per-page-options="[25, 50, 100]"
+            template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
+            @page="onTournamentPaginatorPage"
+          />
+          </template>
         </div>
       </TabPanel>
     </TabView>
@@ -738,8 +1028,10 @@ onMounted(async () => {
             optionValue="value"
             class="w-full"
             placeholder="Команда"
+            :invalid="showCreateHomeError || showCreateSameTeamsError"
             :disabled="createSaving"
           />
+          <p v-if="showCreateHomeError" class="mt-0 text-[11px] leading-3 text-red-500">{{ createFormErrors.homeTeamId }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Гости</label>
@@ -750,8 +1042,11 @@ onMounted(async () => {
             optionValue="value"
             class="w-full"
             placeholder="Команда"
+            :invalid="showCreateAwayError || showCreateSameTeamsError"
             :disabled="createSaving"
           />
+          <p v-if="showCreateAwayError" class="mt-0 text-[11px] leading-3 text-red-500">{{ createFormErrors.awayTeamId }}</p>
+          <p v-if="showCreateSameTeamsError" class="mt-0 text-[11px] leading-3 text-red-500">{{ createFormErrors.sameTeams }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Начало</label>
@@ -761,13 +1056,15 @@ onMounted(async () => {
             showTime
             hourFormat="24"
             showIcon
+            :invalid="showCreateStartError"
             :disabled="createSaving"
           />
+          <p v-if="showCreateStartError" class="mt-0 text-[11px] leading-3 text-red-500">{{ createFormErrors.startTime }}</p>
         </div>
       </div>
       <template #footer>
         <Button label="Отмена" text :disabled="createSaving" @click="createOpen = false" />
-        <Button label="Создать" icon="pi pi-check" :loading="createSaving" @click="submitCreate" />
+        <Button label="Создать" icon="pi pi-check" :loading="createSaving" :disabled="createSaving || (createSubmitAttempted && !canCreateMatch)" @click="submitCreate" />
       </template>
     </Dialog>
 
@@ -781,8 +1078,10 @@ onMounted(async () => {
             optionLabel="label"
             optionValue="value"
             class="w-full"
+            :invalid="showEditHomeError || showEditSameTeamsError"
             :disabled="editSaving"
           />
+          <p v-if="showEditHomeError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.homeTeamId }}</p>
         </div>
         <div>
           <label class="text-sm block mb-1">Гости</label>
@@ -792,8 +1091,11 @@ onMounted(async () => {
             optionLabel="label"
             optionValue="value"
             class="w-full"
+            :invalid="showEditAwayError || showEditSameTeamsError"
             :disabled="editSaving"
           />
+          <p v-if="showEditAwayError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.awayTeamId }}</p>
+          <p v-if="showEditSameTeamsError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.sameTeams }}</p>
         </div>
         <p class="text-xs text-muted-color">
           Смена пар сбрасывает счёт и события на сервере.
@@ -806,13 +1108,35 @@ onMounted(async () => {
             showTime
             hourFormat="24"
             showIcon
+            :invalid="showEditStartError"
             :disabled="editSaving"
           />
+          <p v-if="showEditStartError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.startTime }}</p>
+        </div>
+        <div class="space-y-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/50 dark:bg-surface-800/30 p-3">
+          <p class="text-xs text-muted-color">
+            При переносе времени можно указать причину из справочника.
+          </p>
+          <div>
+            <label class="text-sm block mb-1">Причина переноса</label>
+            <Select
+              v-model="editForm.scheduleChangeReasonId"
+              :options="postponeReasonOptions"
+              option-label="label"
+              option-value="value"
+              show-clear
+              placeholder="Не выбрано"
+              class="w-full"
+              :invalid="showEditScheduleReasonError"
+              :disabled="editSaving"
+            />
+            <p v-if="showEditScheduleReasonError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.scheduleChangeReasonId }}</p>
+          </div>
         </div>
       </div>
       <template #footer>
         <Button label="Отмена" text :disabled="editSaving" @click="editOpen = false" />
-        <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" @click="submitEdit" />
+        <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" :disabled="editSaving || (editSubmitAttempted && !canEditMatch)" @click="submitEdit" />
       </template>
     </Dialog>
 

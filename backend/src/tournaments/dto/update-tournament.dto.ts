@@ -123,6 +123,17 @@ export class UpdateTournamentDto {
   allowedDays?: number[];
 
   @ApiPropertyOptional({
+    example: 2,
+    description:
+      'How many round-robin cycles each pair should play in group stage (1..4)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(4)
+  roundRobinCycles?: number;
+
+  @ApiPropertyOptional({
     example: 50,
     description: 'Match duration in minutes',
   })
@@ -196,4 +207,43 @@ export class UpdateTournamentDto {
   @ValidateNested({ each: true })
   @Type(() => TournamentAdminDto)
   admins?: TournamentAdminDto[];
+
+  @ApiPropertyOptional({ nullable: true, description: 'Stadium id or null to clear' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  stadiumId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Сезон из справочника или null — снять привязку',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  seasonId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Тип соревнования из справочника или null — снять привязку',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  competitionId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Возрастная группа из справочника или null — снять привязку',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  ageGroupId?: string | null;
+
+  @ApiPropertyOptional({ type: [String], description: 'Replace tournament referees' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  refereeIds?: string[];
 }

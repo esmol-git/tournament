@@ -7,6 +7,9 @@ import {
 import { UserRole } from '@prisma/client';
 import { JwtPayload } from './jwt.strategy';
 
+/**
+ * Должен идти в `@UseGuards` **после** `JwtAuthGuard`, иначе `req.user` ещё не заполнен.
+ */
 @Injectable()
 export class TenantZoneGuard implements CanActivate {
   private readonly tenantApiPrefixes = [
@@ -17,6 +20,7 @@ export class TenantZoneGuard implements CanActivate {
     '/tournaments',
     '/tenants/',
     '/meta',
+    '/upload',
   ];
 
   canActivate(context: ExecutionContext): boolean {

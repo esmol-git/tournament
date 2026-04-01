@@ -40,6 +40,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let message: string | string[] | Record<string, unknown> =
       'Internal server error';
     let error = 'Internal Server Error';
+    /** Пробрасываем из `ForbiddenException({ message, code })` и аналогов для клиента. */
+    let clientCode: unknown = undefined;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -59,6 +61,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
           error = body.error;
         } else {
           error = httpErrorTitle(status);
+        }
+        if (body.code !== undefined) {
+          clientCode = body.code;
         }
       } else {
         message = exception.message;
@@ -86,6 +91,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (requestId) {
       payload.requestId = requestId;
+    }
+    if (clientCode !== undefined) {
+      payload.code = clientCode;
     }
 
     response.status(status).json(payload);

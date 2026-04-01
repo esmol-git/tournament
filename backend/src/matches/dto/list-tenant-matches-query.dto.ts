@@ -1,7 +1,16 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { MatchStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class ListTenantMatchesQueryDto {
   @ApiPropertyOptional({ description: 'Фильтр по турниру; без параметра — все матчи с tournamentId' })
@@ -57,4 +66,14 @@ export class ListTenantMatchesQueryDto {
   @Min(1)
   @Max(100)
   pageSize?: number = 50;
+
+  @ApiPropertyOptional({ description: 'Начало диапазона по startTime (локальная дата YYYY-MM-DD)' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  dateFrom?: string;
+
+  @ApiPropertyOptional({ description: 'Конец диапазона по startTime (локальная дата YYYY-MM-DD, включительно)' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  dateTo?: string;
 }

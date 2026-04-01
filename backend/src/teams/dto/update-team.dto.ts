@@ -17,6 +17,18 @@ export class UpdateTeamDto {
   @IsString()
   category?: string;
 
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  ageGroupId?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  regionId?: string | null;
+
   @ApiPropertyOptional({
     nullable: true,
     description: 'URL логотипа; null — убрать логотип',

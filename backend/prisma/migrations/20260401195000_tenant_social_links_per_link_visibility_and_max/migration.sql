@@ -1,0 +1,8 @@
+ALTER TABLE "Tenant"
+DROP COLUMN IF EXISTS "showSocialIcons",
+ADD COLUMN "socialMaxUrl" TEXT,
+ADD COLUMN "showWebsiteLink" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN "showSocialYoutubeLink" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN "showSocialInstagramLink" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN "showSocialTelegramLink" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN "showSocialMaxLink" BOOLEAN NOT NULL DEFAULT true;

@@ -1,203 +1,35 @@
 <script setup lang="ts">
-import {
-  ADMIN_NAV_ENTRIES,
-  findActiveAdminNavSectionId,
-  isNavSection,
-} from '~/constants/adminNav'
 import { useAdminSidebarCollapsed } from '~/composables/useAdminSidebarCollapsed'
-import { useAuth } from '~/composables/useAuth'
-import { userRoleLabelRu } from '~/constants/userRoles'
-import { formatUserFullNameFromParts } from '~/utils/userDisplayName'
-import { useTenantStore } from '~/stores/tenant'
-import { storeToRefs } from 'pinia'
 
 const emit = defineEmits<{
   'logout-click': []
 }>()
 
-const { user, syncWithStorage } = useAuth()
-const { mini } = useAdminSidebarCollapsed()
-const route = useRoute()
+const { mini, toggleMini } = useAdminSidebarCollapsed()
 const { t } = useI18n()
-
-const tenantStore = useTenantStore()
-const { slug: tenantSlugFromStore } = storeToRefs(tenantStore)
-
-function tenantSlugFromHostname(hostname: string): string | null {
-  const host = hostname.toLowerCase()
-  const parts = host.split('.')
-  if (parts.length < 3) return null
-  const sub = parts[0]
-  if (!sub || sub === 'www' || sub === 'localhost' || sub === '127.0.0.1') return null
-  return sub
-}
-
-/** До onMounted не используем user из localStorage — совпадает с SSR. */
-const clientMounted = ref(false)
-
-/** Аккордеон: одна раскрытая группа; при смене маршрута — открывается секция с активным подпунктом. */
-const openSectionId = ref<string | null>(null)
-
-watch(
-  () => route.path,
-  (path) => {
-    openSectionId.value = findActiveAdminNavSectionId(path)
-  },
-  { immediate: true },
-)
-
-const siteLink = computed(() => {
-  const fromStore = tenantSlugFromStore.value
-  const fromHost =
-    process.client ? tenantSlugFromHostname(window.location.hostname) : null
-  const slug = fromStore || fromHost
-  return slug ? `/${slug}/table` : null
-})
-
-const userDisplayName = computed(() => {
-  const u = (user.value ?? {}) as { email?: string | null }
-  const full = formatUserFullNameFromParts(user.value)
-  if (full) return full
-  const email = u.email ?? ''
-  if (!email) return 'Пользователь'
-  return email.split('@')[0] || email
-})
-
-const userInitials = computed(() => {
-  const parts = userDisplayName.value
-    .split(/\s+/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-  return parts
-    .slice(0, 2)
-    .map((x) => x[0]?.toUpperCase() ?? '')
-    .join('')
-})
-
-/** Сброс при смене пользователя; при битой ссылке на фото — только буквы (Avatar label). */
-const avatarImageFailed = ref(false)
-watch(
-  () => (user.value as { id?: string } | null)?.id,
-  () => {
-    avatarImageFailed.value = false
-  },
-)
-
-const userAvatarSrc = computed(() => {
-  if (avatarImageFailed.value) return undefined
-  const u = user.value as { avatarUrl?: string | null; image?: string | null } | null
-  if (!u) return undefined
-  const src = (u.avatarUrl ?? u.image ?? '').trim()
-  return src || undefined
-})
-
-function onAvatarImageError() {
-  avatarImageFailed.value = true
-}
-
-onMounted(async () => {
-  clientMounted.value = true
-  syncWithStorage()
-  // Для ссылки на публичный сайт ориентируемся на `tenantStore.slug`, который задаёт middleware
-  // по поддомену. Поэтому `fetchMe()` здесь не обязателен.
-})
 </script>
 
 <template>
   <aside
     :class="[
-      'sticky top-0 z-20 flex h-screen flex-col justify-between border-r border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 py-4 shadow-[2px_0_14px_rgba(15,23,42,0.06)] dark:shadow-[2px_0_16px_rgba(0,0,0,0.35)] transition-[width] duration-200 ease-out',
-      mini ? 'w-[4.5rem] px-2' : 'w-80 px-5',
+      'relative sticky top-0 z-20 hidden h-screen flex-col border-r border-surface-200 bg-surface-0 shadow-[2px_0_14px_rgba(15,23,42,0.06)] transition-[width] duration-200 ease-out dark:border-surface-700 dark:bg-surface-900 dark:shadow-[2px_0_16px_rgba(0,0,0,0.35)] lg:flex lg:flex-col',
+      mini ? 'w-[4.5rem]' : 'w-80',
     ]"
   >
-    <div class="min-h-0 flex flex-1 flex-col">
-      <!-- Навигация -->
-      <nav
-        class="mt-1 min-h-0 flex-1 space-y-1.5 overflow-y-auto text-base"
-        :class="mini ? 'flex flex-col items-stretch' : ''"
-      >
-        <div
-          v-for="entry in ADMIN_NAV_ENTRIES"
-          :key="isNavSection(entry) ? entry.id : entry.to"
-          class="contents"
-        >
-          <AdminNavGroup
-            v-if="isNavSection(entry)"
-            :section-id="entry.id"
-            :label-key="entry.labelKey"
-            :icon="entry.icon"
-            :items="entry.items"
-            :mini="mini"
-            :open-section-id="openSectionId"
-            @update:open-section-id="openSectionId = $event"
-          />
-          <AdminNavLink
-            v-else
-            :to="entry.to"
-            :label-key="entry.labelKey"
-            :icon="entry.icon"
-            :exact="!!entry.exact"
-            :mini="mini"
-          />
-        </div>
+    <AdminSidebarNav @logout-click="emit('logout-click')" />
 
-        <NuxtLink
-          v-if="siteLink"
-          :to="siteLink"
-          class="flex items-center gap-2.5 rounded-lg text-muted-color transition-colors hover:bg-surface-100 dark:hover:bg-surface-800 hover:text-primary"
-          :class="mini ? 'justify-center px-2 py-2.5' : 'px-3.5 py-2.5 text-[15px]'"
-          :title="t('admin.sidebar.to_site')"
-        >
-          <span class="pi pi-external-link text-xs" :class="{ 'text-[1.35rem]': mini }" aria-hidden="true" />
-          <span v-if="!mini">{{ t('admin.sidebar.to_site') }}</span>
-        </NuxtLink>
-      </nav>
-    </div>
-
-    <div
-      class="mt-4 shrink-0 border-t border-surface-200 dark:border-surface-700 pt-3"
-      :class="mini ? 'flex justify-center' : ''"
+    <button
+      type="button"
+      class="absolute left-full top-1/2 z-30 flex h-11 w-7 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-surface-200 bg-surface-0 text-muted-color shadow-[2px_0_10px_rgba(15,23,42,0.1)] transition hover:border-primary/35 hover:bg-surface-50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:border-surface-600 dark:bg-surface-800 dark:shadow-[2px_0_14px_rgba(0,0,0,0.45)] dark:hover:border-primary/40 dark:hover:bg-surface-700"
+      :title="mini ? t('admin.sidebar.expand') : t('admin.sidebar.collapse')"
+      :aria-label="mini ? t('admin.sidebar.expand') : t('admin.sidebar.collapse')"
+      @click="toggleMini"
     >
-      <div
-        v-if="user && clientMounted"
-        class="mb-2 flex items-center gap-3 rounded-lg border border-surface-200 bg-surface-50 px-2.5 py-2 dark:border-surface-700 dark:bg-surface-800/50"
-        :class="mini ? 'justify-center border-none bg-transparent px-0' : ''"
-      >
-        <Avatar
-          :image="userAvatarSrc"
-          :label="userAvatarSrc ? undefined : (userInitials || 'U')"
-          shape="circle"
-          size="normal"
-          class="!h-9 !w-9 shrink-0"
-          :pt="{
-            root: {
-              class: userAvatarSrc
-                ? undefined
-                : 'bg-primary-100 text-primary dark:bg-primary-900/50 dark:text-primary-200',
-            },
-          }"
-          :title="userDisplayName"
-          :aria-label="userDisplayName"
-          @error="onAvatarImageError"
-        />
-        <div v-if="!mini" class="min-w-0">
-          <p class="truncate text-sm font-medium text-surface-900 dark:text-surface-0">
-            {{ userDisplayName }}
-          </p>
-          <p class="truncate text-xs text-muted-color">
-            {{ userRoleLabelRu(String(user.role ?? '')) }}
-          </p>
-        </div>
-      </div>
-      <Button
-        :label="mini ? undefined : t('admin.sidebar.logout')"
-        icon="pi pi-sign-out"
-        text
-        :class="mini ? '!h-10 !w-10 !p-0' : 'w-full justify-start !px-3 !py-2'"
-        :title="mini ? t('admin.sidebar.logout') : undefined"
-        :aria-label="t('admin.sidebar.logout')"
-        @click="emit('logout-click')"
+      <i
+        class="pi text-sm"
+        :class="mini ? 'pi-angle-right' : 'pi-angle-left'"
+        aria-hidden="true"
       />
-    </div>
+    </button>
   </aside>
 </template>

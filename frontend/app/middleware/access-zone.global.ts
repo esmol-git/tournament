@@ -39,12 +39,19 @@ export default defineNuxtRouteMiddleware((to) => {
   const isAdminRoute = to.path.startsWith('/admin')
   const isPlatformLogin = to.path === '/platform/login'
   const isAdminLogin = to.path === '/admin/login'
+  const isAdminSubscriptionExpired = to.path === '/admin/subscription-expired'
   const hostName = window.location.hostname
   const hostTenant = tenantFromHost(hostName)
 
   // На production root-домене закрытые /admin/* доступны только с tenant-поддомена.
   // Но /admin/login всегда разрешаем (вход/регистрация), а на localhost разрешаем весь /admin.
-  if (isAdminRoute && !isAdminLogin && !hostTenant && !isLocalHost(hostName)) {
+  if (
+    isAdminRoute &&
+    !isAdminLogin &&
+    !isAdminSubscriptionExpired &&
+    !hostTenant &&
+    !isLocalHost(hostName)
+  ) {
     return navigateTo('/')
   }
 
@@ -69,6 +76,9 @@ export default defineNuxtRouteMiddleware((to) => {
       if (isLoggedIn && role === 'SUPER_ADMIN') {
         return navigateTo('/platform/tenants')
       }
+      return
+    }
+    if (isAdminSubscriptionExpired) {
       return
     }
     if (!isLoggedIn) {

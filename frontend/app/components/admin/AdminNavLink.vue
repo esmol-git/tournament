@@ -38,11 +38,19 @@ const linkClass = computed(() =>
     class="flex items-center gap-2.5 rounded-lg transition-colors"
     :class="[
       linkClass,
-      mini ? 'justify-center px-2 py-2.5' : 'px-3.5 py-2.5 text-[15px]',
+      mini
+        ? 'w-full max-w-[2.75rem] justify-center px-0 py-2.5'
+        : 'px-3.5 py-2.5 text-[15px]',
     ]"
     :title="mini ? label : undefined"
   >
-    <span :class="[icon, mini ? 'text-[1.35rem]' : 'text-sm']" aria-hidden="true" />
+    <span
+      :class="[
+        icon,
+        mini ? 'inline-flex w-[1.35rem] justify-center text-[1.35rem] leading-none' : 'text-sm',
+      ]"
+      aria-hidden="true"
+    />
     <span v-if="!mini">{{ label }}</span>
   </NuxtLink>
 </template>

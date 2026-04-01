@@ -49,6 +49,16 @@ export class TeamQueryDto {
   @IsString()
   category?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by age group id from directory' })
+  @IsOptional()
+  @IsString()
+  ageGroupId?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by region id from directory' })
+  @IsOptional()
+  @IsString()
+  regionId?: string;
+
   @ApiPropertyOptional({
     description: 'Sort field: name|playersCount',
     example: 'name',

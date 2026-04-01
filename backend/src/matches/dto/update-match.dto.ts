@@ -1,6 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class UpdateMatchDto {
   @ApiPropertyOptional({ example: '2026-03-21T12:00:00.000Z' })
@@ -32,4 +39,15 @@ export class UpdateMatchDto {
   @IsOptional()
   @IsString()
   groupId?: string | null;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  scheduleChangeReasonId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  scheduleChangeNote?: string;
 }
