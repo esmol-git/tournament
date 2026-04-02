@@ -15,16 +15,24 @@ import { JwtPayload } from '../../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../../auth/subscription-plan-feature.guard';
 import { CreateTeamCategoryDto } from './dto/create-team-category.dto';
 import { UpdateTeamCategoryDto } from './dto/update-team-category.dto';
 import { TeamCategoriesService } from './team-categories.service';
 
+@RequireSubscriptionPlanFeature('reference_directory_basic')
 @ApiTags('team-categories')
 @UseGuards(
   JwtAuthGuard,
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class TeamCategoriesController {

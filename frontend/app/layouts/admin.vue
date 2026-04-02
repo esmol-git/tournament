@@ -3,12 +3,14 @@ import {
   applyAdminLocale,
   syncThemeAndAccentFromStore,
 } from '~/composables/useAdminAppearance'
+import { useAuth } from '~/composables/useAuth'
 import { useAdminSettingsStore } from '~/stores/adminSettings'
 
 const confirmLogout = ref(false)
 const mobileMenuOpen = ref(false)
 const route = useRoute()
 const adminSettings = useAdminSettingsStore()
+const { syncWithStorage, fetchMe, loggedIn } = useAuth()
 const { locale, setLocale, t } = useI18n()
 const nuxtApp = useNuxtApp()
 const showThemeGate = ref(true)
@@ -34,6 +36,10 @@ if (import.meta.client) {
  */
 onMounted(() => {
   if (import.meta.client) {
+    syncWithStorage()
+    if (loggedIn.value) {
+      void fetchMe().catch(() => {})
+    }
     const mq = window.matchMedia('(min-width: 1024px)')
     const closeOnDesktop = () => {
       if (mq.matches) mobileMenuOpen.value = false

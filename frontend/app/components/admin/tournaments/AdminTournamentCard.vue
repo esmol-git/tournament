@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { TournamentRow } from '~/types/admin/tournaments-index'
 
-defineProps<{
+const props = defineProps<{
   tournament: TournamentRow
   formatLabel: string
   statusLabel: string
   statusClass: string
+  /** id турнира, для которого сейчас идёт PATCH published — остальные кнопки активны */
+  publishSavingTournamentId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -14,13 +17,62 @@ const emit = defineEmits<{
   (e: 'delete', tournament: TournamentRow): void
   (e: 'news', tournament: TournamentRow): void
   (e: 'gallery', tournament: TournamentRow): void
+  (e: 'togglePublished', tournament: TournamentRow): void
 }>()
 
+const { t } = useI18n()
+
+const publishBlockedByDraft = computed(
+  () => !props.tournament.published && props.tournament.status === 'DRAFT',
+)
+
+const anyPublishSaving = computed(
+  () =>
+    props.publishSavingTournamentId != null && props.publishSavingTournamentId !== '',
+)
+
+const publishButtonDisabled = computed(
+  () => publishBlockedByDraft.value || anyPublishSaving.value,
+)
+
+const publishLoading = computed(
+  () => props.publishSavingTournamentId === props.tournament.id,
+)
+
+const publishTooltip = computed(() => {
+  if (publishBlockedByDraft.value) {
+    return t('admin.tournament_page.list_card_publish_draft_tooltip')
+  }
+  return props.tournament.published
+    ? t('admin.tournament_page.list_card_unpublish_aria')
+    : t('admin.tournament_page.list_card_publish_aria')
+})
+
+const publishAriaLabel = computed(() =>
+  props.tournament.published
+    ? t('admin.tournament_page.list_card_unpublish_aria')
+    : t('admin.tournament_page.list_card_publish_aria'),
+)
+
+function onTogglePublished() {
+  if (publishButtonDisabled.value) return
+  emit('togglePublished', props.tournament)
+}
 </script>
 
 <template>
   <div
     class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4"
+    :class="
+      tournament.calendarColor && /^#[0-9A-Fa-f]{6}$/.test(tournament.calendarColor.trim())
+        ? 'border-l-4'
+        : ''
+    "
+    :style="
+      tournament.calendarColor && /^#[0-9A-Fa-f]{6}$/.test(tournament.calendarColor.trim())
+        ? { borderLeftColor: tournament.calendarColor!.trim() }
+        : undefined
+    "
   >
     <div class="flex items-start justify-between gap-3">
       <div class="flex items-start gap-5">
@@ -54,6 +106,12 @@ const emit = defineEmits<{
               >
                 {{ statusLabel }}
               </span>
+            </div>
+            <div v-if="tournament.published !== undefined" class="flex items-baseline gap-2">
+              <div class="w-20 text-xs text-muted-color">Сайт</div>
+              <div class="font-medium text-surface-900 dark:text-surface-100">
+                {{ tournament.published ? 'опубликован' : 'скрыт' }}
+              </div>
             </div>
             <div class="flex items-baseline gap-2">
               <div class="w-20 text-xs text-muted-color">Команд</div>
@@ -97,6 +155,17 @@ const emit = defineEmits<{
       </div>
 
       <div class="flex flex-col gap-2 shrink-0 items-end">
+        <Button
+          v-if="tournament.published !== undefined"
+          v-tooltip.top="publishTooltip"
+          :icon="tournament.published ? 'pi pi-eye-slash' : 'pi pi-globe'"
+          text
+          size="small"
+          :disabled="publishButtonDisabled"
+          :loading="publishLoading"
+          :aria-label="publishAriaLabel"
+          @click="onTogglePublished"
+        />
         <Button icon="pi pi-external-link" text size="small" @click="emit('open', tournament)" aria-label="Открыть" />
         <Button icon="pi pi-megaphone" text size="small" @click="emit('news', tournament)" aria-label="Новости" />
         <Button icon="pi pi-images" text size="small" @click="emit('gallery', tournament)" aria-label="Фотогалерея" />

@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
 import { UserRole } from '@prisma/client';
 
 @ApiTags('meta')
@@ -12,6 +13,7 @@ import { UserRole } from '@prisma/client';
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
 )
 @Controller('meta')
 export class MetaController {

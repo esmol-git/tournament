@@ -29,6 +29,7 @@ import { MatchScheduleReasonsController } from './match-schedule-reasons/match-s
 import { MatchScheduleReasonsService } from './match-schedule-reasons/match-schedule-reasons.service';
 import { TeamCategoriesController } from './team-categories/team-categories.controller';
 import { TeamCategoriesService } from './team-categories/team-categories.service';
+import { SubscriptionPlanFeatureGuard } from '../auth/subscription-plan-feature.guard';
 
 @Module({
   imports: [PrismaModule, StorageModule],
@@ -49,6 +50,7 @@ import { TeamCategoriesService } from './team-categories/team-categories.service
     TeamCategoriesController,
   ],
   providers: [
+    SubscriptionPlanFeatureGuard,
     TeamsService,
     StadiumsService,
     RefereesService,

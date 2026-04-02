@@ -8,14 +8,32 @@
   --public-accent-tertiary: #4f6b8c;
 }
 
+/**
+ * Без этого при переключении страниц с «коротким» и «длинным» контентом появляется/пропадает
+ * вертикальный скролл и сдвигается вёрстка на ширину скроллбара (ощущение «рывка»).
+ */
+@layer base {
+  html {
+    scrollbar-gutter: stable;
+  }
+}
+
 @layer components {
+  .overflow-anchor-none {
+    overflow-anchor: none;
+  }
+
   .public-shell {
     @apply min-h-screen flex flex-col;
+    /* На публичных турнирах при массовых вставках DOM (календарь/анимации)
+       браузер может пересчитывать якорь скролла и визуально "дергать" footer.
+       Отключаем scroll-anchoring именно здесь. */
+    overflow-anchor: none;
     background: linear-gradient(180deg, #edf3fb 0%, #f7f9fd 35%, #f8fafc 100%);
   }
 
   .public-grid {
-    @apply mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[1fr_22rem];
+    @apply mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_22rem];
   }
 
   .public-container {
@@ -36,9 +54,138 @@
     opacity: 0;
   }
 
+  /**
+   * Плавное переключение контента при смене view на публичных страницах турнира
+   * (table/chessboard/progress/playoff).
+   */
+  .public-view-fade-enter-active,
+  .public-view-fade-leave-active {
+    /* Важно: без transform/filter, чтобы переход не создавал визуальный overflow
+       и не провоцировал появление scrollbar. */
+    transition: opacity 0.22s ease;
+  }
+
+  .public-view-fade-enter-from,
+  .public-view-fade-leave-to {
+    opacity: 0;
+  }
+
+  /** Глобальный pageTransition (nuxt.config → name: public-route-fade), только публичная зона SPA */
+  .public-route-fade-enter-active,
+  .public-route-fade-leave-active {
+    transition: opacity 0.2s ease;
+  }
+
+  .public-route-fade-enter-from,
+  .public-route-fade-leave-to {
+    opacity: 0;
+  }
+
+  /**
+   * Заметное появление списков/сеток на публичных страницах (дополняет auto-animate при сортировке/фильтрах).
+   */
+  @keyframes public-item-rise {
+    from {
+      opacity: 0;
+      transform: translateY(18px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .public-shell .public-stagger-appear > * {
+    animation: public-item-rise 0.58s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .public-shell .public-stagger-appear > *:nth-child(1) {
+    animation-delay: 0s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(2) {
+    animation-delay: 0.055s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(3) {
+    animation-delay: 0.11s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(4) {
+    animation-delay: 0.165s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(5) {
+    animation-delay: 0.22s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(6) {
+    animation-delay: 0.275s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(7) {
+    animation-delay: 0.33s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(8) {
+    animation-delay: 0.385s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(9) {
+    animation-delay: 0.44s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(10) {
+    animation-delay: 0.495s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(11) {
+    animation-delay: 0.55s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(12) {
+    animation-delay: 0.605s;
+  }
+  .public-shell .public-stagger-appear > *:nth-child(n + 13) {
+    animation-delay: 0.66s;
+  }
+
+  .public-shell .public-stagger-tbody tbody tr {
+    animation: public-item-rise 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(1) {
+    animation-delay: 0s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(2) {
+    animation-delay: 0.04s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(3) {
+    animation-delay: 0.08s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(4) {
+    animation-delay: 0.12s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(5) {
+    animation-delay: 0.16s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(6) {
+    animation-delay: 0.2s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(7) {
+    animation-delay: 0.24s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(8) {
+    animation-delay: 0.28s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(9) {
+    animation-delay: 0.32s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(10) {
+    animation-delay: 0.36s;
+  }
+  .public-shell .public-stagger-tbody tbody tr:nth-child(n + 11) {
+    animation-delay: 0.4s;
+  }
+
   .public-card {
-    @apply rounded-2xl bg-white p-4 shadow-sm transition-shadow duration-200 hover:shadow-md;
+    @apply rounded-2xl bg-white p-4 shadow-sm transition duration-200;
     border-color: #b7c7dd;
+    transition-property: transform, opacity, box-shadow, background-color, border-color;
+    will-change: transform;
+  }
+
+  .public-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(18, 60, 103, 0.12);
   }
 
   .public-hero {
@@ -72,7 +219,7 @@
   }
 
   .public-table-wrap {
-    @apply overflow-x-auto rounded-2xl bg-white;
+    @apply overflow-x-auto overflow-y-hidden rounded-2xl bg-white;
     border-color: #b7c7dd;
   }
 
@@ -99,6 +246,7 @@
     @apply border-b transition-colors;
     border-color: #e1e8f2;
     background-color: white;
+    transition-duration: 170ms;
   }
 
   .public-table tbody tr:nth-child(even) {
@@ -106,13 +254,18 @@
   }
 
   .public-table tbody tr:hover {
-    background-color: #fff2f7;
+    background-color: color-mix(in srgb, var(--public-accent-primary) 7%, white);
   }
 
   .public-link {
-    @apply transition-colors focus-visible:outline-none focus-visible:ring-2 rounded;
+    @apply transition duration-150 focus-visible:outline-none focus-visible:ring-2 rounded;
     color: var(--public-accent-secondary);
     --tw-ring-color: rgb(200 10 72 / 0.3);
+    transition-property: transform, opacity, color, background-color, border-color;
+  }
+
+  .public-link:hover {
+    transform: translateY(-1px);
   }
 
   .public-link:hover {
@@ -123,16 +276,16 @@
   .public-shell .p-select:not(.p-disabled).p-focus,
   .public-shell .p-datepicker:not(.p-disabled).p-focus,
   .public-shell .p-multiselect:not(.p-disabled).p-focus {
-    border-color: #b7c7dd;
-    box-shadow: 0 0 0 0.2rem rgb(18 60 103 / 0.18);
+    border-color: color-mix(in srgb, var(--public-accent-primary) 40%, white);
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--public-accent-primary) 18%, transparent);
   }
 
   .public-shell .p-select-option.p-select-option-selected,
   .public-shell .p-multiselect-option.p-multiselect-option-selected,
   .p-select-overlay .p-select-option.p-select-option-selected,
   .p-multiselect-overlay .p-multiselect-option.p-multiselect-option-selected {
-    background: #eef5ff !important;
-    color: #123c67 !important;
+    background: color-mix(in srgb, var(--public-accent-primary) 12%, white) !important;
+    color: var(--public-accent-primary) !important;
   }
 
   .public-shell .p-select-option.p-focus,
@@ -143,23 +296,23 @@
   .p-select-overlay .p-select-option:hover,
   .p-multiselect-overlay .p-multiselect-option.p-focus,
   .p-multiselect-overlay .p-multiselect-option:hover {
-    background: #f4f7fc !important;
-    color: #123c67 !important;
+    background: color-mix(in srgb, var(--public-accent-primary) 6%, white) !important;
+    color: var(--public-accent-primary) !important;
   }
 
   .public-shell .p-button.p-button-outlined:not(:disabled):hover {
-    background: #fff2f7;
-    border-color: #f4c8d8;
-    color: #c80a48;
+    background: color-mix(in srgb, var(--public-accent-secondary) 10%, white);
+    border-color: color-mix(in srgb, var(--public-accent-secondary) 22%, white);
+    color: var(--public-accent-secondary);
   }
 
   .public-shell .p-button.p-button-text:not(:disabled):hover {
-    background: #eef5ff;
-    color: #123c67;
+    background: color-mix(in srgb, var(--public-accent-primary) 10%, white);
+    color: var(--public-accent-primary);
   }
 
   .public-shell .p-button:focus-visible {
-    box-shadow: 0 0 0 0.2rem rgb(200 10 72 / 0.22);
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--public-accent-secondary) 22%, transparent);
   }
 
   .public-shell .p-floatlabel label,
@@ -168,7 +321,42 @@
   .public-shell .p-floatlabel:has(.p-filled) label,
   .public-shell .p-floatlabel:has(input:focus) label,
   .public-shell .p-floatlabel:has(textarea:focus) label {
-    color: #4f6b8c;
+    color: var(--public-accent-tertiary);
+  }
+
+  /* Global accent remap for public pages (including hardcoded token classes). */
+  .public-shell .text-\[\#123c67\],
+  .public-shell .text-\[\#1a5a8c\] {
+    color: var(--public-accent-primary) !important;
+  }
+
+  .public-shell .text-\[\#4f6b8c\] {
+    color: var(--public-accent-tertiary) !important;
+  }
+
+  .public-shell .text-\[\#c80a48\],
+  .public-shell .text-\[\#b10f46\] {
+    color: var(--public-accent-secondary) !important;
+  }
+
+  .public-shell .bg-\[\#123c67\],
+  .public-shell .bg-\[\#1a5a8c\] {
+    background-color: var(--public-accent-primary) !important;
+  }
+
+  .public-shell .bg-\[\#c80a48\],
+  .public-shell .bg-\[\#b10f46\] {
+    background-color: var(--public-accent-secondary) !important;
+  }
+
+  .public-shell .border-\[\#123c67\],
+  .public-shell .border-\[\#1a5a8c\] {
+    border-color: var(--public-accent-primary) !important;
+  }
+
+  .public-shell .border-\[\#c80a48\],
+  .public-shell .border-\[\#b10f46\] {
+    border-color: var(--public-accent-secondary) !important;
   }
 }
 

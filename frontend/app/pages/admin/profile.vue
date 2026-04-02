@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { helpers, minLength, required } from '@vuelidate/validators'
+import Card from 'primevue/card'
+import Message from 'primevue/message'
+import Select from 'primevue/select'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { userRoleLabelRu } from '~/constants/userRoles'
 import type { UserRow } from '~/types/admin/user'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { formatSubscriptionPlanLabel } from '~/utils/subscriptionPlanLabels'
+import { SUBSCRIPTION_PLANS } from '~/utils/subscriptionFeatures'
+import { useSubscriptionFeatureMatrix } from '~/composables/useSubscriptionFeatures'
 
 definePageMeta({
   layout: 'admin',
@@ -15,11 +21,94 @@ definePageMeta({
 const { t } = useI18n()
 const toast = useToast()
 const router = useRouter()
-const { token, loggedIn, syncWithStorage, authFetch, fetchMe } = useAuth()
+const { token, loggedIn, syncWithStorage, authFetch, fetchMe, user } = useAuth()
 const { apiUrl } = useApiUrl()
 
 const loading = ref(true)
 const saving = ref(false)
+
+const subscriptionPlanDraft = ref<string>('FREE')
+const subscriptionSaving = ref(false)
+const subscriptionLoadError = ref('')
+
+const canManageSubscription = computed(() => {
+  const r = String((user.value as { role?: string } | null)?.role ?? '')
+  return r === 'TENANT_ADMIN' || r === 'SUPER_ADMIN'
+})
+
+const subscriptionPlanOptions = computed(() =>
+  SUBSCRIPTION_PLANS.map((p) => ({
+    label: formatSubscriptionPlanLabel(p),
+    value: p,
+  })),
+)
+
+const { featureMatrix } = useSubscriptionFeatureMatrix(subscriptionPlanDraft)
+
+function syncSubscriptionDraftFromUser() {
+  const p = (user.value as { tenantSubscription?: { plan?: string | null } | null } | null)
+    ?.tenantSubscription?.plan
+  subscriptionPlanDraft.value = typeof p === 'string' && p ? p : 'FREE'
+}
+
+async function loadSubscriptionContext() {
+  subscriptionLoadError.value = ''
+  if (!token.value || !canManageSubscription.value) {
+    syncSubscriptionDraftFromUser()
+    return
+  }
+  try {
+    await fetchMe()
+    syncSubscriptionDraftFromUser()
+  } catch (e: unknown) {
+    subscriptionLoadError.value = getApiErrorMessage(e)
+  }
+}
+
+async function saveSubscriptionPlan() {
+  if (!token.value || !canManageSubscription.value) return
+  subscriptionSaving.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-subscription-plan'), {
+      method: 'PATCH',
+      body: { subscriptionPlan: subscriptionPlanDraft.value },
+    })
+    await fetchMe()
+    syncSubscriptionDraftFromUser()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.settings.subscription.saved'),
+      life: 3000,
+    })
+  } catch (e: unknown) {
+    const status = Number(
+      (e as { statusCode?: number; status?: number })?.statusCode ??
+        (e as { status?: number })?.status ??
+        0,
+    )
+    if (status === 403) {
+      toast.add({
+        severity: 'warn',
+        summary: t('admin.settings.subscription.forbidden'),
+        life: 5000,
+      })
+      return
+    }
+    toast.add({
+      severity: 'error',
+      summary: t('admin.settings.subscription.save_error'),
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    subscriptionSaving.value = false
+  }
+}
+
+watch(
+  () => (user.value as { tenantSubscription?: { plan?: string } } | null)?.tenantSubscription?.plan,
+  () => syncSubscriptionDraftFromUser(),
+)
 
 const form = reactive({
   username: '',
@@ -89,7 +178,7 @@ async function loadProfile() {
   try {
     const u = await authFetch<UserRow>(apiUrl('/users/me'))
     form.username = u.username
-    form.email = u.email
+    form.email = u.email ?? ''
     form.name = u.name
     form.lastName = (u.lastName ?? '').trim()
     form.role = u.role
@@ -163,11 +252,12 @@ onMounted(() => {
     }
   }
   void loadProfile()
+  void loadSubscriptionContext()
 })
 </script>
 
 <template>
-  <section class="p-6 space-y-6 max-w-xl">
+  <section class="p-6 space-y-6 max-w-3xl">
     <div>
       <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
         {{ t('admin.profile.title') }}
@@ -176,6 +266,66 @@ onMounted(() => {
         {{ t('admin.profile.intro') }}
       </p>
     </div>
+
+    <Card
+      v-if="canManageSubscription"
+      class="!shadow-none border border-surface-200 dark:border-surface-700"
+    >
+      <template #title>
+        <span class="text-base font-semibold">{{ t('admin.settings.subscription.title') }}</span>
+      </template>
+      <template #content>
+        <p class="text-sm text-muted-color mb-4">
+          {{ t('admin.settings.subscription.hint') }}
+        </p>
+        <Message v-if="subscriptionLoadError" severity="error" :closable="false" class="mb-4 w-full">
+          {{ subscriptionLoadError }}
+        </Message>
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-end">
+          <div class="flex-1 min-w-0">
+            <label class="mb-1 block text-sm font-medium text-surface-700 dark:text-surface-200">
+              {{ t('admin.settings.subscription.select_label') }}
+            </label>
+            <Select
+              v-model="subscriptionPlanDraft"
+              :options="subscriptionPlanOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full max-w-md"
+            />
+          </div>
+          <Button
+            type="button"
+            :label="t('admin.settings.subscription.save')"
+            icon="pi pi-bolt"
+            :loading="subscriptionSaving"
+            class="shrink-0"
+            @click="saveSubscriptionPlan"
+          />
+        </div>
+        <div class="mt-6 border-t border-surface-200 pt-4 dark:border-surface-700">
+          <p class="text-sm font-medium text-surface-900 dark:text-surface-0 mb-3">
+            {{ t('admin.settings.subscription.features_title') }}
+          </p>
+          <ul class="space-y-2 text-sm">
+            <li
+              v-for="row in featureMatrix"
+              :key="row.key"
+              class="flex items-start gap-2"
+            >
+              <i
+                class="pi mt-0.5 text-xs"
+                :class="row.enabled ? 'pi-check-circle text-green-600' : 'pi-times-circle text-surface-400'"
+                aria-hidden="true"
+              />
+              <span :class="row.enabled ? 'text-surface-800 dark:text-surface-100' : 'text-muted-color'">
+                {{ t(`admin.settings.subscription.features.${row.key}`) }}
+              </span>
+            </li>
+          </ul>
+        </div>
+      </template>
+    </Card>
 
     <div
       v-if="loading"

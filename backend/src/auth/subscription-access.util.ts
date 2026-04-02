@@ -15,7 +15,8 @@ export function assertSubscriptionNotExpired(tenant: {
 }): void {
   if (tenant.subscriptionEndsAt && tenant.subscriptionEndsAt <= new Date()) {
     throw new ForbiddenException({
-      message: 'Subscription expired',
+      message:
+        'Срок действия подписки организации истёк. Обратитесь к администратору или в поддержку.',
       code: 'SUBSCRIPTION_EXPIRED',
     });
   }

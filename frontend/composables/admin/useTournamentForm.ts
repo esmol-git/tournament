@@ -4,6 +4,8 @@ export type TournamentFormModel = {
   name: string
   description: string
   logoUrl: string
+  /** #RRGGBB или пусто — цвет по умолчанию в календаре */
+  calendarColor: string
   format: TournamentFormat
   groupCount: number
   playoffQualifiersPerGroup: number
@@ -30,6 +32,7 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     name: '',
     description: '',
     logoUrl: '',
+    calendarColor: '',
     format: 'SINGLE_GROUP',
     groupCount: 1,
     playoffQualifiersPerGroup: 2,
@@ -75,6 +78,7 @@ export function patchFormFromTournament(
   form.name = res.name
   form.description = res.description ?? ''
   form.logoUrl = res.logoUrl ?? ''
+  form.calendarColor = res.calendarColor?.trim() ? res.calendarColor.trim() : ''
   const normalized = normalizeLegacyGroupsFormat(res.format, (res.groupCount ?? 1) as number)
   form.format = normalized.format
   form.groupCount = normalized.groupCount

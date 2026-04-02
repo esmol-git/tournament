@@ -13,33 +13,19 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { UpdateTenantSocialLinksDto } from './dto/update-tenant-social-links.dto';
-import {
-  UiSettingsDto,
-  type ThemeMode,
-  type UiAccent,
-  type UiLocale,
-} from './dto/ui-settings.dto';
-
-const DEFAULT_UI: {
-  themeMode: ThemeMode;
-  locale: UiLocale;
-  accent: UiAccent;
-} = {
-  themeMode: 'system',
-  locale: 'ru',
-  accent: 'emerald',
-};
-
-const THEME_SET = new Set<string>(['light', 'dark', 'system']);
-const LOCALE_SET = new Set<string>(['ru', 'en']);
-const ACCENT_SET = new Set<string>([
-  'emerald',
-  'blue',
-  'violet',
-  'rose',
-  'amber',
-  'cyan',
+import { tenantHasSubscriptionPlanFeature } from '../auth/subscription-plan-features.util';
+import { UpdateTenantPublicBrandingDto } from './dto/update-tenant-public-branding.dto';
+import { UpdateMyTenantSubscriptionPlanDto } from './dto/update-my-tenant-subscription-plan.dto';
+import { UiSettingsDto } from './dto/ui-settings.dto';
+import { normalizeAdminUiSettings } from './normalize-admin-ui-settings';
+const PUBLIC_THEME_SET = new Set<string>(['light', 'dark', 'system']);
+const PUBLIC_LANDING_SET = new Set<string>([
+  'about',
+  'tournaments',
+  'participants',
+  'media',
 ]);
+const PUBLIC_TAB_ORDER_VALUES = ['table', 'chessboard', 'progress', 'playoff'] as const;
 
 @Injectable()
 export class UsersService {
@@ -50,6 +36,39 @@ export class UsersService {
     if (value === null) return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private normalizeHexColor(
+    value: string | undefined,
+    fallback: string,
+  ): string | undefined {
+    if (value === undefined) return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) return fallback;
+    return trimmed.toLowerCase();
+  }
+
+  private normalizeTabsOrder(
+    value: string | undefined,
+    fallback = 'table,chessboard,progress,playoff',
+  ): string | undefined {
+    if (value === undefined) return undefined;
+    const raw = value
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+    const unique: string[] = [];
+    for (const item of raw) {
+      if (!PUBLIC_TAB_ORDER_VALUES.includes(item as (typeof PUBLIC_TAB_ORDER_VALUES)[number])) {
+        continue;
+      }
+      if (!unique.includes(item)) unique.push(item);
+    }
+    for (const item of PUBLIC_TAB_ORDER_VALUES) {
+      if (!unique.includes(item)) unique.push(item);
+    }
+    return unique.join(',') || fallback;
   }
 
   async getProfile(userId: string, tenantId: string) {
@@ -207,50 +226,288 @@ export class UsersService {
     return tenant;
   }
 
-  getUiSettings(userId: string) {
-    return this.prisma.user
-      .findUnique({
-        where: { id: userId },
-        select: { uiSettings: true },
-      })
-      .then((u) => this.normalizeUiSettings(u?.uiSettings ?? null));
+  async getMyTenantPublicBranding(userId: string, tenantId: string) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only tenant admin can manage public branding');
+    }
+    const tenantRow = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        subscriptionPlan: true,
+        publicLogoUrl: true,
+        publicFaviconUrl: true,
+        publicAccentPrimary: true,
+        publicAccentSecondary: true,
+        publicThemeMode: true,
+        publicTagline: true,
+        publicOrganizationDisplayName: true,
+        publicContactPhone: true,
+        publicContactEmail: true,
+        publicContactAddress: true,
+        publicContactHours: true,
+        publicSeoTitle: true,
+        publicSeoDescription: true,
+        publicOgImageUrl: true,
+        publicDefaultLanding: true,
+        publicTournamentTabsOrder: true,
+        publicShowLeaderInFacts: true,
+        publicShowTopStats: true,
+        publicShowNewsInSidebar: true,
+      },
+    });
+    if (!tenantRow) {
+      throw new NotFoundException('Tenant not found');
+    }
+    if (
+      u.role !== UserRole.SUPER_ADMIN &&
+      !tenantHasSubscriptionPlanFeature(tenantRow.subscriptionPlan, 'public_site_admin_settings')
+    ) {
+      throw new ForbiddenException({
+        message: 'Публичные настройки доступны с тарифа Premier',
+        code: 'SUBSCRIPTION_PLAN_INSUFFICIENT',
+      });
+    }
+    const { subscriptionPlan: _sp, ...tenant } = tenantRow;
+    return tenant;
   }
 
-  async patchUiSettings(userId: string, dto: UiSettingsDto) {
-    const current = await this.getUiSettings(userId);
+  async updateMyTenantPublicBranding(
+    userId: string,
+    tenantId: string,
+    dto: UpdateTenantPublicBrandingDto,
+  ) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only tenant admin can manage public branding');
+    }
+
+    const tenantForPlan = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { subscriptionPlan: true },
+    });
+    if (!tenantForPlan) {
+      throw new NotFoundException('Tenant not found');
+    }
+    if (
+      u.role !== UserRole.SUPER_ADMIN &&
+      !tenantHasSubscriptionPlanFeature(tenantForPlan.subscriptionPlan, 'public_site_admin_settings')
+    ) {
+      throw new ForbiddenException({
+        message: 'Публичные настройки доступны с тарифа Premier',
+        code: 'SUBSCRIPTION_PLAN_INSUFFICIENT',
+      });
+    }
+
+    const data: Prisma.TenantUpdateInput = {};
+    const logoUrl = this.normalizeOptionalLink(dto.publicLogoUrl);
+    const faviconUrl = this.normalizeOptionalLink(dto.publicFaviconUrl);
+    const accentPrimary = this.normalizeHexColor(dto.publicAccentPrimary, '#123c67');
+    const accentSecondary = this.normalizeHexColor(dto.publicAccentSecondary, '#c80a48');
+    const themeMode =
+      typeof dto.publicThemeMode === 'string' &&
+      PUBLIC_THEME_SET.has(dto.publicThemeMode.trim().toLowerCase())
+        ? dto.publicThemeMode.trim().toLowerCase()
+        : undefined;
+    const tagline =
+      dto.publicTagline === undefined
+        ? undefined
+        : dto.publicTagline === null
+          ? null
+          : dto.publicTagline.trim() || null;
+    const organizationDisplayName =
+      dto.publicOrganizationDisplayName === undefined
+        ? undefined
+        : dto.publicOrganizationDisplayName === null
+          ? null
+          : dto.publicOrganizationDisplayName.trim() || null;
+    const contactPhone =
+      dto.publicContactPhone === undefined
+        ? undefined
+        : dto.publicContactPhone === null
+          ? null
+          : dto.publicContactPhone.trim() || null;
+    const contactEmail =
+      dto.publicContactEmail === undefined
+        ? undefined
+        : dto.publicContactEmail === null
+          ? null
+          : dto.publicContactEmail.trim() || null;
+    const contactAddress =
+      dto.publicContactAddress === undefined
+        ? undefined
+        : dto.publicContactAddress === null
+          ? null
+          : dto.publicContactAddress.trim() || null;
+    const contactHours =
+      dto.publicContactHours === undefined
+        ? undefined
+        : dto.publicContactHours === null
+          ? null
+          : dto.publicContactHours.trim() || null;
+    const seoTitle =
+      dto.publicSeoTitle === undefined
+        ? undefined
+        : dto.publicSeoTitle === null
+          ? null
+          : dto.publicSeoTitle.trim() || null;
+    const seoDescription =
+      dto.publicSeoDescription === undefined
+        ? undefined
+        : dto.publicSeoDescription === null
+          ? null
+          : dto.publicSeoDescription.trim() || null;
+    const ogImageUrl = this.normalizeOptionalLink(dto.publicOgImageUrl);
+    const defaultLanding =
+      typeof dto.publicDefaultLanding === 'string' &&
+      PUBLIC_LANDING_SET.has(dto.publicDefaultLanding.trim().toLowerCase())
+        ? dto.publicDefaultLanding.trim().toLowerCase()
+        : undefined;
+    const tabsOrder = this.normalizeTabsOrder(dto.publicTournamentTabsOrder);
+
+    if (logoUrl !== undefined) data.publicLogoUrl = logoUrl;
+    if (faviconUrl !== undefined) data.publicFaviconUrl = faviconUrl;
+    if (accentPrimary !== undefined) data.publicAccentPrimary = accentPrimary;
+    if (accentSecondary !== undefined) data.publicAccentSecondary = accentSecondary;
+    if (themeMode !== undefined) data.publicThemeMode = themeMode;
+    if (tagline !== undefined) data.publicTagline = tagline;
+    if (organizationDisplayName !== undefined) {
+      data.publicOrganizationDisplayName = organizationDisplayName;
+    }
+    if (contactPhone !== undefined) data.publicContactPhone = contactPhone;
+    if (contactEmail !== undefined) data.publicContactEmail = contactEmail;
+    if (contactAddress !== undefined) data.publicContactAddress = contactAddress;
+    if (contactHours !== undefined) data.publicContactHours = contactHours;
+    if (seoTitle !== undefined) data.publicSeoTitle = seoTitle;
+    if (seoDescription !== undefined) data.publicSeoDescription = seoDescription;
+    if (ogImageUrl !== undefined) data.publicOgImageUrl = ogImageUrl;
+    if (defaultLanding !== undefined) data.publicDefaultLanding = defaultLanding;
+    if (tabsOrder !== undefined) data.publicTournamentTabsOrder = tabsOrder;
+    if (dto.publicShowLeaderInFacts !== undefined) {
+      data.publicShowLeaderInFacts = dto.publicShowLeaderInFacts;
+    }
+    if (dto.publicShowTopStats !== undefined) {
+      data.publicShowTopStats = dto.publicShowTopStats;
+    }
+    if (dto.publicShowNewsInSidebar !== undefined) {
+      data.publicShowNewsInSidebar = dto.publicShowNewsInSidebar;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return this.getMyTenantPublicBranding(userId, tenantId);
+    }
+
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data,
+      select: {
+        publicLogoUrl: true,
+        publicFaviconUrl: true,
+        publicAccentPrimary: true,
+        publicAccentSecondary: true,
+        publicThemeMode: true,
+        publicTagline: true,
+        publicOrganizationDisplayName: true,
+        publicContactPhone: true,
+        publicContactEmail: true,
+        publicContactAddress: true,
+        publicContactHours: true,
+        publicSeoTitle: true,
+        publicSeoDescription: true,
+        publicOgImageUrl: true,
+        publicDefaultLanding: true,
+        publicTournamentTabsOrder: true,
+        publicShowLeaderInFacts: true,
+        publicShowTopStats: true,
+        publicShowNewsInSidebar: true,
+      },
+    });
+  }
+
+  async getMyTenantSubscriptionPlan(userId: string, tenantId: string) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only tenant admin can manage subscription plan');
+    }
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        subscriptionPlan: true,
+        subscriptionStatus: true,
+        subscriptionEndsAt: true,
+      },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+    return tenant;
+  }
+
+  async updateMyTenantSubscriptionPlan(
+    userId: string,
+    tenantId: string,
+    dto: UpdateMyTenantSubscriptionPlanDto,
+  ) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only tenant admin can change subscription plan');
+    }
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { subscriptionPlan: dto.subscriptionPlan },
+      select: {
+        subscriptionPlan: true,
+        subscriptionStatus: true,
+        subscriptionEndsAt: true,
+      },
+    });
+  }
+
+  getTenantUiSettings(tenantId: string) {
+    return this.prisma.tenant
+      .findUnique({
+        where: { id: tenantId },
+        select: { adminUiSettings: true },
+      })
+      .then((t) => normalizeAdminUiSettings(t?.adminUiSettings ?? null));
+  }
+
+  async patchTenantUiSettings(tenantId: string, dto: UiSettingsDto) {
+    const current = await this.getTenantUiSettings(tenantId);
     const next = {
       themeMode: dto.themeMode ?? current.themeMode,
       locale: dto.locale ?? current.locale,
       accent: dto.accent ?? current.accent,
     };
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { uiSettings: next as unknown as Prisma.InputJsonValue },
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { adminUiSettings: next as unknown as Prisma.InputJsonValue },
     });
     return next;
-  }
-
-  private normalizeUiSettings(raw: Prisma.JsonValue | null) {
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { ...DEFAULT_UI };
-    }
-    const o = raw as Record<string, unknown>;
-    const themeRaw = o.themeMode;
-    const localeRaw = o.locale;
-    const accentRaw = o.accent;
-    const themeMode =
-      typeof themeRaw === 'string' && THEME_SET.has(themeRaw.toLowerCase())
-        ? (themeRaw.toLowerCase() as ThemeMode)
-        : DEFAULT_UI.themeMode;
-    const locale =
-      typeof localeRaw === 'string' && LOCALE_SET.has(localeRaw.toLowerCase())
-        ? (localeRaw.toLowerCase() as UiLocale)
-        : DEFAULT_UI.locale;
-    const accent =
-      typeof accentRaw === 'string' && ACCENT_SET.has(accentRaw.toLowerCase())
-        ? (accentRaw.toLowerCase() as UiAccent)
-        : DEFAULT_UI.accent;
-    return { themeMode, locale, accent };
   }
 
   async findAll(
@@ -303,10 +560,15 @@ export class UsersService {
   async create(tenantId: string, dto: CreateUserDto) {
     const { email, username, name, lastName, password, role } = dto;
     const normalizedUsername = username.trim().toLowerCase();
+    const normalizedEmail = email?.trim() ? email.trim() : null;
 
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      throw new Error('User with this email already exists');
+    if (normalizedEmail) {
+      const existing = await this.prisma.user.findUnique({
+        where: { email: normalizedEmail },
+      });
+      if (existing) {
+        throw new BadRequestException('User with this email already exists');
+      }
     }
 
     const existingUsername = await this.prisma.user.findFirst({
@@ -320,7 +582,7 @@ export class UsersService {
 
     const user = await this.prisma.user.create({
       data: {
-        email,
+        email: normalizedEmail,
         username: normalizedUsername,
         name,
         lastName: lastName?.trim() ?? '',

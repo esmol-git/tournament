@@ -3,11 +3,15 @@ export interface TournamentDetails {
   id: string
   name: string
   slug: string
+  /** Slug организации для публичного URL: `/{tenant.slug}/tournaments/table?tid=…` */
+  tenant?: { slug: string } | null
   description?: string | null
   logoUrl?: string | null
   format: string
   groupCount?: number
   status: string
+  /** Показ на публичном сайте (независимо от статуса жизненного цикла). */
+  published?: boolean
   startsAt?: string | null
   endsAt?: string | null
   intervalDays: number
@@ -110,6 +114,16 @@ export interface TournamentDetails {
     }[]
   }[]
   matchNumberById?: Record<string, number>
+  matchesTotal?: number
+  matchesOffset?: number
+  matchesLimit?: number | null
+  summary?: {
+    teamsRegisteredTotal: number
+    teamsExpectedTotal: number
+    matchesTotal: number
+    matchesPlayedTotal: number
+    championTeamName: string | null
+  }
 }
 
 export interface TableRow {
@@ -138,7 +152,13 @@ export type MatchEventRow = NonNullable<MatchRow['events']>[number]
 
 /** Матч из GET /tenants/:tenantId/matches (в турнире, с полем tournament) */
 export type TenantTournamentMatchRow = MatchRow & {
-  tournament: { id: string; name: string; slug: string; format: string }
+  tournament: {
+    id: string
+    name: string
+    slug: string
+    format: string
+    calendarColor?: string | null
+  }
 }
 
 export type CalendarRound = {

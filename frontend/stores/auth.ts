@@ -125,6 +125,30 @@ export const useAuthStore = defineStore('auth', () => {
     return null
   }
 
+  function adminStaffRoleBlockFromError(e: unknown): boolean {
+    const err = e as {
+      statusCode?: number
+      data?: { code?: string }
+      response?: { status?: number; _data?: { code?: string } }
+    }
+    const status = err.statusCode ?? err.response?.status
+    const code =
+      err.data?.code ?? err.response?._data?.code
+    return status === 403 && code === 'ADMIN_STAFF_ROLE_REQUIRED'
+  }
+
+  function insufficientRoleBlockFromError(e: unknown): boolean {
+    const err = e as {
+      statusCode?: number
+      data?: { code?: string }
+      response?: { status?: number; _data?: { code?: string } }
+    }
+    const status = err.statusCode ?? err.response?.status
+    const code =
+      err.data?.code ?? err.response?._data?.code
+    return status === 403 && code === 'INSUFFICIENT_ROLE'
+  }
+
   async function authFetch<T = unknown>(
     url: string,
     options: Record<string, unknown> = {},
@@ -147,6 +171,17 @@ export const useAuthStore = defineStore('auth', () => {
         await navigateTo({
           path: '/admin/subscription-expired',
           query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
+        })
+        throw e
+      }
+      if (adminStaffRoleBlockFromError(e) && process.client) {
+        await navigateTo('/admin/access-denied')
+        throw e
+      }
+      if (insufficientRoleBlockFromError(e) && process.client) {
+        await navigateTo({
+          path: '/admin/feature-unavailable',
+          query: { reason: 'tenant_admin_only' },
         })
         throw e
       }
@@ -190,6 +225,17 @@ export const useAuthStore = defineStore('auth', () => {
         })
         throw e
       }
+      if (adminStaffRoleBlockFromError(e) && process.client) {
+        await navigateTo('/admin/access-denied')
+        throw e
+      }
+      if (insufficientRoleBlockFromError(e) && process.client) {
+        await navigateTo({
+          path: '/admin/feature-unavailable',
+          query: { reason: 'tenant_admin_only' },
+        })
+        throw e
+      }
       const err = e as { response?: { status?: number }; statusCode?: number }
       const status = err?.response?.status ?? err?.statusCode
       if (status === 401 && !retried) {
@@ -209,7 +255,10 @@ export const useAuthStore = defineStore('auth', () => {
       })
       user.value = me
       if (process.client) {
-        localStorage.setItem('auth_user', JSON.stringify(me))
+        const serialized = JSON.stringify(me)
+        localStorage.setItem('auth_user', serialized)
+        // Должно совпадать с setSession: иначе syncWithStorage() возьмёт устаревший auth_user из cookie.
+        setAuthCookie('auth_user', serialized)
       }
       return me
     } catch (e: unknown) {

@@ -163,6 +163,18 @@ export const useAdminSettingsStore = defineStore('adminSettings', () => {
     }
   }
 
+  /**
+   * Применить настройки организации с публичного ответа `/auth/tenant/resolve` (вход без JWT).
+   * Пишет в стор, cookie и localStorage — как после обычного fetch с сервера.
+   */
+  function applyFromTenantResolvePayload(data: Partial<AdminSettingsPersisted>) {
+    const n = normalizeFetchedSettings(data)
+    themeMode.value = n.themeMode
+    locale.value = n.locale
+    accent.value = n.accent
+    persist()
+  }
+
   /** Подтянуть настройки с сервера (после входа или при открытии админки). */
   async function fetchFromServerIfLoggedIn() {
     if (!fetchFromServerInFlight) {
@@ -213,6 +225,7 @@ export const useAdminSettingsStore = defineStore('adminSettings', () => {
     hydrate,
     persist,
     fetchFromServerIfLoggedIn,
+    applyFromTenantResolvePayload,
     syncToServer,
     setThemeMode,
     setLocale,

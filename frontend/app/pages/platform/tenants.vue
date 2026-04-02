@@ -11,6 +11,7 @@ import {
   formatSubscriptionPlanLabel,
   formatSubscriptionStatusLabel,
 } from '~/utils/subscriptionPlanLabels'
+import { userRoleLabelRu } from '~/constants/userRoles'
 
 definePageMeta({
   layout: 'platform',
@@ -57,6 +58,9 @@ const usersDialogVisible = ref(false)
 const usersLoading = ref(false)
 const selectedTenant = ref<PlatformTenantRow | null>(null)
 const tenantUsers = ref<PlatformTenantUserRow[]>([])
+const renameDialogVisible = ref(false)
+const renameRow = ref<PlatformTenantRow | null>(null)
+const editTenantName = ref('')
 
 const subscriptionDialogVisible = ref(false)
 const subscriptionRow = ref<PlatformTenantRow | null>(null)
@@ -142,6 +146,36 @@ function requestDeleteTenant(row: PlatformTenantRow) {
   if (row.protectedFromRemoval) return
   tenantToDelete.value = row
   deleteTenantConfirmOpen.value = true
+}
+
+function openRenameTenantDialog(row: PlatformTenantRow) {
+  renameRow.value = row
+  editTenantName.value = row.name
+  renameDialogVisible.value = true
+}
+
+const canSaveTenantName = computed(() => editTenantName.value.trim().length > 0)
+
+async function saveTenantName() {
+  const row = renameRow.value
+  if (!token.value || !row || !canSaveTenantName.value) return
+  try {
+    await authFetch(apiUrl(`/platform/tenants/${row.id}`), {
+      method: 'PATCH',
+      body: { name: editTenantName.value.trim() },
+    })
+    renameDialogVisible.value = false
+    renameRow.value = null
+    toast.add({ severity: 'success', summary: 'Название обновлено', life: 3000 })
+    await fetchTenants()
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось сохранить',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
+  }
 }
 
 async function confirmDeleteTenant() {
@@ -231,12 +265,22 @@ async function openTenantUsers(row: PlatformTenantRow) {
   selectedTenant.value = row
   usersDialogVisible.value = true
   usersLoading.value = true
+  tenantUsers.value = []
   try {
     const res = await authFetch<{
       tenant: { id: string; name: string; slug: string }
       items: PlatformTenantUserRow[]
     }>(apiUrl(`/platform/tenants/${row.id}/users`))
     tenantUsers.value = res.items
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось загрузить пользователей',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
+    usersDialogVisible.value = false
+    selectedTenant.value = null
   } finally {
     usersLoading.value = false
   }
@@ -301,7 +345,17 @@ onMounted(async () => {
         <template #body="{ data }">{{ formatSubscriptionEnds(data.subscriptionEndsAt) }}</template>
       </Column>
       <Column header="Пользователи">
-        <template #body="{ data }">{{ data.usersCount }}</template>
+        <template #body="{ data }">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-medium text-primary hover:bg-primary/10 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+            title="Показать пользователей организации"
+            @click="openTenantUsers(data)"
+          >
+            <span class="pi pi-users text-sm opacity-80" aria-hidden="true" />
+            <span class="tabular-nums">{{ data.usersCount }}</span>
+          </button>
+        </template>
       </Column>
       <Column header="Турниры">
         <template #body="{ data }">{{ data.tournamentsCount }}</template>
@@ -322,6 +376,14 @@ onMounted(async () => {
       <Column header="Действия" style="width: 12rem">
         <template #body="{ data }">
           <div class="flex justify-end gap-1 flex-wrap">
+            <Button
+              icon="pi pi-pencil"
+              text
+              rounded
+              severity="secondary"
+              title="Переименовать организацию"
+              @click="openRenameTenantDialog(data)"
+            />
             <Button
               icon="pi pi-credit-card"
               text
@@ -367,6 +429,32 @@ onMounted(async () => {
       :message="deleteTenantMessage"
       @confirm="confirmDeleteTenant"
     />
+
+    <Dialog
+      v-model:visible="renameDialogVisible"
+      modal
+      :style="{ width: '32rem', maxWidth: '95vw' }"
+      header="Переименовать организацию"
+    >
+      <div v-if="renameRow" class="flex flex-col gap-4">
+        <p class="text-sm text-muted-color">
+          Slug останется прежним: <strong>{{ renameRow.slug }}</strong>
+        </p>
+        <div>
+          <label class="mb-1 block text-sm font-medium">Название</label>
+          <InputText v-model="editTenantName" class="w-full" maxlength="120" />
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <Button label="Отмена" severity="secondary" @click="renameDialogVisible = false" />
+          <Button
+            label="Сохранить"
+            icon="pi pi-check"
+            :disabled="!canSaveTenantName"
+            @click="saveTenantName"
+          />
+        </div>
+      </div>
+    </Dialog>
 
     <Dialog
       v-model:visible="subscriptionDialogVisible"
@@ -454,6 +542,9 @@ onMounted(async () => {
         size="small"
         striped-rows
       >
+        <template #empty>
+          <span v-if="!usersLoading" class="text-sm text-muted-color">В этой организации пока нет пользователей.</span>
+        </template>
         <Column field="username" header="Логин" />
         <Column field="email" header="Email" />
         <Column header="Имя">
@@ -461,7 +552,9 @@ onMounted(async () => {
             {{ [data.name, data.lastName].filter(Boolean).join(' ') }}
           </template>
         </Column>
-        <Column field="role" header="Роль" />
+        <Column header="Роль">
+          <template #body="{ data }">{{ userRoleLabelRu(String(data.role ?? '')) }}</template>
+        </Column>
         <Column header="Статус">
           <template #body="{ data }">
             <Tag :severity="data.blocked ? 'danger' : 'success'" :value="data.blocked ? 'Blocked' : 'Active'" />

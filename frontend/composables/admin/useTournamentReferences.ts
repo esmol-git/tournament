@@ -1,4 +1,5 @@
-import { computed, ref } from 'vue'
+import { computed, ref, unref } from 'vue'
+import type { ComputedRef, Ref } from 'vue'
 import type { AgeGroupRow } from '~/types/admin/age-group'
 import type { CompetitionRow } from '~/types/admin/competition'
 import type { RefereeRow } from '~/types/admin/referee'
@@ -12,6 +13,25 @@ type Deps = {
   tenantId: { value: string }
   apiUrl: (path: string) => string
   authFetch: FetchFn
+  /**
+   * Сезоны и возрастные группы (`reference_directory_basic` на бэкенде).
+   * Без флага — запросы выполняются (обратная совместимость).
+   */
+  canAccessReferenceBasic?: Ref<boolean> | ComputedRef<boolean>
+  /**
+   * Типы соревнований, стадионы, судьи (`reference_directory_standard`).
+   */
+  canAccessReferenceStandard?: Ref<boolean> | ComputedRef<boolean>
+}
+
+function allowRefBasic(deps: Deps) {
+  const c = deps.canAccessReferenceBasic
+  return c === undefined ? true : !!unref(c)
+}
+
+function allowRefStandard(deps: Deps) {
+  const c = deps.canAccessReferenceStandard
+  return c === undefined ? true : !!unref(c)
 }
 
 export function useTournamentReferences(deps: Deps) {
@@ -107,7 +127,7 @@ export function useTournamentReferences(deps: Deps) {
   )
 
   async function fetchSeasonsList() {
-    if (!deps.token.value) return
+    if (!deps.token.value || !allowRefBasic(deps)) return
     seasonsLoading.value = true
     try {
       seasonsList.value = await deps.authFetch<SeasonRow[]>(
@@ -122,7 +142,7 @@ export function useTournamentReferences(deps: Deps) {
   }
 
   async function fetchCompetitionsList() {
-    if (!deps.token.value) return
+    if (!deps.token.value || !allowRefStandard(deps)) return
     competitionsLoading.value = true
     try {
       competitionsList.value = await deps.authFetch<CompetitionRow[]>(
@@ -137,7 +157,7 @@ export function useTournamentReferences(deps: Deps) {
   }
 
   async function fetchAgeGroupsList() {
-    if (!deps.token.value) return
+    if (!deps.token.value || !allowRefBasic(deps)) return
     ageGroupsLoading.value = true
     try {
       ageGroupsList.value = await deps.authFetch<AgeGroupRow[]>(
@@ -152,7 +172,7 @@ export function useTournamentReferences(deps: Deps) {
   }
 
   async function fetchStadiumsReferees() {
-    if (!deps.token.value) return
+    if (!deps.token.value || !allowRefStandard(deps)) return
     stadiumsLoading.value = true
     refereesLoading.value = true
     try {

@@ -21,6 +21,11 @@ import { getApiErrorMessage, getApiErrorMessages } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { tournamentFormatLabel } from '~/utils/tournamentAdminUi'
 import { slugifyFromTitle } from '~/utils/slugify'
+import {
+  hasSubscriptionFeature,
+  maxTournamentsForSubscriptionPlan,
+  subscriptionPlanFromAuthUser,
+} from '~/utils/subscriptionFeatures'
 import AdminTournamentCard from '~/app/components/admin/tournaments/AdminTournamentCard.vue'
 import AdminTournamentFormDialog from '~/app/components/admin/tournaments/AdminTournamentFormDialog.vue'
 import AdminTournamentListFilters from '~/app/components/admin/tournaments/AdminTournamentListFilters.vue'
@@ -37,6 +42,54 @@ const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 
 const tenantId = useTenantId()
+
+const subscriptionPlan = computed(() => subscriptionPlanFromAuthUser(user.value))
+
+const tournamentLimitMax = computed(() => maxTournamentsForSubscriptionPlan(subscriptionPlan.value))
+
+/** Совпадает с `RequireSubscriptionPlanFeature` на бэкенде для seasons / age-groups. */
+const canAccessReferenceBasic = computed(() =>
+  hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_basic'),
+)
+/** Сезоны типов соревнований, стадионы, судьи — `reference_directory_standard`. */
+const canAccessReferenceStandard = computed(() =>
+  hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_standard'),
+)
+
+const canTournamentAutomation = computed(() =>
+  hasSubscriptionFeature(subscriptionPlan.value, 'tournament_automation'),
+)
+
+const TOURNAMENT_FORMAT_OPTIONS: { value: TournamentFormat; label: string }[] = [
+  { value: 'SINGLE_GROUP', label: 'Единая группа (круговой турнир)' },
+  { value: 'PLAYOFF', label: 'Сразу плей-офф (олимпийка)' },
+  { value: 'GROUPS_PLUS_PLAYOFF', label: 'Группы + плей-офф' },
+  { value: 'MANUAL', label: 'Только ручное расписание (без автогенерации)' },
+]
+
+const formatOptionsForForm = computed(() => {
+  if (canTournamentAutomation.value) return TOURNAMENT_FORMAT_OPTIONS
+  const manualOnly = TOURNAMENT_FORMAT_OPTIONS.filter((o) => o.value === 'MANUAL')
+  if (isEdit.value) {
+    const cur = TOURNAMENT_FORMAT_OPTIONS.find((o) => o.value === form.format)
+    if (cur && cur.value !== 'MANUAL') {
+      return [cur, ...manualOnly]
+    }
+  }
+  return manualOnly
+})
+
+const canCreateAnotherTournament = computed(() => {
+  const max = tournamentLimitMax.value
+  if (max === null) return true
+  return tournamentsTotal.value < max
+})
+
+const createTournamentBlockedHint = computed(() =>
+  t('admin.settings.subscription.tournament_limit_reached_hint', {
+    max: tournamentLimitMax.value ?? 1,
+  }),
+)
 
 /** true до первого завершённого запроса списка — иначе при F5 один кадр «Пока нет турниров». */
 const loading = ref(true)
@@ -201,13 +254,6 @@ const removeTournamentLogo = async (e: MouseEvent) => {
 const teamsLoading = ref(false)
 const teams = ref<TeamLite[]>([])
 
-const formatOptions: { value: TournamentFormat; label: string }[] = [
-  { value: 'SINGLE_GROUP', label: 'Единая группа (круговой турнир)' },
-  { value: 'PLAYOFF', label: 'Сразу плей-офф (олимпийка)' },
-  { value: 'GROUPS_PLUS_PLAYOFF', label: 'Группы + плей-офф' },
-  { value: 'MANUAL', label: 'Только ручное расписание (без автогенерации)' },
-]
-
 const statusOptions = [
   { value: 'DRAFT' as const, label: 'Черновик' },
   { value: 'ACTIVE' as const, label: 'Активный' },
@@ -230,6 +276,29 @@ const ageGroupFilter = ref<string>('')
 const hasMoreTournaments = computed(
   () => tournaments.value.length < tournamentsTotal.value,
 )
+
+const tournamentsFiltersActive = computed(
+  () =>
+    !!tournamentsSearch.value.trim() ||
+    statusFilter.value !== 'all' ||
+    seasonFilter.value !== '' ||
+    competitionFilter.value !== '' ||
+    ageGroupFilter.value !== '',
+)
+
+/**
+ * Нет турниров и не включены фильтры — без шапки (заголовок и «Создать» дублируют пустое состояние).
+ * true и во время загрузки, чтобы при «Обновить» на пустом списке шапка не мигала.
+ */
+const tournamentsListSemanticallyEmpty = computed(
+  () =>
+    tournamentsTotal.value === 0 &&
+    !tournamentsFiltersActive.value &&
+    tournaments.value.length === 0,
+)
+
+/** То же, что `tournamentsListSemanticallyEmpty` (старое имя — на случай кэша HMR/шаблона). */
+const showInitialTournamentsEmpty = tournamentsListSemanticallyEmpty
 
 function statusLabel(s: TournamentStatus): string {
   return statusOptions.find((o) => o.value === s)?.label ?? s
@@ -278,6 +347,8 @@ const {
   tenantId,
   apiUrl,
   authFetch,
+  canAccessReferenceBasic,
+  canAccessReferenceStandard,
 })
 
 const form = reactive(buildDefaultTournamentForm())
@@ -337,7 +408,8 @@ const minTeamsGridClass = computed(() => {
   }
   return 'md:col-start-1'
 })
-const playoffTeamCountOptions = [4, 8, 16, 32, 64, 128, 256]
+const playoffTeamCountOptions = [4, 8, 16, 32, 64, 128, 256, 512]
+const maxTournamentTeams = 512
 const groupedPlayoffFormats: TournamentFormat[] = [
   'GROUPS_PLUS_PLAYOFF',
   'GROUPS_2',
@@ -356,6 +428,38 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+const tournamentCalendarColorPresets = [
+  '#6366f1',
+  '#10b981',
+  '#f59e0b',
+  '#ef4444',
+  '#8b5cf6',
+  '#ec4899',
+  '#06b6d4',
+  '#84cc16',
+] as const
+
+const DEFAULT_CALENDAR_PICKER_FALLBACK = '#6366f1'
+
+const calendarColorPickerModel = computed({
+  get() {
+    const c = String(form.calendarColor ?? '').trim().toLowerCase()
+    return /^#[0-9a-f]{6}$/.test(c) ? c : DEFAULT_CALENDAR_PICKER_FALLBACK
+  },
+  set(v: string) {
+    const s = (v || '').trim().toLowerCase()
+    if (/^#[0-9a-f]{6}$/.test(s)) form.calendarColor = s
+  },
+})
+
+function clearTournamentCalendarColor() {
+  form.calendarColor = ''
+}
+
+function tournamentCalendarColorTrimmed() {
+  return String(form.calendarColor ?? '').trim()
 }
 
 watch(
@@ -444,10 +548,10 @@ const formatFieldHintText =
 
 const minTeamsHintText = computed(() =>
   form.format === 'PLAYOFF'
-    ? 'Для олимпийки это точное количество участников сетки. Доступные значения: 4, 8, 16, 32, 64, 128, 256.'
+    ? 'Для олимпийки это точное количество участников сетки. Доступные значения: 4, 8, 16, 32, 64, 128, 256, 512.'
     : form.format === 'GROUPS_PLUS_PLAYOFF'
       ? 'Для формата «Группы + плей-офф» выбирается количество команд, кратное числу групп (минимум по 2 команды на группу).'
-    : 'Фиксированное количество команд в турнире. Выбрать можно ровно это число.',
+    : 'Фиксированное количество команд в турнире. Выбрать можно ровно это число (максимум 512).',
 )
 
 const playoffPreview = computed(() => {
@@ -456,19 +560,26 @@ const playoffPreview = computed(() => {
   const groups = Number(form.groupCount)
   const qualifiersPerGroup = Number(form.playoffQualifiersPerGroup)
   const totalQualifiers = groups * qualifiersPerGroup
-  const valid =
+  const minTeamsNum = Number(form.minTeams)
+  const gridOk =
     Number.isInteger(groups) &&
     groups >= 1 &&
     Number.isInteger(qualifiersPerGroup) &&
     qualifiersPerGroup >= 1 &&
     qualifiersPerGroup <= 8 &&
-    isPowerOfTwo(totalQualifiers)
+    isPowerOfTwo(totalQualifiers) &&
+    totalQualifiers <= maxTournamentTeams
+  const teamsCoverPlayoff =
+    Number.isInteger(minTeamsNum) && minTeamsNum >= totalQualifiers
 
   return {
     groups,
     qualifiersPerGroup,
     totalQualifiers,
-    valid,
+    minTeams: minTeamsNum,
+    gridOk,
+    teamsCoverPlayoff,
+    valid: gridOk && teamsCoverPlayoff,
   }
 })
 
@@ -501,8 +612,11 @@ const groupedAndPlayoffHint = computed(() => {
   if (!group && !playoff) return null
 
   if (group && playoff) {
+    const teamsCoverPlayoff =
+      Number.isInteger(group.minTeams) &&
+      group.minTeams >= playoff.groups * playoff.qualifiersPerGroup
     return {
-      valid: group.valid && playoff.valid,
+      valid: group.valid && playoff.valid && teamsCoverPlayoff,
       text: `Группы: ${group.groups} × ${group.perGroup ?? '—'} команд; плей-офф: ${playoff.totalQualifiers} (${playoff.groups} × ${playoff.qualifiersPerGroup}).`,
     }
   }
@@ -520,7 +634,7 @@ const groupedAndPlayoffHint = computed(() => {
     valid: playoff?.valid ?? false,
     text: playoff?.valid
       ? `Плей-офф: ${playoff?.totalQualifiers} (${playoff?.groups} × ${playoff?.qualifiersPerGroup}) — валидная сетка.`
-      : `Плей-офф: ${playoff?.totalQualifiers} — невалидно, нужно 4/8/16/32/64/128/256.`,
+      : `Плей-офф: ${playoff?.totalQualifiers} — невалидно, нужно 4/8/16/32/64/128/256/512.`,
   }
 })
 
@@ -540,11 +654,20 @@ const formatCalendarHint = computed<{ valid: boolean; text: string } | null>(() 
       return { valid: true, text: manualGroupsHint.value }
     }
     if (!playoffPreview.value) return null
+    const pv = playoffPreview.value
+    const invalidText = !pv.gridOk
+      ? `Итого в плей-офф: ${pv.totalQualifiers} — невалидно, нужно 4/8/16/32/64/128/256/512.`
+      : t('admin.validation.playoff_qualifiers_exceed_min_teams', {
+          groups: pv.groups,
+          k: pv.qualifiersPerGroup,
+          needed: pv.totalQualifiers,
+          minTeams: pv.minTeams,
+        })
     return {
-      valid: playoffPreview.value.valid,
-      text: playoffPreview.value.valid
-        ? `Итого в плей-офф: ${playoffPreview.value.totalQualifiers} (${playoffPreview.value.groups} × ${playoffPreview.value.qualifiersPerGroup}) — валидная сетка.`
-        : `Итого в плей-офф: ${playoffPreview.value.totalQualifiers} — невалидно, нужно 4/8/16/32/64/128/256.`,
+      valid: pv.valid,
+      text: pv.valid
+        ? `Итого в плей-офф: ${pv.totalQualifiers} (${pv.groups} × ${pv.qualifiersPerGroup}) — валидная сетка.`
+        : invalidText,
     }
   }
 
@@ -553,8 +676,8 @@ const formatCalendarHint = computed<{ valid: boolean; text: string } | null>(() 
     return {
       valid,
       text: valid
-        ? `Сетка плей-офф: ${form.minTeams} команд. Допустимые значения: 4, 8, 16, 32, 64, 128, 256.`
-        : 'Для олимпийки выберите 4, 8, 16, 32, 64, 128 или 256 команд.',
+        ? `Сетка плей-офф: ${form.minTeams} команд. Допустимые значения: 4, 8, 16, 32, 64, 128, 256, 512.`
+        : 'Для олимпийки выберите 4, 8, 16, 32, 64, 128, 256 или 512 команд.',
     }
   }
 
@@ -668,11 +791,25 @@ const fetchTeamsLite = async () => {
 }
 
 const openCreate = async () => {
+  if (!canCreateAnotherTournament.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.settings.subscription.title'),
+      detail: createTournamentBlockedHint.value,
+      life: 6000,
+    })
+    return
+  }
   submitAttempted.value = false
   editingId.value = null
   initialTeamIds.value = []
   Object.assign(form, buildDefaultTournamentForm())
   manualPlayoffEnabled.value = false
+  if (!canTournamentAutomation.value) {
+    form.format = 'MANUAL'
+    form.groupCount = 1
+    if (form.minTeams > 2) form.minTeams = 2
+  }
   v$.value.$reset()
   showForm.value = true
   if (!users.value.length) await fetchUsersLite()
@@ -758,10 +895,12 @@ const tournamentFormErrors = computed(() => {
       : ''
 
   let formatError = ''
-  if (form.format === 'PLAYOFF' && (form.minTeams < 4 || !isPowerOfTwo(form.minTeams))) {
-    formatError = 'Для олимпийки укажите 4, 8, 16, 32, 64, 128 и т.д.'
+  if (form.minTeams > maxTournamentTeams) {
+    formatError = `Максимум команд в одном турнире: ${maxTournamentTeams}.`
+  } else if (form.format === 'PLAYOFF' && (form.minTeams < 4 || !isPowerOfTwo(form.minTeams))) {
+    formatError = 'Для олимпийки укажите 4, 8, 16, 32, 64, 128, 256 или 512.'
   } else if (form.format === 'PLAYOFF' && !playoffTeamCountOptions.includes(form.minTeams)) {
-    formatError = 'Для олимпийки доступны только: 4, 8, 16, 32, 64, 128, 256.'
+    formatError = 'Для олимпийки доступны только: 4, 8, 16, 32, 64, 128, 256, 512.'
   } else if (
     groupedPlayoffFormats.includes(form.format) &&
     (!Number.isInteger(form.groupCount) ||
@@ -771,6 +910,23 @@ const tournamentFormErrors = computed(() => {
   ) {
     formatError = `Для ${form.groupCount} групп количество команд должно быть кратно числу групп и не меньше ${form.groupCount * 2}.`
   } else if (
+    (groupedPlayoffFormats.includes(form.format) ||
+      (form.format === 'MANUAL' && manualPlayoffEnabled.value)) &&
+    Number.isInteger(form.groupCount) &&
+    form.groupCount >= 1 &&
+    Number.isInteger(form.playoffQualifiersPerGroup) &&
+    form.playoffQualifiersPerGroup >= 1 &&
+    Number.isInteger(form.minTeams) &&
+    form.minTeams < form.groupCount * form.playoffQualifiersPerGroup
+  ) {
+    const needed = form.groupCount * form.playoffQualifiersPerGroup
+    formatError = t('admin.validation.playoff_qualifiers_exceed_min_teams', {
+      groups: form.groupCount,
+      k: form.playoffQualifiersPerGroup,
+      needed,
+      minTeams: form.minTeams,
+    })
+  } else if (
     groupedPlayoffFormats.includes(form.format) &&
     (!Number.isInteger(form.playoffQualifiersPerGroup) ||
       form.playoffQualifiersPerGroup < 1 ||
@@ -778,7 +934,7 @@ const tournamentFormErrors = computed(() => {
       !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
   ) {
     const total = form.groupCount * form.playoffQualifiersPerGroup
-    formatError = `Сетка плей-офф невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128 или 256.`
+    formatError = `Сетка плей-офф невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128, 256 или 512.`
   } else if (
     form.format === 'MANUAL' &&
     manualPlayoffEnabled.value &&
@@ -788,7 +944,7 @@ const tournamentFormErrors = computed(() => {
       !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
   ) {
     const total = form.groupCount * form.playoffQualifiersPerGroup
-    formatError = `Для ручного турнира с плей-офф сетка невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128 или 256.`
+    formatError = `Для ручного турнира с плей-офф сетка невалидна: ${form.groupCount} × ${form.playoffQualifiersPerGroup} = ${total}. Нужно 4, 8, 16, 32, 64, 128, 256 или 512.`
   }
 
   const firstError = nameError || logoUrlError || teamsError || datesError || formatError
@@ -825,7 +981,7 @@ const saveTournament = async () => {
         ? undefined
         : form.playoffQualifiersPerGroup
 
-    const body = {
+    const body: Record<string, unknown> = {
       name,
       slug: tournamentSlugGenerated.value,
       description: form.description || undefined,
@@ -833,7 +989,6 @@ const saveTournament = async () => {
       format: form.format,
       groupCount: form.format === 'PLAYOFF' ? 0 : form.groupCount,
       playoffQualifiersPerGroup: playoffQualifiersForBody,
-      status: form.status,
       startsAt: toDateString(form.startsAt),
       endsAt: toDateString(form.endsAt),
       intervalDays: form.intervalDays,
@@ -843,11 +998,33 @@ const saveTournament = async () => {
       pointsDraw: form.pointsDraw,
       pointsLoss: form.pointsLoss,
       admins: form.adminIds.map((id) => ({ userId: id })),
-      stadiumId: form.stadiumId.trim() ? form.stadiumId : null,
-      seasonId: form.seasonId.trim() ? form.seasonId.trim() : null,
-      competitionId: form.competitionId.trim() ? form.competitionId.trim() : null,
-      ageGroupId: form.ageGroupId.trim() ? form.ageGroupId.trim() : null,
-      refereeIds: form.refereeIds,
+    }
+
+    const calendarColorNormalized = String(form.calendarColor ?? '')
+      .trim()
+      .toLowerCase()
+    if (/^#[0-9a-f]{6}$/.test(calendarColorNormalized)) {
+      body.calendarColor = calendarColorNormalized
+    } else if (isEdit.value) {
+      body.calendarColor = null
+    }
+
+    if (canAccessReferenceBasic.value) {
+      body.seasonId = form.seasonId.trim() ? form.seasonId.trim() : null
+      body.ageGroupId = form.ageGroupId.trim() ? form.ageGroupId.trim() : null
+    } else if (!isEdit.value) {
+      body.seasonId = null
+      body.ageGroupId = null
+    }
+
+    if (canAccessReferenceStandard.value) {
+      body.stadiumId = form.stadiumId.trim() ? form.stadiumId : null
+      body.competitionId = form.competitionId.trim() ? form.competitionId.trim() : null
+      body.refereeIds = form.refereeIds
+    } else if (!isEdit.value) {
+      body.stadiumId = null
+      body.competitionId = null
+      body.refereeIds = [] as string[]
     }
 
     let id: string
@@ -889,6 +1066,7 @@ const saveTournament = async () => {
 const deleteDialogVisible = ref(false)
 const deleteTarget = ref<TournamentRow | null>(null)
 const deleteSaving = ref(false)
+const listPublishSavingId = ref<string | null>(null)
 
 const openDeleteDialog = (t: TournamentRow) => {
   deleteTarget.value = t
@@ -960,6 +1138,39 @@ const openTournamentNews = (t: TournamentRow) => {
 
 const openTournamentGallery = (t: TournamentRow) => {
   router.push({ path: '/admin/gallery', query: { tournament: t.id } })
+}
+
+async function toggleTournamentListPublished(t: TournamentRow) {
+  if (!token.value || listPublishSavingId.value) return
+  const next = !t.published
+  if (next && t.status === 'DRAFT') {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.published_toggle_label'),
+      detail: t('admin.tournament_page.published_draft_blocked_hint'),
+      life: 6000,
+    })
+    return
+  }
+  listPublishSavingId.value = t.id
+  try {
+    await authFetch(apiUrl(`/tournaments/${t.id}`), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: { published: next },
+    })
+    const row = tournaments.value.find((x) => x.id === t.id)
+    if (row) row.published = next
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.published_save_error'),
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    listPublishSavingId.value = null
+  }
 }
 
 onMounted(() => {
@@ -1058,23 +1269,34 @@ watch(ageGroupFilter, () => {
 
 <template>
   <section class="p-6 space-y-4">
-    <header class="flex items-center justify-between">
+    <header
+      v-if="!tournamentsListSemanticallyEmpty"
+      class="flex items-center justify-between gap-4"
+    >
       <div>
-        <h1 class="text-xl font-semibold text-surface-900 dark:text-surface-0">Турниры</h1>
+        <h1 class="text-xl font-semibold text-surface-900 dark:text-surface-0">
+          {{ t('admin.tournaments_list.title') }}
+        </h1>
         <p class="mt-1 text-sm text-muted-color">
-          Создание турнира, настройка календаря и управление командами.
+          {{ t('admin.tournaments_list.subtitle') }}
         </p>
       </div>
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center justify-end gap-2 shrink-0">
         <Button
-          label="Обновить"
+          :label="t('admin.tournaments_list.refresh')"
           icon="pi pi-refresh"
           text
           severity="secondary"
           :loading="loading"
           @click="fetchTournaments({ reset: true })"
         />
-        <Button label="Создать" icon="pi pi-plus" @click="openCreate" />
+        <Button
+          :label="t('admin.tournaments_list.create')"
+          icon="pi pi-plus"
+          :disabled="!canCreateAnotherTournament"
+          v-tooltip.top="canCreateAnotherTournament ? undefined : createTournamentBlockedHint"
+          @click="openCreate"
+        />
       </div>
     </header>
 
@@ -1141,22 +1363,66 @@ watch(ageGroupFilter, () => {
         :formatLabel="tournamentFormatLabel(t.format)"
         :statusLabel="statusLabel(t.status)"
         :statusClass="statusBadgeClass(t.status)"
+        :publishSavingTournamentId="listPublishSavingId"
         @open="goToTournament"
         @edit="openEdit"
         @delete="openDeleteDialog"
         @news="openTournamentNews"
         @gallery="openTournamentGallery"
+        @togglePublished="toggleTournamentListPublished"
       />
 
       <div
-        v-if="!loading && tournamentsTotal > 0 && !tournaments.length"
-        class="rounded-lg border border-dashed border-surface-300 dark:border-surface-600 px-4 py-8 text-center text-sm text-muted-color"
+        v-if="!tournaments.length && (tournamentsTotal > 0 || tournamentsFiltersActive)"
+        class="rounded-xl border border-dashed border-surface-300 bg-surface-50/80 px-6 py-12 text-center dark:border-surface-600 dark:bg-surface-900/40"
+        role="status"
       >
-        По заданным параметрам турниры не найдены.
+        <p class="text-sm text-muted-color">
+          {{ t('admin.tournaments_list.filtered_empty') }}
+        </p>
       </div>
 
-      <div v-if="!loading && !tournamentsTotal" class="text-sm text-muted-color">Пока нет турниров.</div>
-      <div v-if="loadingMoreTournaments" class="text-sm text-muted-color">Подгружаем турниры…</div>
+      <div
+        v-else-if="tournamentsListSemanticallyEmpty"
+        class="relative flex min-h-[22rem] flex-col items-center justify-center rounded-2xl border border-surface-200 bg-surface-0 px-6 py-14 text-center shadow-sm dark:border-surface-700 dark:bg-surface-900"
+        role="region"
+        :aria-label="t('admin.tournaments_list.empty_title')"
+      >
+        <Button
+          type="button"
+          class="!absolute end-4 top-4"
+          :label="t('admin.tournaments_list.refresh')"
+          icon="pi pi-refresh"
+          text
+          severity="secondary"
+          :loading="loading"
+          @click="fetchTournaments({ reset: true })"
+        />
+        <div
+          class="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary dark:bg-primary/15"
+          aria-hidden="true"
+        >
+          <i class="pi pi-trophy text-3xl" />
+        </div>
+        <h2 class="text-lg font-semibold text-surface-900 dark:text-surface-0">
+          {{ t('admin.tournaments_list.empty_title') }}
+        </h2>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-color">
+          {{ t('admin.tournaments_list.empty_lead') }}
+        </p>
+        <Button
+          class="mt-6"
+          :label="t('admin.tournaments_list.empty_cta')"
+          icon="pi pi-plus"
+          :disabled="!canCreateAnotherTournament"
+          v-tooltip.top="canCreateAnotherTournament ? undefined : createTournamentBlockedHint"
+          @click="openCreate"
+        />
+      </div>
+
+      <div v-if="loadingMoreTournaments" class="text-sm text-muted-color">
+        {{ t('admin.tournaments_list.loading_more') }}
+      </div>
       <div
         v-if="hasMoreTournaments"
         ref="loadMoreAnchor"
@@ -1218,18 +1484,8 @@ watch(ageGroupFilter, () => {
             </button>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2">
+          <div v-if="form.logoUrl && !logoUploading && !logoRemoving" class="flex flex-wrap items-center gap-2">
             <Button
-              type="button"
-              icon="pi pi-upload"
-              label="Загрузить"
-              severity="secondary"
-              :loading="logoUploading"
-              :disabled="logoUploading || logoRemoving"
-              @click="triggerLogoPick"
-            />
-            <Button
-              v-if="form.logoUrl && !logoUploading && !logoRemoving"
               type="button"
               icon="pi pi-trash"
               label="Убрать"
@@ -1292,18 +1548,6 @@ watch(ageGroupFilter, () => {
             />
             <label for="t_endsAt">Окончание</label>
           </FloatLabel>
-
-          <div class="space-y-2">
-            <label for="t_status" class="block text-xs font-medium text-muted-color">Статус</label>
-            <Select
-              inputId="t_status"
-              v-model="form.status"
-              :options="statusOptions"
-              option-label="label"
-              option-value="value"
-              class="w-full"
-            />
-          </div>
         </div>
           </div>
         </section>
@@ -1326,12 +1570,68 @@ watch(ageGroupFilter, () => {
           <h3 class="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-color">
             Формат и календарь
           </h3>
+          <div class="mb-4 flex flex-col gap-2">
+            <label class="text-sm font-medium text-surface-900 dark:text-surface-0">
+              {{ t('admin.tournament_form.calendar_color_label') }}
+            </label>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                v-for="c in tournamentCalendarColorPresets"
+                :key="c"
+                type="button"
+                class="h-8 w-8 shrink-0 rounded-full border-2 border-surface-300 shadow-sm transition hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:border-surface-600"
+                :class="
+                  tournamentCalendarColorTrimmed().toLowerCase() === c
+                    ? 'ring-2 ring-primary ring-offset-2 dark:ring-offset-surface-900'
+                    : ''
+                "
+                :style="{ backgroundColor: c }"
+                :title="c"
+                :aria-label="c"
+                @click="form.calendarColor = c"
+              />
+              <input
+                v-model="calendarColorPickerModel"
+                type="color"
+                class="h-9 w-14 cursor-pointer rounded border border-surface-300 bg-surface-0 p-0.5 dark:border-surface-600"
+                :aria-label="t('admin.tournament_form.calendar_color_label')"
+              />
+              <Button
+                v-if="tournamentCalendarColorTrimmed()"
+                type="button"
+                :label="t('admin.tournament_form.calendar_color_reset')"
+                text
+                severity="secondary"
+                size="small"
+                @click="clearTournamentCalendarColor"
+              />
+            </div>
+            <p class="text-[11px] leading-relaxed text-muted-color">
+              {{ t('admin.tournament_form.calendar_color_hint') }}
+            </p>
+          </div>
+          <Message
+            v-if="!canTournamentAutomation"
+            severity="info"
+            :closable="false"
+            class="mb-4 w-full text-sm"
+          >
+            {{ t('admin.tournament_form.manual_only_tariff') }}
+          </Message>
+          <Message
+            v-if="isEdit && !canTournamentAutomation && form.format !== 'MANUAL'"
+            severity="warn"
+            :closable="false"
+            class="mb-4 w-full text-sm"
+          >
+            {{ t('admin.tournament_form.legacy_format_need_manual_or_plan') }}
+          </Message>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
             <FloatLabel variant="on" class="block">
               <Select
                 inputId="t_format"
                 v-model="form.format"
-                :options="formatOptions"
+                :options="formatOptionsForForm"
                 option-label="label"
                 option-value="value"
                 class="w-full"
@@ -1514,6 +1814,22 @@ watch(ageGroupFilter, () => {
             соревнования и возрастная группа («Сезоны», «Соревнования», «Возрастные группы») задают
             контекст турнира для фильтров и публичного каталога.
           </p>
+          <Message
+            v-if="!canAccessReferenceBasic"
+            severity="secondary"
+            :closable="false"
+            class="mb-3 w-full text-xs"
+          >
+            {{ t('admin.tournament_page.reference_fields_plan_basic_locked') }}
+          </Message>
+          <Message
+            v-if="!canAccessReferenceStandard"
+            severity="secondary"
+            :closable="false"
+            class="mb-3 w-full text-xs"
+          >
+            {{ t('admin.tournament_page.reference_fields_plan_standard_locked') }}
+          </Message>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
             <FloatLabel variant="on" class="block min-w-0">
               <Select
@@ -1524,6 +1840,7 @@ watch(ageGroupFilter, () => {
                 option-value="value"
                 class="w-full"
                 :loading="seasonsLoading"
+                :disabled="!canAccessReferenceBasic"
               />
               <label for="t_seasonId">Сезон</label>
             </FloatLabel>
@@ -1536,6 +1853,7 @@ watch(ageGroupFilter, () => {
                 option-value="value"
                 class="w-full"
                 :loading="competitionsLoading"
+                :disabled="!canAccessReferenceStandard"
               />
               <label for="t_competitionId">Тип соревнования</label>
             </FloatLabel>
@@ -1548,6 +1866,7 @@ watch(ageGroupFilter, () => {
                 option-value="value"
                 class="w-full"
                 :loading="ageGroupsLoading"
+                :disabled="!canAccessReferenceBasic"
               />
               <label for="t_ageGroupId">Возрастная группа</label>
             </FloatLabel>
@@ -1562,6 +1881,7 @@ watch(ageGroupFilter, () => {
                 option-value="value"
                 class="w-full"
                 :loading="stadiumsLoading"
+                :disabled="!canAccessReferenceStandard"
               />
               <label for="t_stadiumId">Стадион</label>
             </FloatLabel>
@@ -1578,6 +1898,7 @@ watch(ageGroupFilter, () => {
                 filter
                 :maxSelectedLabels="0"
                 selectedItemsLabel="Выбрано: {0}"
+                :disabled="!canAccessReferenceStandard"
               />
               <label for="t_refereeIds">Судьи турнира</label>
             </FloatLabel>

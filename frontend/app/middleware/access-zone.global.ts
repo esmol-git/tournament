@@ -1,4 +1,5 @@
 import { useAuthStore } from '~/stores/auth'
+import { isTenantAdminExcludedRole } from '~/constants/tenantAdminStaff'
 
 function readRole(user: unknown): string | null {
   if (!user || typeof user !== 'object') return null
@@ -40,6 +41,7 @@ export default defineNuxtRouteMiddleware((to) => {
   const isPlatformLogin = to.path === '/platform/login'
   const isAdminLogin = to.path === '/admin/login'
   const isAdminSubscriptionExpired = to.path === '/admin/subscription-expired'
+  const isAdminAccessDenied = to.path === '/admin/access-denied'
   const hostName = window.location.hostname
   const hostTenant = tenantFromHost(hostName)
 
@@ -49,6 +51,7 @@ export default defineNuxtRouteMiddleware((to) => {
     isAdminRoute &&
     !isAdminLogin &&
     !isAdminSubscriptionExpired &&
+    !isAdminAccessDenied &&
     !hostTenant &&
     !isLocalHost(hostName)
   ) {
@@ -86,6 +89,13 @@ export default defineNuxtRouteMiddleware((to) => {
     }
     if (role === 'SUPER_ADMIN') {
       return navigateTo('/platform/tenants')
+    }
+    if (isTenantAdminExcludedRole(role)) {
+      if (isAdminAccessDenied) return
+      return navigateTo('/admin/access-denied')
+    }
+    if (isAdminAccessDenied) {
+      return navigateTo('/admin')
     }
   }
 })

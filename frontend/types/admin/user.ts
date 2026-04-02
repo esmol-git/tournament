@@ -2,7 +2,7 @@
 export interface UserRow {
   id: string
   username: string
-  email: string
+  email: string | null
   name: string
   lastName: string
   role: string

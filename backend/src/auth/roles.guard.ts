@@ -31,7 +31,10 @@ export class RolesGuard implements CanActivate {
     }
 
     if (!requiredRoles.includes(req.user.role)) {
-      throw new ForbiddenException('Insufficient role');
+      throw new ForbiddenException({
+        message: 'Insufficient role',
+        code: 'INSUFFICIENT_ROLE',
+      });
     }
 
     return true;

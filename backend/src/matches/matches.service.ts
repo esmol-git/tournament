@@ -15,6 +15,8 @@ import {
   TournamentFormat,
   UserRole,
 } from '@prisma/client';
+import { assertTournamentStaffCanManage } from '../auth/tournament-staff-access.util';
+import { JwtPayload } from '../auth/jwt.strategy';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
@@ -67,6 +69,14 @@ export class MatchesService {
     private readonly tournamentsService: TournamentsService,
   ) {}
 
+  private async syncTournamentLifecycleAfterMatches(tournamentId: string) {
+    try {
+      await this.tournamentsService.syncTournamentLifecycleStatus(tournamentId);
+    } catch {
+      /* не блокируем сохранение матча */
+    }
+  }
+
   private assertMatchMutable(status: MatchStatus) {
     if (MUTATION_LOCKED_STATUSES.has(status)) {
       throw new BadRequestException(
@@ -75,9 +85,13 @@ export class MatchesService {
     }
   }
 
-  /** Tenant admin may edit protocol for locked matches as an emergency override. */
+  /** Org admin, tournament admin, and super admin may correct protocol on finished matches. */
   private canOverrideLockedProtocol(actorRole: UserRole) {
-    return actorRole === UserRole.TENANT_ADMIN;
+    return (
+      actorRole === UserRole.TENANT_ADMIN ||
+      actorRole === UserRole.TOURNAMENT_ADMIN ||
+      actorRole === UserRole.SUPER_ADMIN
+    );
   }
 
   private async validateScheduleReason(
@@ -439,6 +453,7 @@ export class MatchesService {
     });
 
     await this.recomputeTable(tournamentId);
+    await this.syncTournamentLifecycleAfterMatches(tournamentId);
     return created;
   }
 
@@ -475,6 +490,7 @@ export class MatchesService {
     });
 
     await this.recomputeTable(tournamentId);
+    await this.syncTournamentLifecycleAfterMatches(tournamentId);
     return { success: true };
   }
 
@@ -541,16 +557,14 @@ export class MatchesService {
       data.startTime !== undefined &&
       data.startTime.getTime() !== match.startTime.getTime();
     if (startTimeChanged) {
-      if (!data.scheduleChangeReasonId) {
-        throw new BadRequestException(
-          'При переносе матча укажите причину из справочника',
+      const postponeReasonId = data.scheduleChangeReasonId?.trim();
+      if (postponeReasonId) {
+        await this.validateScheduleReason(
+          match.tenantId,
+          postponeReasonId,
+          'POSTPONE',
         );
       }
-      await this.validateScheduleReason(
-        match.tenantId,
-        data.scheduleChangeReasonId,
-        'POSTPONE',
-      );
     }
 
     const schedulePatch: {
@@ -623,6 +637,7 @@ export class MatchesService {
           data: patch,
         });
         await this.recomputeTable(tournamentId);
+        await this.syncTournamentLifecycleAfterMatches(tournamentId);
         return updated;
       }
       if (data.startTime === undefined) {
@@ -653,6 +668,7 @@ export class MatchesService {
     });
 
     await this.recomputeTable(tournamentId);
+    await this.syncTournamentLifecycleAfterMatches(tournamentId);
     return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
   }
 
@@ -732,6 +748,8 @@ export class MatchesService {
         // Ignore: final/third may not exist yet, or semifinal results aren't complete.
       }
     }
+
+    await this.syncTournamentLifecycleAfterMatches(tournamentId);
     return updated;
   }
 
@@ -924,6 +942,7 @@ export class MatchesService {
   async listTenantMatches(
     tenantId: string,
     actorRole: UserRole,
+    actorUserId: string,
     query: ListTenantMatchesQueryDto,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -963,9 +982,24 @@ export class MatchesService {
       if (Object.keys(st).length) where.startTime = st;
     }
 
+    if (actorRole === UserRole.TOURNAMENT_ADMIN) {
+      where.tournament = {
+        is: {
+          tenantId,
+          createdByUserId: actorUserId,
+        },
+      };
+    }
+
     const include = {
       tournament: {
-        select: { id: true, name: true, slug: true, format: true },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          format: true,
+          calendarColor: true,
+        },
       },
       homeTeam: { select: { id: true, name: true } },
       awayTeam: { select: { id: true, name: true } },
@@ -1095,16 +1129,14 @@ export class MatchesService {
       data.startTime !== undefined &&
       data.startTime.getTime() !== match.startTime.getTime();
     if (startTimeChanged) {
-      if (!data.scheduleChangeReasonId) {
-        throw new BadRequestException(
-          'При переносе матча укажите причину из справочника',
+      const postponeReasonId = data.scheduleChangeReasonId?.trim();
+      if (postponeReasonId) {
+        await this.validateScheduleReason(
+          tenantId,
+          postponeReasonId,
+          'POSTPONE',
         );
       }
-      await this.validateScheduleReason(
-        tenantId,
-        data.scheduleChangeReasonId,
-        'POSTPONE',
-      );
     }
 
     const schedulePatch: {
@@ -1212,10 +1244,10 @@ export class MatchesService {
   async attachMatchToTournament(
     tenantId: string,
     matchId: string,
-    actorRole: UserRole,
+    user: JwtPayload,
     tournamentId: string,
   ) {
-    if (!PROTOCOL_ROLES.includes(actorRole)) {
+    if (!PROTOCOL_ROLES.includes(user.role)) {
       throw new ForbiddenException('Insufficient role');
     }
 
@@ -1238,6 +1270,8 @@ export class MatchesService {
       select: { id: true, format: true, groupCount: true },
     });
     if (!tournament) throw new NotFoundException('Tournament not found');
+
+    await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
 
     if (tournament.format !== TournamentFormat.MANUAL) {
       throw new BadRequestException(
@@ -1320,9 +1354,9 @@ export class MatchesService {
   async detachMatchFromTournament(
     tenantId: string,
     matchId: string,
-    actorRole: UserRole,
+    user: JwtPayload,
   ) {
-    if (!PROTOCOL_ROLES.includes(actorRole)) {
+    if (!PROTOCOL_ROLES.includes(user.role)) {
       throw new ForbiddenException('Insufficient role');
     }
 
@@ -1341,6 +1375,8 @@ export class MatchesService {
       select: { id: true, format: true },
     });
     if (!tournament) throw new NotFoundException('Tournament not found');
+
+    await assertTournamentStaffCanManage(this.prisma, tournament.id, user);
 
     if (tournament.format !== TournamentFormat.MANUAL) {
       throw new BadRequestException(

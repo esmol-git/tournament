@@ -15,16 +15,24 @@ import { JwtPayload } from '../../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../../auth/subscription-plan-feature.guard';
 import { CreateRefereeDto } from './dto/create-referee.dto';
 import { UpdateRefereeDto } from './dto/update-referee.dto';
 import { RefereesService } from './referees.service';
 
+@RequireSubscriptionPlanFeature('reference_directory_standard')
 @ApiTags('referees')
 @UseGuards(
   JwtAuthGuard,
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class RefereesController {

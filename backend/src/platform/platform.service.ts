@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
+import { PatchTenantDto } from './dto/patch-tenant.dto';
 import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
 import { Prisma, UserRole } from '@prisma/client';
 
@@ -90,6 +91,40 @@ export class PlatformService {
 
     if (Object.keys(data).length === 0) {
       throw new BadRequestException('No subscription fields to update');
+    }
+
+    const tenant = await this.prisma.tenant.update({
+      where: { id },
+      data,
+    });
+
+    return {
+      id: tenant.id,
+      name: tenant.name,
+      slug: tenant.slug,
+      blocked: tenant.blocked,
+      createdAt: tenant.createdAt,
+      subscriptionPlan: tenant.subscriptionPlan,
+      subscriptionStatus: tenant.subscriptionStatus,
+      subscriptionEndsAt: tenant.subscriptionEndsAt,
+    };
+  }
+
+  async updateTenant(id: string, dto: PatchTenantDto) {
+    const exists = await this.prisma.tenant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    const data: Prisma.TenantUpdateInput = {};
+    if (dto.name !== undefined) {
+      data.name = dto.name;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('No tenant fields to update');
     }
 
     const tenant = await this.prisma.tenant.update({

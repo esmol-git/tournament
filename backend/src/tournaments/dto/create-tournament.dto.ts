@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -67,6 +68,16 @@ export class CreateTournamentDto {
   logoUrl?: string;
 
   @ApiProperty({
+    required: false,
+    example: '#6366f1',
+    description: 'Цвет матчей турнира в админ-календаре (#RRGGBB)',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^#[0-9A-Fa-f]{6}$/)
+  calendarColor?: string;
+
+  @ApiProperty({
     enum: TournamentFormat,
     example: TournamentFormat.SINGLE_GROUP,
   })
@@ -104,6 +115,14 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsEnum(TournamentStatus)
   status?: TournamentStatus;
+
+  @ApiProperty({
+    required: false,
+    description: 'Сразу показывать турнир на публичном сайте.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  published?: boolean;
 
   @ApiProperty({ required: false, example: '2026-03-18' })
   @IsOptional()

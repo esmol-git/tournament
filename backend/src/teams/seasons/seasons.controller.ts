@@ -15,16 +15,24 @@ import { JwtPayload } from '../../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../../auth/subscription-plan-feature.guard';
 import { CreateSeasonDto } from './dto/create-season.dto';
 import { UpdateSeasonDto } from './dto/update-season.dto';
 import { SeasonsService } from './seasons.service';
 
+@RequireSubscriptionPlanFeature('reference_directory_basic')
 @ApiTags('seasons')
 @UseGuards(
   JwtAuthGuard,
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class SeasonsController {

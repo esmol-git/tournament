@@ -5,7 +5,6 @@
       "brand_subtitle": "Organizer panel",
       "collapse": "Collapse sidebar",
       "expand": "Expand sidebar",
-      "to_site": "Open site",
       "logout": "Log out",
       "mobile_menu": "Menu",
       "open_menu": "Open menu",
@@ -14,6 +13,13 @@
     "layout": {
       "header_title": "Admin",
       "header_subtitle": "Organizer console"
+    },
+    "access_denied": {
+      "title": "Organizer panel unavailable",
+      "lead": "Accounts with the «User» or «Referee» role cannot use the admin panel — use the organization’s public site instead.",
+      "hint": "Ask your organization administrator to change your role if you need access.",
+      "home": "Home",
+      "logout": "Log out"
     },
     "nav": {
       "dashboard": "Dashboard",
@@ -44,7 +50,16 @@
       "matches": "Matches",
       "calendar": "Calendar",
       "profile": "My profile",
-      "social_links": "Social links"
+      "social_links": "Social links",
+      "subscription_locked_tooltip": "Not included in your plan",
+      "role_locked_tooltip": "Organization administrator only"
+    },
+    "feature_unavailable": {
+      "tenant_admin": {
+        "title": "Organization administrator required",
+        "lead": "Only organization administrators can open this section (not tournament admins or moderators).",
+        "hint": "Ask your organization administrator if you need access."
+      }
     },
     "news": {
       "title": "News",
@@ -193,6 +208,9 @@
       "save_error": "Could not save"
     },
     "settings": {
+      "tab_admin": "Admin",
+      "tab_public": "Public site",
+      "public_tab_locked_hint": "Public branding editor is available from the Premier plan (not included in Free and Amateur).",
       "title": "Settings",
       "loading": "Loading settings…",
       "intro": "Theme, language, and accent apply immediately and are stored in this browser. Use Save to sync them to your account on the server.",
@@ -216,6 +234,44 @@
       "accent": {
         "title": "Accent color",
         "hint": "Primary color for buttons and highlights."
+      },
+      "subscription": {
+        "title": "Organization plan",
+        "hint": "Billing is not wired yet: pick a plan for testing. Later this will come from billing; section access can still be limited by roles.",
+        "select_label": "Plan",
+        "save": "Save plan",
+        "saved": "Plan updated",
+        "save_error": "Could not save plan",
+        "forbidden": "Only the organization administrator can change the plan.",
+        "features_title": "Included in the current plan",
+        "features": {
+          "core_tournaments": "Tournaments, calendar, table, squads",
+          "public_site_basic": "Public site (basic pages)",
+          "public_custom_branding": "Public site: branding, SEO, social links",
+          "news_and_media": "News, photos and video",
+          "advanced_playoff_formats": "Advanced formats and large playoff brackets",
+          "broadcasts_and_integrations": "Broadcasts and integrations (premium)",
+          "org_wide_calendar": "Organization-wide calendar",
+          "reference_directory_basic": "Directories: seasons, age groups, team categories",
+          "reference_directory_standard": "Directories: regions, stadiums, referees, competitions",
+          "reference_directory_advanced": "Directories: documents, protocol, reschedule reasons",
+          "tournament_limit_1": "Tournament limit: 1",
+          "tournament_limit_3": "Tournament limit: up to 3",
+          "tournament_limit_10": "Tournament limit: up to 10",
+          "tournament_limit_50": "Tournament limit: up to 50",
+          "tournament_limit_unlimited": "Unlimited tournaments",
+          "tournament_automation": "Auto calendar / playoff generation, templates",
+          "data_import_export": "Bulk player import and data exchange",
+          "public_site_admin_settings": "Public site editor in admin (branding, SEO)"
+        },
+        "tournament_limit_reached_hint": "You have reached the tournament limit for your current plan ({max}). Upgrade to create more.",
+        "feature_unavailable": {
+          "title": "This section is unavailable",
+          "lead": "This capability is not included in your organization’s plan.",
+          "hint": "Upgrade the plan in settings or contact the platform administrator.",
+          "back": "Back to dashboard",
+          "open_settings": "Settings and plan"
+        }
       },
       "future": {
         "title": "Coming later",
@@ -244,7 +300,33 @@
       "invalid_time_hhmm": "Time must be in HH:mm format.",
       "schedule_overflow": "Too many rounds for one day with current settings.",
       "one_day_conflict": "For one-day mode, schedule must fit into a single day.",
-      "min_teams_selected": "At least {min} teams required. Selected: {selected}."
+      "min_teams_selected": "At least {min} teams required. Selected: {selected}.",
+      "playoff_qualifiers_exceed_min_teams": "Playoff needs {groups} × {k} = {needed} teams, but the tournament is set to {minTeams}. Increase team count or lower qualifiers per group."
+    },
+    "tournament_form": {
+      "status_auto_hint": "Draft — no matches yet. Becomes Active when matches exist (generated schedule or manual). Completed — when every match is played, canceled, or closed in the protocol. Archive is only set manually from the list.",
+      "manual_only_tariff": "Your plan does not include automatic calendar generation: only the manual schedule format is available. Create matches on the Matches tab (or from the tournament calendar).",
+      "legacy_format_need_manual_or_plan": "This format expects auto-generation, which is not on your plan. Switch to manual-only schedule or upgrade to Premier to use generation again.",
+      "calendar_color_label": "Calendar color",
+      "calendar_color_hint": "This tournament’s matches use this color on the organization calendar. You can still override a single match color from the event dialog.",
+      "calendar_color_reset": "Use default"
+    },
+    "tournament_lifecycle": {
+      "draft": "Draft",
+      "active": "Active",
+      "completed": "Completed",
+      "archived": "Archived"
+    },
+    "tournaments_list": {
+      "title": "Tournaments",
+      "subtitle": "Create tournaments, set up the calendar, and manage teams.",
+      "refresh": "Refresh",
+      "create": "Create",
+      "empty_title": "No tournaments yet",
+      "empty_lead": "Create your first tournament: pick a format, add teams and a schedule — standings, calendar, and public pages stay in one place.",
+      "empty_cta": "Create tournament",
+      "filtered_empty": "No tournaments match your filters.",
+      "loading_more": "Loading more tournaments…"
     },
     "tournament_page": {
       "reorder_saved_summary": "Match order updated",
@@ -316,6 +398,23 @@
       "competition_type_label": "Competition type",
       "age_group_label": "Age group",
       "refresh_table": "Refresh table",
+      "public_site_link_label": "Public link",
+      "published_toggle_label": "Published on site",
+      "published_toggle_hint": "When off, the tournament is hidden from the public catalog and direct links return “not found” for visitors.",
+      "published_unpublished_notice": "Turn publishing on so visitors can open this tournament via the link without signing in.",
+      "published_save_error": "Could not save publishing setting",
+      "published_draft_blocked_hint": "While the tournament is a draft, it cannot be published. Once matches exist in the schedule, the status becomes Active and you can turn publishing on.",
+      "reference_fields_plan_basic_locked": "Season and age group are not available on your plan (season and age-group directories require the Amateur plan or higher).",
+      "reference_fields_plan_standard_locked": "Competition type, stadium, and referees are not available on your plan (stadiums, referees, and competition types require the Premier plan or higher).",
+      "list_card_publish_aria": "Publish on public site",
+      "list_card_unpublish_aria": "Unpublish from public site",
+      "list_card_publish_draft_tooltip": "Draft tournaments cannot be published until the schedule exists (status becomes Active).",
+      "public_site_link_hint": "Public standings page with this tournament selected. Copy and share with participants.",
+      "copy_public_link": "Copy",
+      "public_link_copied": "Link copied",
+      "public_link_copy_error": "Could not copy",
+      "open_public_link": "Open",
+      "public_link_need_slug": "Cannot build the link: organization slug is unknown. Open the admin on a tenant subdomain (e.g. org.example.com), restart the backend so tournament responses include tenant slug, or set NUXT_PUBLIC_DEFAULT_TENANT_SLUG for local dev.",
       "tab_calendar": "Calendar",
       "tab_matches": "Matches",
       "tab_table": "Table",
@@ -335,6 +434,13 @@
       "team": "Team",
       "all_teams": "All teams",
       "no_matches_with_filters": "No matches yet (with current filters).",
+      "calendar_empty_title": "No schedule yet",
+      "calendar_empty_lead_generate": "Generate the calendar from the tournament settings — rounds and matches will appear here for protocol entry.",
+      "calendar_empty_lead_manual": "Add the first match manually. Filters and list views show up once there are matches on the schedule.",
+      "calendar_empty_manual_need_teams": "You need at least two teams in the tournament to add a match.",
+      "calendar_automation_plan_notice": "Automatic calendar and playoff generation is not included on your plan (Premier or higher required). Upgrade the organization plan in settings, or use the manual-only schedule format.",
+      "calendar_empty_go_matches": "Open matches list",
+      "calendar_empty_legacy_format_hint": "This format expects automatic calendar generation, which your plan does not include. Edit the tournament and switch to manual-only schedule, or upgrade the organization plan.",
       "drag_to_reorder": "Drag row to reorder",
       "saving": "Saving…",
       "drag": "Drag",

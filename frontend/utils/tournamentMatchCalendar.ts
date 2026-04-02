@@ -7,6 +7,7 @@ import type {
 } from '~/types/tournament-admin'
 
 type TournamentGroup = TournamentDetails['groups'][number]
+type PlayoffTitleOptions = { totalPlayoffTeams?: number }
 
 function playoffRoundDisplayRank(round?: MatchRow['playoffRound']) {
   switch (round) {
@@ -25,40 +26,100 @@ function playoffRoundDisplayRank(round?: MatchRow['playoffRound']) {
   }
 }
 
+function resolvePlayoffRoundTitle(
+  visibleCount: number,
+  opts: {
+    playoffRound?: MatchRow['playoffRound']
+    roundNumber?: number
+    minPlayoffRoundNumber: number | null
+    totalPlayoffTeams?: number
+  },
+): string {
+  if (opts.playoffRound === 'FINAL') return 'Плей-офф · Финал'
+  if (opts.playoffRound === 'THIRD_PLACE') return 'Плей-офф · За 3 место'
+
+  const totalTeams = Number(opts.totalPlayoffTeams ?? 0)
+  if (totalTeams >= 2 && Number.isFinite(totalTeams) && typeof opts.roundNumber === 'number') {
+    const baseRound = opts.minPlayoffRoundNumber ?? opts.roundNumber
+    const roundOffset = Math.max(0, opts.roundNumber - baseRound)
+    const expectedMatches = Math.floor(totalTeams / Math.pow(2, roundOffset + 1))
+    if (expectedMatches === 1) return 'Плей-офф · Финал'
+    if (expectedMatches === 2) return 'Плей-офф · Полуфинал'
+    if (expectedMatches > 2) return `Плей-офф · 1/${expectedMatches} финала`
+  }
+
+  if (visibleCount === 2) return 'Плей-офф · Полуфинал'
+  if (visibleCount > 2) return `Плей-офф · 1/${visibleCount} финала`
+  return `Плей-офф · Раунд ${opts.roundNumber || 1}`
+}
+
 /** Группировка матчей по турам для режима «как тур» в календаре. */
-export function buildTourSectionsFromMatches(matches: MatchRow[]): TourSection[] {
+export function buildTourSectionsFromMatches(
+  matches: MatchRow[],
+  options?: PlayoffTitleOptions,
+): TourSection[] {
   const groups = new Map<string, MatchRow[]>()
   for (const m of matches) {
     const stage = m.stage ?? 'GROUP'
     const rn = m.roundNumber ?? 0
-    const key = `${stage}:${rn}`
+    const splitFinalRound =
+      stage === 'PLAYOFF' &&
+      (m.playoffRound === 'FINAL' || m.playoffRound === 'THIRD_PLACE')
+    const key = splitFinalRound ? `${stage}:${rn}:${m.playoffRound}` : `${stage}:${rn}`
     const arr = groups.get(key) ?? []
     arr.push(m)
     groups.set(key, arr)
   }
 
   const sections: TourSection[] = []
+  const minPlayoffRoundNumber = matches
+    .filter((m) => m.stage === 'PLAYOFF' && typeof m.roundNumber === 'number')
+    .reduce<number | null>((min, m) => {
+      const rn = Number(m.roundNumber)
+      if (!Number.isFinite(rn)) return min
+      if (min === null) return rn
+      return Math.min(min, rn)
+    }, null)
   for (const [key, ms] of groups.entries()) {
-    const [stage, rnStr] = key.split(':')
+    const [stage, rnStr, keyPlayoffRound] = key.split(':')
     const rn = Number(rnStr) || 0
 
-    const times = ms
-      .map((m) => new Date(m.startTime).getTime())
-      .filter((x) => Number.isFinite(x))
-    const minTime = times.length ? Math.min(...times) : null
-    const dateLabel = minTime ? new Date(minTime).toLocaleDateString() : 'Дата не задана'
+    const dateKeys = Array.from(
+      new Set(
+        ms
+          .map((m) => {
+            const d = new Date(m.startTime)
+            if (Number.isNaN(d.getTime())) return ''
+            return d.toISOString().slice(0, 10)
+          })
+          .filter(Boolean),
+      ),
+    ).sort()
+    let dateLabel = 'Дата не задана'
+    if (dateKeys.length === 1) {
+      dateLabel = new Date(`${dateKeys[0]}T00:00:00`).toLocaleDateString()
+    } else if (dateKeys.length > 1) {
+      const from = new Date(`${dateKeys[0]}T00:00:00`).toLocaleDateString()
+      const to = new Date(`${dateKeys[dateKeys.length - 1]}T00:00:00`).toLocaleDateString()
+      dateLabel = `${from} - ${to}`
+    }
 
     let title = ''
     if (stage === 'GROUP') {
       title = `Тур ${rn || 1}`
     } else if (stage === 'PLAYOFF') {
-      if (ms.some((m) => m.playoffRound === 'FINAL')) title = 'Плей-офф · Финал'
-      else if (ms.some((m) => m.playoffRound === 'THIRD_PLACE')) title = 'Плей-офф · За 3 место'
+      const hasFinal = ms.some((m) => m.playoffRound === 'FINAL')
+      const hasThird = ms.some((m) => m.playoffRound === 'THIRD_PLACE')
+      if (hasFinal && hasThird) title = 'Плей-офф · Финал и за 3 место'
+      else if (hasFinal) title = 'Плей-офф · Финал'
+      else if (hasThird) title = 'Плей-офф · За 3 место'
       else {
-        const matchesCount = ms.length
-        if (matchesCount === 2) title = 'Плей-офф · Полуфинал'
-        else if (matchesCount > 2) title = `Плей-офф · 1/${matchesCount} финала`
-        else title = `Плей-офф · Раунд ${rn || 1}`
+        title = resolvePlayoffRoundTitle(ms.length, {
+          playoffRound: keyPlayoffRound as MatchRow['playoffRound'],
+          roundNumber: rn || 1,
+          minPlayoffRoundNumber,
+          totalPlayoffTeams: options?.totalPlayoffTeams,
+        })
       }
     } else {
       title = `Тур ${rn || 1}`
@@ -121,6 +182,7 @@ export function getDisplayedRoundTitle(
 export function buildCalendarRoundsFromMatches(
   items: MatchRow[],
   groups: TournamentGroup[],
+  options?: PlayoffTitleOptions,
 ): CalendarRound[] {
   const keyFor = (m: MatchRow) => {
     const d = new Date(m.startTime)
@@ -150,6 +212,15 @@ export function buildCalendarRoundsFromMatches(
     }
   }
 
+  const minPlayoffRoundNumber = items
+    .filter((m) => m.stage === 'PLAYOFF' && typeof m.roundNumber === 'number')
+    .reduce<number | null>((min, m) => {
+      const rn = Number(m.roundNumber)
+      if (!Number.isFinite(rn)) return min
+      if (min === null) return rn
+      return Math.min(min, rn)
+    }, null)
+
   const resolveTitle = (bucket: string) => {
     const [stage, rnStr, groupId, playoffRound] = bucket.split(':')
     const rn = Number(rnStr) || 0
@@ -162,9 +233,12 @@ export function buildCalendarRoundsFromMatches(
       if (playoffRound === 'FINAL') return 'Плей-офф · Финал'
       if (playoffRound === 'THIRD_PLACE') return 'Плей-офф · За 3 место'
       const matchesCount = playoffMatchesCountByRoundNumber.get(rn) ?? 0
-      if (matchesCount === 2) return 'Плей-офф · Полуфинал'
-      if (matchesCount > 2) return `Плей-офф · 1/${matchesCount} финала`
-      return `Плей-офф · Раунд ${rn || 1}`
+      return resolvePlayoffRoundTitle(matchesCount, {
+        playoffRound: playoffRound as MatchRow['playoffRound'],
+        roundNumber: rn || 1,
+        minPlayoffRoundNumber,
+        totalPlayoffTeams: options?.totalPlayoffTeams,
+      })
     }
     return `Тур ${rn || 1}`
   }

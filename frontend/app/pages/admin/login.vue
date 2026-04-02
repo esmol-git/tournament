@@ -2,8 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { helpers, minLength, required } from '@vuelidate/validators'
+import { applyAdminLocale, syncThemeAndAccentFromStore } from '~/composables/useAdminAppearance'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
+import { useAdminSettingsStore } from '~/stores/adminSettings'
 import { useTenantStore } from '~/stores/tenant'
 import { getApiErrorMessage } from '~/utils/apiError'
 
@@ -13,6 +15,7 @@ definePageMeta({
 
 const router = useRouter()
 const tenantStore = useTenantStore()
+const adminSettingsStore = useAdminSettingsStore()
 const { apiUrl } = useApiUrl()
 const { clearSession, setSession } = useAuth()
 const { t } = useI18n()
@@ -258,13 +261,40 @@ const submit = async () => {
       }
     }
 
-    const res = await $fetch<{ accessToken: string; refreshToken: string; user: any }>(apiUrl(endpoint), {
+    const res = await $fetch<{
+      accessToken: string
+      refreshToken: string
+      user: Record<string, unknown>
+      tenant?: {
+        subscriptionPlan?: string
+        subscriptionStatus?: string
+        subscriptionEndsAt?: string | null
+      }
+    }>(apiUrl(endpoint), {
       method: 'POST',
       body,
       headers: { 'x-original-host': window.location.host },
     })
 
-    setSession(res.accessToken, res.refreshToken, res.user)
+    const userForSession = { ...res.user }
+    if (
+      !userForSession.tenantSubscription &&
+      res.tenant &&
+      typeof res.tenant === 'object'
+    ) {
+      const endsRaw = res.tenant.subscriptionEndsAt
+      const endsAt = endsRaw ? new Date(endsRaw) : null
+      const active =
+        !endsAt || Number.isNaN(endsAt.getTime()) ? true : endsAt.getTime() > Date.now()
+      userForSession.tenantSubscription = {
+        plan: res.tenant.subscriptionPlan,
+        status: res.tenant.subscriptionStatus,
+        endsAt: endsRaw ?? null,
+        active,
+      }
+    }
+
+    setSession(res.accessToken, res.refreshToken, userForSession)
     if (mode.value === 'register') {
       const tenantSlug = (res as any)?.tenant?.slug
       if (typeof tenantSlug === 'string' && tenantSlug.trim()) {
@@ -302,12 +332,27 @@ onMounted(async () => {
   tenantResolveReady.value = false
   try {
     // Бэкенд определяет tenant из Host/subdomain и проверяет, что tenant реально существует.
-    const r = await $fetch<{ tenantSlug: string | null; blocked: boolean }>(apiUrl('/auth/tenant/resolve'), {
+    const r = await $fetch<{
+      tenantSlug: string | null
+      blocked: boolean
+      uiSettings?: { themeMode: string; locale: string; accent: string }
+    }>(apiUrl('/auth/tenant/resolve'), {
       headers: { 'x-original-host': window.location.host },
     })
     resolvedTenantFromUrl.value = r
     if (r.tenantSlug) {
       tenantStore.setTenant(r.tenantSlug)
+    }
+    if (r.uiSettings) {
+      adminSettingsStore.applyFromTenantResolvePayload(r.uiSettings)
+      syncThemeAndAccentFromStore()
+      const nuxtApp = useNuxtApp()
+      const { locale, setLocale } = useI18n()
+      const code = adminSettingsStore.locale
+      if (locale.value !== code) {
+        setLocale(code)
+      }
+      applyAdminLocale(code, nuxtApp)
     }
   } catch {
     // Если запрос не прошёл (например, недоступен API), оставляем fallback на detection по hostname/tenant store.
@@ -332,16 +377,20 @@ onMounted(async () => {
 
     <div class="flex flex-col gap-4">
       <div v-if="mode === 'register'" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <FloatLabel variant="on">
-          <InputText id="firstName" v-model="firstName" class="w-full" :invalid="showFirstNameError" />
-          <label for="firstName">Имя</label>
-        </FloatLabel>
-        <p v-if="showFirstNameError" class="-mt-2 text-[11px] leading-3 text-red-500">{{ authErrors.firstName }}</p>
-        <FloatLabel variant="on">
-          <InputText id="lastName" v-model="lastName" class="w-full" :invalid="showLastNameError" />
-          <label for="lastName">Фамилия</label>
-        </FloatLabel>
-        <p v-if="showLastNameError" class="-mt-2 text-[11px] leading-3 text-red-500">{{ authErrors.lastName }}</p>
+        <div class="flex min-w-0 flex-col gap-1">
+          <FloatLabel variant="on">
+            <InputText id="firstName" v-model="firstName" class="w-full" :invalid="showFirstNameError" />
+            <label for="firstName">Имя</label>
+          </FloatLabel>
+          <p v-if="showFirstNameError" class="text-[11px] leading-3 text-red-500">{{ authErrors.firstName }}</p>
+        </div>
+        <div class="flex min-w-0 flex-col gap-1">
+          <FloatLabel variant="on">
+            <InputText id="lastName" v-model="lastName" class="w-full" :invalid="showLastNameError" />
+            <label for="lastName">Фамилия</label>
+          </FloatLabel>
+          <p v-if="showLastNameError" class="text-[11px] leading-3 text-red-500">{{ authErrors.lastName }}</p>
+        </div>
       </div>
 
       <div v-if="mode === 'register'">
@@ -396,7 +445,11 @@ onMounted(async () => {
         Обычных пользователей внутри организации создает администратор после входа.
       </p>
 
-      <p v-if="error" class="text-sm text-danger-500">
+      <p
+        v-if="error"
+        role="alert"
+        class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
+      >
         {{ error }}
       </p>
 

@@ -16,7 +16,8 @@ const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantCont
 const tenant = tenantSlug
 const { fetchTable, fetchTournamentDetail } = usePublicTournamentFetch()
 
-const loading = ref(false)
+/** Старт с true при наличии турнира — иначе один кадр «Недостаточно команд» до начала load(). */
+const loading = ref(!!props.tournamentId)
 const errorText = ref('')
 
 const tableRows = ref<TableRow[]>([])
@@ -60,15 +61,14 @@ function handleTeamLogoError(event: Event) {
   target.src = TEAM_PLACEHOLDER_SRC
 }
 
-const cellTextByKey = computed(() => {
-  const grid: Record<string, string> = {}
+const cellLinesByKey = computed(() => {
+  const grid: Record<string, string[]> = {}
   const played = groupMatches.value.filter((m) => m.homeScore != null && m.awayScore != null)
 
   const push = (rowId: string, colId: string, text: string) => {
     const key = `${rowId}|${colId}`
-    const cur = grid[key]
-    if (!cur) grid[key] = text
-    else grid[key] = `${cur} / ${text}`
+    if (!grid[key]) grid[key] = [text]
+    else grid[key].push(text)
   }
 
   for (const m of played) {
@@ -90,7 +90,10 @@ const load = async () => {
   tableRows.value = []
   matches.value = []
 
-  if (!props.tournamentId) return
+  if (!props.tournamentId) {
+    loading.value = false
+    return
+  }
   await ensureTenantResolved()
   if (tenantNotFound.value) {
     errorText.value = 'Тенант не найден. Проверьте ссылку.'
@@ -122,12 +125,15 @@ watch(
 </script>
 
 <template>
-  <div class="rounded-2xl border border-surface-200 bg-surface-0 p-4">
+  <div class="w-full max-w-full overflow-hidden rounded-2xl border border-surface-200 bg-surface-0 p-4">
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="text-sm font-semibold text-surface-900">Шахматка</div>
         <div class="text-xs text-muted-color mt-1">
           Счёт между командами
+        </div>
+        <div class="text-[11px] text-[#4f6b8c] mt-1">
+          В ячейке: 1-я строка — 1-й круг, 2-я строка — 2-й круг
         </div>
       </div>
     </div>
@@ -136,8 +142,8 @@ watch(
       {{ errorText }}
     </div>
 
-    <div v-else-if="loading" class="mt-4 overflow-x-auto">
-      <table class="min-w-full text-xs border-separate border-spacing-0">
+    <div v-else-if="loading" class="mt-4 max-w-full overflow-x-auto">
+      <table class="chessboard-table text-xs border-separate border-spacing-0">
         <thead>
           <tr>
             <th class="sticky left-0 z-10 border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-left">
@@ -177,25 +183,25 @@ watch(
       Недостаточно команд для построения шахматки.
     </div>
 
-    <div v-else class="mt-4 overflow-x-auto">
+    <div v-else class="mt-4 max-w-full overflow-x-auto">
       <div
         v-if="playedMatchesCount === 0"
         class="mb-3 rounded-lg border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs text-[#4f6b8c]"
       >
         Матчей с зафиксированным счетом пока нет. Таблица будет заполняться по мере игр.
       </div>
-      <table class="min-w-full text-xs border-separate border-spacing-0">
+      <table class="chessboard-table text-xs border-separate border-spacing-0">
         <thead>
           <tr>
             <th
-              class="sticky left-0 z-10 border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-left font-medium text-[#123c67]"
+              class="chess-head chess-corner sticky left-0 z-20 border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-left font-medium text-[#123c67]"
             >
               Команда
             </th>
             <th
               v-for="t in teamsInOrder"
               :key="t.id"
-              class="whitespace-nowrap border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center font-medium text-[#123c67]"
+              class="chess-head whitespace-nowrap border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center font-medium text-[#123c67]"
             >
               {{ t.position }}
             </th>
@@ -204,7 +210,7 @@ watch(
         <tbody>
           <tr v-for="row in teamsInOrder" :key="row.id">
             <th
-              class="sticky left-0 z-10 whitespace-nowrap border border-[#e1e8f2] bg-white px-2 py-2 text-left font-medium text-[#123c67]"
+              class="chess-sticky-left sticky left-0 z-10 whitespace-nowrap border border-[#e1e8f2] bg-white px-2 py-2 text-left font-medium text-[#123c67]"
             >
               <div class="flex items-center gap-2">
                 <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
@@ -222,7 +228,7 @@ watch(
             <td
               v-for="col in teamsInOrder"
               :key="col.id"
-              class="whitespace-nowrap border border-[#e1e8f2] px-2 py-2 text-center"
+              class="chess-score-cell border border-[#e1e8f2] px-2 py-2 text-center"
               :class="{
                 'bg-[#fff2f7]': row.id === col.id,
                 'bg-[#f9fbff]': row.id !== col.id && col.position % 2 === 0,
@@ -230,9 +236,16 @@ watch(
               }"
             >
               <span v-if="row.id === col.id" class="font-semibold text-[#c80a48]/70">—</span>
-              <span v-else class="font-medium text-[#123c67]">
-                {{ cellTextByKey[`${row.id}|${col.id}`] ?? '—' }}
-              </span>
+              <span v-else-if="!cellLinesByKey[`${row.id}|${col.id}`]?.length" class="font-medium text-[#123c67]">—</span>
+              <div v-else class="score-stack font-medium text-[#123c67]">
+                <span
+                  v-for="(score, idx) in cellLinesByKey[`${row.id}|${col.id}`]"
+                  :key="`${row.id}-${col.id}-${idx}`"
+                  class="score-line"
+                >
+                  {{ score }}
+                </span>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -240,4 +253,43 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+.chessboard-table {
+  width: max-content;
+  min-width: max-content;
+}
+
+.chess-head {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+}
+
+.chess-corner {
+  z-index: 22;
+}
+
+.chess-sticky-left {
+  box-shadow: 6px 0 10px -10px rgba(18, 60, 103, 0.55);
+}
+
+.chess-score-cell {
+  padding: 0.28rem 0.35rem;
+}
+
+.score-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  min-width: 1.9rem;
+  line-height: 1.1;
+}
+
+.score-line {
+  display: block;
+  white-space: nowrap;
+}
+</style>
 

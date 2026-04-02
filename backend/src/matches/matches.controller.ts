@@ -16,6 +16,8 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
+import { TournamentCreatorAccessGuard } from '../auth/tournament-creator-access.guard';
 import { MatchesService } from './matches.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { UpdateProtocolDto } from './dto/update-protocol.dto';
@@ -40,6 +42,7 @@ function assertTenant(req: Request & { user: JwtPayload }, tenantId: string) {
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
 )
 @Controller()
 export class MatchesController {
@@ -69,6 +72,7 @@ export class MatchesController {
     return this.matchesService.listTenantMatches(
       tenantId,
       req.user.role as UserRole,
+      req.user.sub,
       query,
     );
   }
@@ -141,7 +145,7 @@ export class MatchesController {
     return this.matchesService.attachMatchToTournament(
       tenantId,
       matchId,
-      req.user.role as UserRole,
+      req.user,
       dto.tournamentId,
     );
   }
@@ -156,11 +160,12 @@ export class MatchesController {
     return this.matchesService.detachMatchFromTournament(
       tenantId,
       matchId,
-      req.user.role as UserRole,
+      req.user,
     );
   }
 
   @Post('tournaments/:tournamentId/matches')
+  @UseGuards(TournamentCreatorAccessGuard)
   async createMatch(
     @Param('tournamentId') tournamentId: string,
     @Req() req: Request & { user: JwtPayload },
@@ -174,6 +179,7 @@ export class MatchesController {
   }
 
   @Delete('tournaments/:tournamentId/matches/:matchId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async deleteMatch(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,
@@ -187,6 +193,7 @@ export class MatchesController {
   }
 
   @Patch('tournaments/:tournamentId/matches/:matchId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async updateMatch(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,
@@ -210,6 +217,7 @@ export class MatchesController {
   }
 
   @Patch('tournaments/:tournamentId/matches/:matchId/protocol')
+  @UseGuards(TournamentCreatorAccessGuard)
   async updateProtocol(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,

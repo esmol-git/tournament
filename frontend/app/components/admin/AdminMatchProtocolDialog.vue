@@ -277,10 +277,6 @@ const protocolBecomingCanceled = computed(() => {
   )
 })
 const protocolFormErrors = computed(() => ({
-  schedulePostponeReasonId:
-    protocolTimeChanged.value && !protocolForm.schedulePostponeReasonId
-      ? 'Выберите причину переноса.'
-      : '',
   scheduleCancelReasonId:
     protocolBecomingCanceled.value && !protocolForm.scheduleCancelReasonId
       ? 'Выберите причину отмены.'
@@ -310,13 +306,25 @@ const protocolEventErrors = computed(() =>
 )
 
 const hasProtocolEventErrors = computed(() => protocolEventErrors.value.some((x) => !!x))
+const hasResolvedPenaltiesInForm = computed(
+  () =>
+    protocolForm.penaltiesHomeScore !== null &&
+    protocolForm.penaltiesAwayScore !== null &&
+    protocolForm.penaltiesHomeScore !== protocolForm.penaltiesAwayScore,
+)
+const playoffTieNeedsPenalties = computed(
+  () =>
+    isPlayoffMatch.value &&
+    protocolForm.homeScore === protocolForm.awayScore &&
+    !hasResolvedPenaltiesInForm.value,
+)
 const canSaveProtocol = computed(
   () =>
-    !protocolFormErrors.value.schedulePostponeReasonId &&
     !protocolFormErrors.value.scheduleCancelReasonId &&
     !hasProtocolEventErrors.value &&
     !goalEventsScore.value.hasUnknownGoalSide &&
-    !scoreVsGoalEventsMismatch.value,
+    !scoreVsGoalEventsMismatch.value &&
+    !playoffTieNeedsPenalties.value,
 )
 
 const addEvent = () => {
@@ -490,9 +498,6 @@ const saveProtocol = async () => {
       }
       if (protocolForm.schedulePostponeReasonId) {
         patchBody.scheduleChangeReasonId = protocolForm.schedulePostponeReasonId
-      }
-      if (!protocolForm.schedulePostponeReasonId) {
-        throw new Error('Выберите причину переноса из справочника')
       }
       if (props.standalone) {
         await authFetch(
@@ -781,6 +786,12 @@ const finishProtocol = async () => {
           />
         </div>
       </div>
+      <p
+        v-if="isPlayoffMatch && showExtraTimeFields"
+        class="text-[11px] leading-4 text-muted-color"
+      >
+        Указывайте только голы, забитые в доп. время (например: итог 2:1 и доп. время 1:0).
+      </p>
 
       <div v-if="isPlayoffMatch" class="space-y-2">
         <div class="flex items-center justify-between">
@@ -830,6 +841,19 @@ const finishProtocol = async () => {
           />
         </div>
       </div>
+      <p
+        v-if="isPlayoffMatch && showPenaltyFields"
+        class="text-[11px] leading-4 text-muted-color"
+      >
+        Для серии после 5 ударов обычно итоговая разница остаётся в 1 мяч (например 6:5).
+      </p>
+      <div
+        v-if="isPlayoffMatch && playoffTieNeedsPenalties"
+        class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+      >
+        Для матча плей-офф ничья недопустима без решающей серии пенальти.
+        Укажите счёт серии пенальти с разными значениями.
+      </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
@@ -872,14 +896,7 @@ const finishProtocol = async () => {
             show-clear
             placeholder="Не выбрано"
             class="w-full"
-            :invalid="protocolSubmitAttempted && !!protocolFormErrors.schedulePostponeReasonId"
           />
-          <p
-            v-if="protocolSubmitAttempted && protocolFormErrors.schedulePostponeReasonId"
-            class="mt-0 text-[11px] leading-3 text-red-500"
-          >
-            {{ protocolFormErrors.schedulePostponeReasonId }}
-          </p>
         </div>
       </div>
 

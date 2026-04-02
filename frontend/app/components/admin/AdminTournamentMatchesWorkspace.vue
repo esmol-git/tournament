@@ -409,10 +409,6 @@ const editMatchErrors = computed(() => ({
     !editMatchForm.groupId
       ? 'Для группового этапа выберите группу.'
       : '',
-  scheduleChangeReasonId:
-    editMatchStartChanged.value && !editMatchForm.scheduleChangeReasonId
-      ? 'Выберите причину переноса.'
-      : '',
 }))
 const canSubmitEditMatch = computed(
   () =>
@@ -420,8 +416,7 @@ const canSubmitEditMatch = computed(
     !editMatchErrors.value.homeTeamId &&
     !editMatchErrors.value.awayTeamId &&
     !editMatchErrors.value.distinctTeams &&
-    !editMatchErrors.value.groupId &&
-    !editMatchErrors.value.scheduleChangeReasonId,
+    !editMatchErrors.value.groupId,
 )
 
 const submitEditMatch = async () => {
@@ -433,8 +428,8 @@ const submitEditMatch = async () => {
     const body: Record<string, unknown> = {
       startTime: editMatchForm.startTime.toISOString(),
     }
-    if (editMatchStartChanged.value) {
-      body.scheduleChangeReasonId = editMatchForm.scheduleChangeReasonId
+    if (editMatchStartChanged.value && editMatchForm.scheduleChangeReasonId.trim()) {
+      body.scheduleChangeReasonId = editMatchForm.scheduleChangeReasonId.trim()
     }
     if (isManualFormat.value) {
       body.homeTeamId = editMatchForm.homeTeamId
@@ -946,15 +941,8 @@ defineExpose({
               show-clear
               placeholder="Не выбрано"
               class="w-full"
-              :invalid="editMatchSubmitAttempted && !!editMatchErrors.scheduleChangeReasonId"
               :disabled="editMatchSaving"
             />
-            <p
-              v-if="editMatchSubmitAttempted && editMatchErrors.scheduleChangeReasonId"
-              class="mt-0 text-[11px] leading-3 text-red-500"
-            >
-              {{ editMatchErrors.scheduleChangeReasonId }}
-            </p>
           </div>
         </div>
         <template v-if="isManualFormat">

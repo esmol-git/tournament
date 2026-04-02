@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import {
+  adminNavItemResolvedTo,
   adminNavPathMatches,
+  isAdminNavItemLocked,
   type AdminNavLinkItem,
 } from '~/constants/adminNav'
 
@@ -11,10 +13,20 @@ const props = defineProps<{
   items: AdminNavLinkItem[]
   mini: boolean
   openSectionId: string | null
+  subscriptionPlan: string | null
+  userRole: string | null
 }>()
 
 const { t } = useI18n()
 const label = computed(() => t(props.labelKey))
+
+function itemLocked(item: AdminNavLinkItem): boolean {
+  return isAdminNavItemLocked(props.subscriptionPlan, item, props.userRole)
+}
+
+function itemResolvedTo(item: AdminNavLinkItem) {
+  return adminNavItemResolvedTo(props.subscriptionPlan, props.userRole, item)
+}
 
 const emit = defineEmits<{
   'update:openSectionId': [value: string | null]
@@ -79,10 +91,11 @@ const closePopover = () => {
       <AdminNavLink
         v-for="item in items"
         :key="item.to"
-        :to="item.to"
+        :to="itemResolvedTo(item)"
         :label-key="item.labelKey"
         :icon="item.icon"
         :exact="!!item.exact"
+        :locked="itemLocked(item)"
         class="!py-1.5 text-sm"
       />
     </div>
@@ -111,32 +124,42 @@ const closePopover = () => {
     </Button>
     <Popover ref="popoverRef">
       <div class="flex min-w-[12rem] flex-col gap-0.5 py-1">
-        <NuxtLink
-          v-for="item in items"
-          :key="item.to"
-          :to="item.to"
-          custom
-          v-slot="{ href, navigate }"
-        >
-          <a
-            :href="href"
-            class="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-surface-100 dark:hover:bg-surface-800"
-            :class="
-              adminNavPathMatches(item, route.path)
-                ? 'bg-surface-100 dark:bg-surface-800 font-medium text-primary'
-                : 'text-surface-700 dark:text-surface-200'
-            "
-            @click="
-              (e) => {
-                navigate(e)
-                closePopover()
-              }
-            "
+        <div v-for="item in items" :key="item.to">
+          <span
+            v-if="itemLocked(item)"
+            class="flex cursor-not-allowed items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-color opacity-80"
+            v-tooltip.top="t('admin.nav.subscription_locked_tooltip')"
           >
             <span :class="[item.icon, 'text-xs opacity-80']" aria-hidden="true" />
-            {{ t(item.labelKey) }}
-          </a>
-        </NuxtLink>
+            <span class="min-w-0 flex-1 truncate">{{ t(item.labelKey) }}</span>
+            <span class="pi pi-lock shrink-0 text-[0.7rem] opacity-70" aria-hidden="true" />
+          </span>
+          <NuxtLink
+            v-else
+            :to="itemResolvedTo(item)"
+            custom
+            v-slot="{ href, navigate }"
+          >
+            <a
+              :href="href"
+              class="flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors"
+              :class="
+                adminNavPathMatches(item, route.path)
+                  ? 'bg-surface-100 dark:bg-surface-800 font-medium text-primary'
+                  : 'text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800'
+              "
+              @click="
+                (e) => {
+                  navigate(e)
+                  closePopover()
+                }
+              "
+            >
+              <span :class="[item.icon, 'text-xs opacity-80']" aria-hidden="true" />
+              <span class="min-w-0 flex-1 truncate">{{ t(item.labelKey) }}</span>
+            </a>
+          </NuxtLink>
+        </div>
       </div>
     </Popover>
   </div>

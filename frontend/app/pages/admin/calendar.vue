@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import FullCalendar from '@fullcalendar/vue3'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
-import type { EventInput } from '@fullcalendar/core'
+import type { CalendarApi, EventInput } from '@fullcalendar/core'
 import ruLocale from '@fullcalendar/core/locales/ru'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
@@ -37,6 +37,47 @@ const selectedStatus = ref('')
 const sourceFilter = ref<'all' | 'standalone' | 'tournament'>('all')
 const showLocked = ref(true)
 const slotMinutes = ref<15 | 30>(15)
+/** Узкий экран (меньше md): компактная сетка, вид «день» по умолчанию */
+const isWideLayout = ref(true)
+const fullCalendarRef = ref<InstanceType<typeof FullCalendar> | null>(null)
+
+let layoutMedia: MediaQueryList | null = null
+
+function applyLayoutFromMedia() {
+  if (!layoutMedia) return
+  isWideLayout.value = layoutMedia.matches
+  if (!layoutMedia.matches && slotMinutes.value === 15) {
+    slotMinutes.value = 30
+  }
+}
+
+function onLayoutMediaChange() {
+  applyLayoutFromMedia()
+}
+
+function calendarApi(): CalendarApi | null {
+  const inst = fullCalendarRef.value as unknown as { getApi?: () => CalendarApi } | null
+  return inst?.getApi?.() ?? null
+}
+
+/** Убираем служебные суффиксы вроде «(batch …)» в подписи в ячейке календаря */
+function displayTeamNameForCalendar(name: string) {
+  return name
+    .replace(/\s*\(\s*batch\s+[^)]+\)/gi, '')
+    .replace(/\s*\(batch[^)]*\)/gi, '')
+    .trim()
+}
+
+function calendarMatchTitle(m: MatchRow | TenantTournamentMatchRow) {
+  const base = `${displayTeamNameForCalendar(m.homeTeam.name)} – ${displayTeamNameForCalendar(m.awayTeam.name)}`
+  const hasScore =
+    m.homeScore !== null &&
+    m.homeScore !== undefined &&
+    m.awayScore !== null &&
+    m.awayScore !== undefined
+  if (!hasScore) return base
+  return `${base} (${formatMatchScoreDisplay(m)})`
+}
 const eventColors = ref<Record<string, string>>({})
 const eventDurationsMin = ref<Record<string, number>>({})
 const editVisible = ref(false)
@@ -72,6 +113,8 @@ type CalendarMeta = {
   tournamentId: string | null
   locked: boolean
   status: string | null
+  /** Цвет турнира с сервера (если есть), без учёта локального переопределения */
+  tournamentStripeColor?: string | null
 }
 
 function colorStorageKey() {
@@ -117,6 +160,12 @@ function defaultColor(locked: boolean, source: 'standalone' | 'tournament') {
   return source === 'standalone' ? '#10b981' : '#6366f1'
 }
 
+function tournamentMatchStripeColor(m: TenantTournamentMatchRow) {
+  const tc = m.tournament?.calendarColor?.trim()
+  if (tc && /^#[0-9A-Fa-f]{6}$/.test(tc)) return tc
+  return null
+}
+
 function defaultDurationMin() {
   return 60
 }
@@ -136,13 +185,6 @@ function toLocalDatetimeValue(iso: string) {
   const hh = pad(d.getHours())
   const mm = pad(d.getMinutes())
   return `${y}-${m}-${day}T${hh}:${mm}`
-}
-
-function matchTitleWithScore(m: MatchRow | TenantTournamentMatchRow) {
-  const base = `${m.homeTeam.name} - ${m.awayTeam.name}`
-  const hasScore = m.homeScore !== null && m.homeScore !== undefined && m.awayScore !== null && m.awayScore !== undefined
-  if (!hasScore) return base
-  return `${base} (${formatMatchScoreDisplay(m)})`
 }
 
 function isUnknownPlayoffTeamName(name: string) {
@@ -238,7 +280,7 @@ const calendarEvents = computed<EventInput[]>(() => {
       m.startTime,
       eventDurationsMin.value[`standalone:${m.id}`] ?? defaultDurationMin(),
     ),
-    title: matchTitleWithScore(m),
+    title: calendarMatchTitle(m),
     allDay: false,
     editable: !isMatchEditLocked(m.status),
     backgroundColor:
@@ -258,30 +300,35 @@ const calendarEvents = computed<EventInput[]>(() => {
 
   const tournament = tournamentMatches.value
     .filter((m) => !shouldHideUnknownPlayoffMatch(m))
-    .map((m) => ({
-    id: `tournament:${m.id}`,
+    .map((m) => {
+    const eventId = `tournament:${m.id}`
+    const locked = isMatchEditLocked(m.status)
+    const stripe = tournamentMatchStripeColor(m)
+    const fallback = defaultColor(locked, 'tournament')
+    const fill =
+      eventColors.value[eventId] ?? stripe ?? fallback
+    return {
+    id: eventId,
     start: m.startTime,
     end: addMinutes(
       m.startTime,
-      eventDurationsMin.value[`tournament:${m.id}`] ?? defaultDurationMin(),
+      eventDurationsMin.value[eventId] ?? defaultDurationMin(),
     ),
-    title: matchTitleWithScore(m),
+    title: calendarMatchTitle(m),
     allDay: false,
-    editable: !isMatchEditLocked(m.status),
-    backgroundColor:
-      eventColors.value[`tournament:${m.id}`] ??
-      defaultColor(isMatchEditLocked(m.status), 'tournament'),
-    borderColor:
-      eventColors.value[`tournament:${m.id}`] ??
-      defaultColor(isMatchEditLocked(m.status), 'tournament'),
+    editable: !locked,
+    backgroundColor: fill,
+    borderColor: fill,
     extendedProps: {
       source: 'tournament',
       matchId: m.id,
       tournamentId: m.tournament.id,
-      locked: isMatchEditLocked(m.status),
+      locked,
       status: m.status ?? null,
+      tournamentStripeColor: stripe,
     } satisfies CalendarMeta,
-    }))
+    }
+    })
 
   return [...standalone, ...tournament]
 })
@@ -393,7 +440,11 @@ function onEventClick(arg: any) {
     startIso,
     startLocal: toLocalDatetimeValue(startIso),
     endLocal: toLocalDatetimeValue(endDate.toISOString()),
-    color: eventColors.value[eventId] ?? defaultColor(meta.locked, meta.source),
+    color:
+      eventColors.value[eventId] ??
+      (meta.source === 'tournament' && meta.tournamentStripeColor
+        ? meta.tournamentStripeColor
+        : defaultColor(meta.locked, meta.source)),
   }
   editSubmitAttempted.value = false
   editVisible.value = true
@@ -574,47 +625,66 @@ async function onEventDrop(arg: any) {
   }
 }
 
-const calendarOptions = computed(() => ({
-  plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
-  initialView: 'timeGridWeek',
-  locale: ruLocale,
-  firstDay: 1,
-  editable: true,
-  eventStartEditable: true,
-  eventDurationEditable: false,
-  selectable: true,
-  selectMirror: true,
-  slotMinTime: '08:00:00',
-  // FullCalendar treats slotMaxTime as exclusive.
-  // 21:00 makes the 20:00 line visible as the last slot.
-  slotMaxTime: '21:00:00',
-  slotDuration: slotMinutes.value === 15 ? '00:15:00' : '00:30:00',
-  snapDuration: slotMinutes.value === 15 ? '00:15:00' : '00:30:00',
-  slotLabelInterval: slotMinutes.value === 15 ? '00:15:00' : '00:30:00',
-  slotLabelFormat: {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: false,
-  },
-  eventTimeFormat: {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  },
-  allDaySlot: false,
-  nowIndicator: true,
-  contentHeight: 'auto',
-  expandRows: false,
-  headerToolbar: {
-    left: 'prev,next today',
-    center: 'title',
-    right: 'dayGridMonth,timeGridWeek,timeGridDay',
-  },
-  eventDrop: onEventDrop,
-  eventClick: onEventClick,
-  select: onSelectRange,
-  events: calendarEvents.value,
-}))
+const calendarOptions = computed(() => {
+  const wide = isWideLayout.value
+  const slot = slotMinutes.value === 15 ? '00:15:00' : '00:30:00'
+  return {
+    plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
+    initialView: wide ? 'timeGridWeek' : 'timeGridDay',
+    locale: ruLocale,
+    firstDay: 1,
+    editable: true,
+    eventStartEditable: true,
+    eventDurationEditable: false,
+    selectable: true,
+    selectMirror: true,
+    slotMinTime: '08:00:00',
+    slotMaxTime: '21:00:00',
+    slotDuration: slot,
+    snapDuration: slot,
+    slotLabelInterval: slot,
+    slotLabelFormat: {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: false,
+    },
+    eventTimeFormat: {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    },
+    allDaySlot: false,
+    nowIndicator: true,
+    contentHeight: 'auto',
+    expandRows: false,
+    headerToolbar: wide
+      ? {
+          left: 'prev,next today',
+          center: 'title',
+          right: 'dayGridMonth,timeGridWeek,timeGridDay',
+        }
+      : {
+          left: 'prev,next',
+          center: 'title',
+          right: 'today,timeGridDay,timeGridWeek,dayGridMonth',
+        },
+    eventDrop: onEventDrop,
+    eventClick: onEventClick,
+    select: onSelectRange,
+    events: calendarEvents.value,
+  }
+})
+
+watch(isWideLayout, () => {
+  nextTick(() => {
+    const api = calendarApi()
+    if (!api || isWideLayout.value) return
+    const type = api.view.type
+    if (type === 'timeGridWeek' || type === 'dayGridMonth') {
+      api.changeView('timeGridDay')
+    }
+  })
+})
 
 onMounted(async () => {
   syncWithStorage()
@@ -622,9 +692,19 @@ onMounted(async () => {
     await router.push('/admin/login')
     return
   }
+  if (import.meta.client) {
+    layoutMedia = window.matchMedia('(min-width: 768px)')
+    applyLayoutFromMedia()
+    layoutMedia.addEventListener('change', onLayoutMediaChange)
+  }
   loadColors()
   loadDurations()
   await Promise.all([fetchMatches(), fetchTeams()])
+})
+
+onBeforeUnmount(() => {
+  layoutMedia?.removeEventListener('change', onLayoutMediaChange)
+  layoutMedia = null
 })
 
 watch(
@@ -636,71 +716,92 @@ watch(
 </script>
 
 <template>
-  <section class="p-6 space-y-4">
-    <header>
-      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+  <section class="space-y-3 px-4 py-4 sm:space-y-4 sm:px-6 sm:py-5">
+    <header class="space-y-1">
+      <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-xl">
         Календарь матчей
       </h1>
-      <p class="mt-1 text-sm text-muted-color">
-        Показаны созданные матчи tenant-а. Перетаскивание меняет дату. Статусы {{ statusLabel('FINISHED') }}, {{ statusLabel('PLAYED') }}, {{ statusLabel('CANCELED') }} — заблокированы для переноса.
+      <p class="text-xs leading-snug text-muted-color sm:text-sm sm:leading-normal">
+        Матчи организации. Перетаскивание меняет дату.
+        <span class="max-md:hidden">
+          Статусы {{ statusLabel('FINISHED') }}, {{ statusLabel('PLAYED') }}, {{ statusLabel('CANCELED') }} —
+          без переноса.
+        </span>
       </p>
     </header>
 
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
-      <Select
-        v-model="sourceFilter"
-        :options="[
-          { label: 'Все матчи', value: 'all' },
-          { label: 'Только турнирные', value: 'tournament' },
-          { label: 'Только вне турнира', value: 'standalone' },
-        ]"
-        option-label="label"
-        option-value="value"
-        placeholder="Тип матча"
-      />
-      <Select
-        v-model="selectedTournamentId"
-        :options="[{ label: 'Все турниры', value: '' }, ...tournamentOptions]"
-        option-label="label"
-        option-value="value"
-        placeholder="Турнир"
-      />
-      <Select
-        v-model="selectedTeamId"
-        :options="[{ label: 'Все команды', value: '' }, ...teamOptions]"
-        option-label="label"
-        option-value="value"
-        placeholder="Команда"
-      />
-      <Select
-        v-model="selectedStatus"
-        :options="[{ label: 'Любой статус', value: '' }, ...statusFilterOptions]"
-        option-label="label"
-        option-value="value"
-        placeholder="Статус"
-      />
-      <Select
-        v-model="slotMinutes"
-        :options="[
-          { label: 'Сетка 15 мин', value: 15 },
-          { label: 'Сетка 30 мин', value: 30 },
-        ]"
-        option-label="label"
-        option-value="value"
-        placeholder="Сетка"
-      />
-      <div class="flex items-center gap-2 rounded border border-surface-200 px-3">
-        <Checkbox v-model="showLocked" binary input-id="showLocked" />
-        <label for="showLocked" class="text-sm">Показывать завершённые</label>
+    <div
+      class="rounded-xl border border-surface-200 bg-surface-0 p-3 shadow-sm dark:border-surface-700 dark:bg-surface-900 sm:p-4"
+    >
+      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6">
+        <Select
+          v-model="sourceFilter"
+          class="w-full min-w-0"
+          :options="[
+            { label: 'Все матчи', value: 'all' },
+            { label: 'Только турнирные', value: 'tournament' },
+            { label: 'Только вне турнира', value: 'standalone' },
+          ]"
+          option-label="label"
+          option-value="value"
+          placeholder="Тип матча"
+        />
+        <Select
+          v-model="selectedTournamentId"
+          class="w-full min-w-0"
+          :options="[{ label: 'Все турниры', value: '' }, ...tournamentOptions]"
+          option-label="label"
+          option-value="value"
+          placeholder="Турнир"
+        />
+        <Select
+          v-model="selectedTeamId"
+          class="w-full min-w-0"
+          :options="[{ label: 'Все команды', value: '' }, ...teamOptions]"
+          option-label="label"
+          option-value="value"
+          placeholder="Команда"
+        />
+        <Select
+          v-model="selectedStatus"
+          class="w-full min-w-0"
+          :options="[{ label: 'Любой статус', value: '' }, ...statusFilterOptions]"
+          option-label="label"
+          option-value="value"
+          placeholder="Статус"
+        />
+        <Select
+          v-model="slotMinutes"
+          class="w-full min-w-0"
+          :options="[
+            { label: 'Сетка 15 мин', value: 15 },
+            { label: 'Сетка 30 мин', value: 30 },
+          ]"
+          option-label="label"
+          option-value="value"
+          placeholder="Сетка"
+        />
+        <div
+          class="flex min-h-[2.75rem] items-center gap-2 rounded-lg border border-surface-200 bg-surface-50 px-3 dark:border-surface-600 dark:bg-surface-800/50"
+        >
+          <Checkbox v-model="showLocked" binary input-id="showLocked" />
+          <label for="showLocked" class="cursor-pointer text-xs sm:text-sm">Показывать завершённые</label>
+        </div>
       </div>
     </div>
 
-    <div class="admin-calendar rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-3">
-      <ClientOnly>
-        <FullCalendar :options="calendarOptions" />
-      </ClientOnly>
-      <div v-if="loading" class="mt-3 text-sm text-muted-color">
-        Загрузка матчей...
+    <div
+      class="admin-calendar rounded-xl border border-surface-200 bg-surface-0 p-2 shadow-sm dark:border-surface-700 dark:bg-surface-900 sm:p-3"
+    >
+      <div class="-mx-2 overflow-x-auto sm:mx-0">
+        <div class="min-w-[36rem] sm:min-w-0">
+          <ClientOnly>
+            <FullCalendar ref="fullCalendarRef" :options="calendarOptions" />
+          </ClientOnly>
+        </div>
+      </div>
+      <div v-if="loading" class="mt-2 px-1 text-xs text-muted-color sm:text-sm">
+        Загрузка матчей…
       </div>
     </div>
 
@@ -819,7 +920,157 @@ watch(
 </template>
 
 <style scoped>
-.admin-calendar :deep(.fc .fc-timegrid-slot) {
-  height: 2.5rem;
+.admin-calendar :deep(.fc) {
+  --fc-border-color: rgb(226 232 240);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: rgb(248 250 252);
+  font-size: 0.75rem;
+}
+
+.dark-mode .admin-calendar :deep(.fc) {
+  --fc-border-color: rgb(51 65 85);
+  --fc-neutral-bg-color: rgb(30 41 59 / 0.45);
+}
+
+@media (min-width: 768px) {
+  .admin-calendar :deep(.fc) {
+    font-size: 0.8125rem;
+  }
+}
+
+.admin-calendar :deep(.fc-theme-standard td),
+.admin-calendar :deep(.fc-theme-standard th) {
+  border-color: var(--fc-border-color);
+}
+
+.admin-calendar :deep(.fc-scrollgrid) {
+  border-radius: 0.5rem;
+}
+
+.admin-calendar :deep(.fc-header-toolbar) {
+  @apply mb-2 flex flex-col gap-2 sm:mb-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between;
+}
+
+.admin-calendar :deep(.fc-toolbar-chunk) {
+  @apply flex flex-wrap items-center justify-center gap-1 sm:justify-start;
+}
+
+.admin-calendar :deep(.fc-toolbar-chunk:last-child) {
+  @apply justify-center sm:justify-end;
+}
+
+.admin-calendar :deep(.fc-toolbar-title) {
+  @apply px-1 text-center text-sm font-semibold text-surface-800 dark:text-surface-100 sm:text-base;
+}
+
+.admin-calendar :deep(.fc-button) {
+  @apply rounded-lg border border-surface-300 bg-surface-0 px-2 py-1.5 text-xs font-medium text-surface-700 shadow-sm outline-none transition hover:bg-surface-50 focus-visible:ring-2 focus-visible:ring-primary dark:border-surface-600 dark:bg-surface-800 dark:text-surface-100 dark:hover:bg-surface-700;
+}
+
+.admin-calendar :deep(.fc-button-primary:not(:disabled)) {
+  @apply border-primary bg-primary text-primary-contrast hover:opacity-90;
+}
+
+.admin-calendar :deep(.fc-button:disabled) {
+  @apply opacity-50;
+}
+
+/**
+ * Переключатель вида (Месяц / Неделя / День): общая primary-плашка, активный — светлая кнопка с контуром
+ * (вместо стандартного тёмного оверлея FullCalendar).
+ */
+.admin-calendar :deep(.fc-button-group) {
+  @apply inline-flex gap-0.5 rounded-[10px] border border-primary/25 bg-primary p-0.5 shadow-sm dark:border-primary/35;
+}
+
+.admin-calendar :deep(.fc-button-group .fc-button) {
+  background-image: none !important;
+  text-shadow: none !important;
+  @apply m-0 rounded-md border-0 bg-transparent px-2.5 py-1.5 text-xs font-semibold text-white shadow-none outline-none transition;
+}
+
+.admin-calendar :deep(.fc-button-group .fc-button.fc-button-primary) {
+  @apply border-0 bg-transparent text-white hover:bg-white/15;
+}
+
+.admin-calendar :deep(.fc-button-group .fc-button.fc-button-primary:disabled) {
+  @apply text-white/50 hover:bg-transparent;
+}
+
+.admin-calendar :deep(.fc-button-group .fc-button.fc-button-active) {
+  background-image: none !important;
+  opacity: 1 !important;
+  @apply rounded-md bg-surface-0 font-semibold text-primary shadow-sm ring-2 ring-white/90 ring-offset-0 dark:bg-surface-900 dark:text-primary dark:ring-primary/55;
+}
+
+.admin-calendar :deep(.fc-button-group .fc-button.fc-button-active:hover) {
+  @apply bg-surface-0 text-primary dark:bg-surface-900;
+}
+
+/** «Сегодня» и др. снаружи группы — лёгкое кольцо, без заливки primary/15 */
+.admin-calendar :deep(.fc-toolbar-chunk > .fc-button.fc-button-active) {
+  @apply border-primary bg-primary text-primary-contrast ring-2 ring-primary ring-offset-2 ring-offset-surface-0 dark:ring-offset-surface-900;
+}
+
+.admin-calendar :deep(.fc-timegrid-slot) {
+  height: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  .admin-calendar :deep(.fc-timegrid-slot) {
+    height: 1.85rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .admin-calendar :deep(.fc-timegrid-slot) {
+    height: 2.15rem;
+  }
+}
+
+.admin-calendar :deep(.fc-timegrid-slot-label) {
+  @apply align-top text-[0.65rem] text-muted-color sm:text-xs;
+}
+
+.admin-calendar :deep(.fc-timegrid-slot-label-cushion) {
+  @apply py-0;
+}
+
+.admin-calendar :deep(.fc-col-header-cell) {
+  @apply py-1.5 text-[0.65rem] font-semibold uppercase tracking-wide text-surface-700 dark:text-surface-200 sm:text-xs;
+}
+
+.admin-calendar :deep(.fc-day-today .fc-col-header-cell-cushion) {
+  @apply text-primary;
+}
+
+.admin-calendar :deep(.fc-event) {
+  @apply cursor-pointer rounded border-0 shadow-sm;
+  font-size: 0.65rem;
+  line-height: 1.25;
+}
+
+@media (min-width: 768px) {
+  .admin-calendar :deep(.fc-event) {
+    font-size: 0.7rem;
+  }
+}
+
+.admin-calendar :deep(.fc-event-title) {
+  @apply font-medium;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.admin-calendar :deep(.fc-v-event .fc-event-main-frame) {
+  @apply p-0.5 sm:p-1;
+}
+
+.admin-calendar :deep(.fc-now-indicator-line) {
+  @apply border-primary;
+}
+
+.admin-calendar :deep(.fc-now-indicator-arrow) {
+  @apply border-t-primary;
 }
 </style>

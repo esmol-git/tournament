@@ -15,6 +15,11 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../auth/subscription-plan-feature.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTeamDto } from './dto/create-team.dto';
 import { TeamQueryDto } from './dto/team-query.dto';
@@ -31,6 +36,8 @@ import { TeamsService } from './teams.service';
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class TeamsController {
@@ -104,6 +111,7 @@ export class TeamsController {
     );
   }
 
+  @RequireSubscriptionPlanFeature('data_import_export')
   @Post('tenants/:tenantId/teams/:teamId/players/bulk')
   async addTeamPlayersBulk(
     @Param('tenantId') tenantId: string,

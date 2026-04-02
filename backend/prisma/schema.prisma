@@ -37,11 +37,44 @@ model Tenant {
   socialInstagramUrl String?
   socialTelegramUrl String?
   socialMaxUrl String?
+  /** Публичный логотип организации (шапка/подвал сайта). */
+  publicLogoUrl String?
+  /** Публичный favicon (иконка вкладки браузера). */
+  publicFaviconUrl String?
+  /** Основной акцент публичных страниц. HEX #RRGGBB. */
+  publicAccentPrimary String @default("#123c67")
+  /** Вторичный акцент публичных страниц. HEX #RRGGBB. */
+  publicAccentSecondary String @default("#c80a48")
+  /** Режим темы публичной части: light | dark | system. */
+  publicThemeMode String @default("system")
+  /** Короткий слоган в шапке/подвале публичного сайта. */
+  publicTagline String?
+  /** Публичное отображаемое название организации (если отличается от системного). */
+  publicOrganizationDisplayName String?
+  /** Контакты для публичного футера. */
+  publicContactPhone String?
+  publicContactEmail String?
+  publicContactAddress String?
+  publicContactHours String?
+  /** SEO-настройки публичной части. */
+  publicSeoTitle String?
+  publicSeoDescription String?
+  publicOgImageUrl String?
+  /** Дефолтный раздел публички для переходов из логотипа/бренда. */
+  publicDefaultLanding String @default("tournaments")
+  /** Порядок вкладок турнира: table,chessboard,progress,playoff */
+  publicTournamentTabsOrder String @default("table,chessboard,progress,playoff")
+  /** Отображение отдельных публичных блоков. */
+  publicShowLeaderInFacts Boolean @default(true)
+  publicShowTopStats Boolean @default(true)
+  publicShowNewsInSidebar Boolean @default(true)
   showWebsiteLink Boolean @default(true)
   showSocialYoutubeLink Boolean @default(true)
   showSocialInstagramLink Boolean @default(true)
   showSocialTelegramLink Boolean @default(true)
   showSocialMaxLink Boolean @default(true)
+  /** Общие настройки админ-панели (тема, локаль, акцент) для всех пользователей организации. */
+  adminUiSettings Json?
 
   users       User[]
   tournaments Tournament[]
@@ -361,7 +394,8 @@ enum SubscriptionStatus {
 
 model User {
   id          String   @id @default(cuid())
-  email       String   @unique
+  /** Обязателен при регистрации организации; при создании пользователя админом может быть пустым. */
+  email       String?  @unique
   username    String
   password    String
   name        String
@@ -371,11 +405,11 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   blocked     Boolean  @default(false)
-  /** Настройки админ-интерфейса: themeMode, locale, accent (JSON) */
-  uiSettings  Json?
 
   tenant      Tenant   @relation(fields: [tenantId], references: [id])
   tournamentMemberships TournamentMember[]
+  /** Турниры, созданные этим пользователем (админ турнира видит только их). */
+  createdTournaments Tournament[] @relation("TournamentCreator")
   teamAdminOf TeamAdmin[]
   refreshTokens RefreshToken[]
 
@@ -404,12 +438,16 @@ model Tournament {
   description String?
   category    String?
   logoUrl     String?
+  /// Цвет событий турнира в админ-календаре (#RRGGBB). null — стандартный цвет темы.
+  calendarColor String?
   format      TournamentFormat @default(SINGLE_GROUP)
   groupCount  Int      @default(1)
   playoffQualifiersPerGroup Int @default(2)
   startsAt    DateTime?
   endsAt      DateTime?
   status      TournamentStatus @default(DRAFT)
+  /// Показывать турнир на публичном сайте (страницы по tid, таблица и т.д.). Независимо от статуса жизненного цикла.
+  published   Boolean  @default(false)
   intervalDays Int     @default(7)
   allowedDays  Int[]   @default([])
   roundRobinCycles     Int @default(1)
@@ -423,6 +461,8 @@ model Tournament {
   pointsDraw  Int      @default(1)
   pointsLoss  Int      @default(0)
   tenantId    String
+  /** Кто создал турнир в админке; для роли TOURNAMENT_ADMIN — граница доступа. */
+  createdByUserId String?
   /** Игровой сезон из справочника (опционально). */
   seasonId       String?
   /** Тип соревнования из справочника: чемпионат, кубок и т.д. (опционально). */
@@ -434,6 +474,7 @@ model Tournament {
   updatedAt   DateTime @updatedAt
 
   tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  createdBy   User?       @relation("TournamentCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   season      Season?     @relation(fields: [seasonId], references: [id], onDelete: SetNull)
   competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
   ageGroup    AgeGroup?   @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
@@ -451,6 +492,7 @@ model Tournament {
 
   @@unique([tenantId, slug])
   @@index([tenantId, status, createdAt])
+  @@index([tenantId, createdByUserId])
   @@index([tenantId, seasonId])
   @@index([tenantId, competitionId])
   @@index([tenantId, ageGroupId])

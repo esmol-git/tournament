@@ -11,6 +11,7 @@ import type {
   TournamentDetails,
 } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { buildPlayoffSlotLabels } from '~/utils/playoffSlotResolver'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { toYmdLocal } from '~/utils/dateYmd'
 import {
@@ -25,8 +26,10 @@ import {
   isMatchEditLocked,
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
+import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
+import { useTenantStore } from '~/stores/tenant'
 
 definePageMeta({ layout: 'admin' })
 
@@ -36,9 +39,19 @@ const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
 const { t, locale } = useI18n()
+const tenantStore = useTenantStore()
+const runtimeConfig = useRuntimeConfig()
 
 const tournamentId = computed(() => route.params.id as string)
 const tenantId = useTenantId()
+
+const subscriptionPlan = computed(() => {
+  const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
+  return u?.tenantSubscription?.plan ?? null
+})
+const canTournamentAutomation = computed(() =>
+  hasSubscriptionFeature(subscriptionPlan.value, 'tournament_automation'),
+)
 
 /** До первого ответа API — иначе при F5 пустой заголовок и мелькание вкладок. */
 const initialLoading = ref(true)
@@ -457,8 +470,141 @@ const qualificationRowStyle = (row: any) => {
   return undefined
 }
 
+function tournamentLifecycleStatusLabel(s: string | undefined | null) {
+  if (!s) return '—'
+  const key = `admin.tournament_lifecycle.${s.toLowerCase()}` as const
+  const translated = t(key)
+  return translated !== key ? translated : s
+}
+
+function tournamentStatusBadgeClass(s: string | undefined | null) {
+  switch (s) {
+    case 'DRAFT':
+      return 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-100'
+    case 'ACTIVE':
+      return 'border-primary/35 bg-primary/12 text-primary'
+    case 'COMPLETED':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200'
+    case 'ARCHIVED':
+      return 'border-surface-300 bg-surface-100 text-surface-600 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300'
+    default:
+      return 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-900'
+  }
+}
+
 const isManualFormat = computed(() => tournament.value?.format === 'MANUAL')
 const isPlayoffOnlyFormat = computed(() => tournament.value?.format === 'PLAYOFF')
+
+/**
+ * Slug организации для публичного URL: сначала из API турнира, иначе поддомен
+ * (см. `tenant.global.ts`), иначе `NUXT_PUBLIC_DEFAULT_TENANT_SLUG` для localhost.
+ */
+const tenantSlugForPublicLink = computed(() => {
+  const fromApi = tournament.value?.tenant?.slug?.trim()
+  if (fromApi) return fromApi
+  const fromHost = String(tenantStore.slug ?? '').trim()
+  if (fromHost) return fromHost
+  return String(runtimeConfig.public.defaultTenantSlug ?? '').trim()
+})
+
+const publishedSaving = ref(false)
+
+const publishSwitchDisabled = computed(
+  () =>
+    publishedSaving.value ||
+    (tournament.value?.status === 'DRAFT' && !tournament.value?.published),
+)
+
+async function setTournamentPublished(next: boolean) {
+  if (!token.value || !tournament.value) return
+  const prev = !!tournament.value.published
+  if (next === prev) return
+  if (next && tournament.value.status === 'DRAFT') {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.published_toggle_label'),
+      detail: t('admin.tournament_page.published_draft_blocked_hint'),
+      life: 6000,
+    })
+    return
+  }
+  publishedSaving.value = true
+  try {
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}`), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: { published: next },
+    })
+    tournament.value = { ...tournament.value, published: next }
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.published_save_error'),
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    publishedSaving.value = false
+  }
+}
+
+/** Публичная страница турнира: таблица с `tid` (как на сайте). */
+const publicTournamentAbsoluteUrl = computed(() => {
+  const t = tournament.value
+  const slug = tenantSlugForPublicLink.value
+  if (!t?.id || !slug) return ''
+  const path = `/${slug}/tournaments/table?tid=${encodeURIComponent(t.id)}`
+  if (import.meta.client && typeof window !== 'undefined') {
+    return `${window.location.origin}${path}`
+  }
+  return path
+})
+
+async function copyPublicTournamentLink() {
+  if (!tournament.value?.published) return
+  const url = publicTournamentAbsoluteUrl.value
+  if (!url) return
+  try {
+    // Clipboard API может быть недоступен в http/не-secure контексте.
+    if (navigator.clipboard?.writeText && (window.isSecureContext || window.location.protocol === 'https:')) {
+      await navigator.clipboard.writeText(url)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.setAttribute('readonly', 'true')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      ta.style.top = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (!ok) throw new Error('execCommand copy failed')
+    }
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.public_link_copied'),
+      life: 2500,
+    })
+  } catch {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.public_link_copy_error'),
+      life: 4000,
+    })
+  }
+}
+
+function openPublicTournamentLink() {
+  if (!tournament.value?.published) return
+  const url = publicTournamentAbsoluteUrl.value
+  if (url) window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/** Вкладка «Матчи» — ручное создание матчей при формате MANUAL. */
+function goToMatchesTab() {
+  activeTab.value = 1
+}
 
 const showTournamentTableTab = computed(() => !isPlayoffOnlyFormat.value)
 
@@ -583,7 +729,8 @@ const canRegenerateCalendar = computed(() => {
   return (
     shouldRegenerateCalendar.value &&
     teamCount.value >= minTeams &&
-    !isManualFormat.value
+    !isManualFormat.value &&
+    canTournamentAutomation.value
   )
 })
 const teamCompositionErrors = computed(() => {
@@ -808,72 +955,17 @@ const loserName = (m: MatchRow) => {
 }
 
 const playoffSlotLabels = (m: MatchRow) => {
-  const fmt = tournament.value?.format ?? ''
-  if (!playoffSupportedFormats.includes(fmt)) return null
-  if (m.stage !== 'PLAYOFF') return null
-  if (typeof m.roundNumber !== 'number') return null
-
-  const firstRn = playoffFirstRoundNumber.value
-  if (firstRn === null) return null
-
-  // First knockout round: show seeds (A1/B2/...) until group stage is finished.
-  if (m.roundNumber === firstRn) {
-    if (groupStageFinished.value) return null
-    const homeSeed = seedLabelByTeamId.value.get(m.homeTeam.id)
-    const awaySeed = seedLabelByTeamId.value.get(m.awayTeam.id)
-    if (!homeSeed || !awaySeed) return null
-    return { home: homeSeed, away: awaySeed }
-  }
-
-  // FINAL / THIRD_PLACE depend only on the 2 "semi-final" matches of the previous round.
-  if (m.playoffRound === 'FINAL' || m.playoffRound === 'THIRD_PLACE') {
-    const parentRn = m.roundNumber - 1
-    const parentMatches = playoffMatchesByRoundNumber.value.get(parentRn) ?? []
-    if (parentMatches.length < 2) return null
-    const semi1 = parentMatches[0]
-    const semi2 = parentMatches[1]
-
-    const usesLoser = m.playoffRound === 'THIRD_PLACE'
-
-    const homeTeam =
-      (usesLoser ? loserName(semi1) : winnerName(semi1)) ??
-      t(usesLoser ? 'admin.tournament_page.playoff_loser_of_match' : 'admin.tournament_page.playoff_winner_of_match', {
-        number: matchNumberById.value[semi1.id] ?? '—',
-      })
-    const awayTeam =
-      (usesLoser ? loserName(semi2) : winnerName(semi2)) ??
-      t(usesLoser ? 'admin.tournament_page.playoff_loser_of_match' : 'admin.tournament_page.playoff_winner_of_match', {
-        number: matchNumberById.value[semi2.id] ?? '—',
-      })
-    return { home: homeTeam, away: awayTeam }
-  }
-
-  // Later knockout rounds: show winners/losers of the previous round matches (binary-tree mapping).
-  const parentRn = m.roundNumber - 1
-  const currentMatches = playoffMatchesByRoundNumber.value.get(m.roundNumber) ?? []
-  const parentMatches = playoffMatchesByRoundNumber.value.get(parentRn) ?? []
-  if (!currentMatches.length || parentMatches.length < 2) return null
-
-  const idx = currentMatches.findIndex((x) => x.id === m.id)
-  if (idx < 0) return null
-
-  const leftParent = parentMatches[idx * 2]
-  const rightParent = parentMatches[idx * 2 + 1]
-  if (!leftParent || !rightParent) return null
-
-  const homeTeam =
-    winnerName(leftParent) ??
-    t('admin.tournament_page.playoff_winner_of_match', {
-      number: matchNumberById.value[leftParent.id] ?? '—',
-    })
-  const awayTeam =
-    winnerName(rightParent) ??
-    t('admin.tournament_page.playoff_winner_of_match', {
-      number: matchNumberById.value[rightParent.id] ?? '—',
-    })
-
-  return { home: homeTeam, away: awayTeam }
+  return playoffSlotLabelsByMatchId.value[m.id] ?? null
 }
+
+const playoffSlotLabelsByMatchId = computed(() =>
+  buildPlayoffSlotLabels(tournament.value, {
+    winnerOfMatch: (number) =>
+      t('admin.tournament_page.playoff_winner_of_match', { number }),
+    loserOfMatch: (number) =>
+      t('admin.tournament_page.playoff_loser_of_match', { number }),
+  }),
+)
 
 /** Полная синхронизация групп и порядка в колонках (groupSortOrder на бэкенде). */
 const syncGroupLayoutFromColumns = async () => {
@@ -1462,6 +1554,7 @@ const calendarFormErrors = computed(() => {
 })
 const canGenerateCalendar = computed(
   () =>
+    canTournamentAutomation.value &&
     !calendarFormErrors.value.startDate &&
     !calendarFormErrors.value.endDate &&
     !calendarFormErrors.value.dayStartTimeDefault &&
@@ -1474,6 +1567,15 @@ watch(calendarDialog, (open) => {
 
 const generateCalendar = async () => {
   if (!token.value) return
+  if (!canTournamentAutomation.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.settings.subscription.title'),
+      detail: t('admin.settings.subscription.features.tournament_automation'),
+      life: 6000,
+    })
+    return
+  }
   if (tournament.value?.format === 'MANUAL') {
     toast.add({
       severity: 'warn',
@@ -1640,6 +1742,7 @@ const clearCalendar = async () => {
 /** MANUAL с несколькими группами: сетка плей-офф строится по таблицам групп (тот же API, что и для GROUPS_*). */
 const canGenerateManualPlayoff = computed(
   () =>
+    canTournamentAutomation.value &&
     isManualFormat.value &&
     isGroupedFormat.value &&
     (tournament.value?.groups?.length ?? 0) >= 2,
@@ -1647,6 +1750,15 @@ const canGenerateManualPlayoff = computed(
 
 const generatePlayoff = async () => {
   if (!token.value) return
+  if (!canTournamentAutomation.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.settings.subscription.title'),
+      detail: t('admin.settings.subscription.features.tournament_automation'),
+      life: 6000,
+    })
+    return
+  }
   calendarSaving.value = true
   try {
     await authFetch(apiUrl(`/tournaments/${tournamentId.value}/playoff`), {
@@ -1845,9 +1957,19 @@ onMounted(async () => {
           class="mb-2"
           @click="router.push('/admin/tournaments')"
         />
-        <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
-          {{ tournament?.name ?? t('admin.tournament_page.tournament_fallback_name') }}
-        </h1>
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+            {{ tournament?.name ?? t('admin.tournament_page.tournament_fallback_name') }}
+          </h1>
+          <span
+            v-if="tournament"
+            v-tooltip.top="t('admin.tournament_form.status_auto_hint')"
+            class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
+            :class="tournamentStatusBadgeClass(tournament.status)"
+          >
+            {{ tournamentLifecycleStatusLabel(tournament.status) }}
+          </span>
+        </div>
         <p class="mt-1 text-sm text-muted-color">/{{ tournament?.slug }}</p>
         <p v-if="tournament?.season" class="mt-2 text-sm text-surface-600 dark:text-surface-300">
           {{ t('admin.tournament_page.season_label') }}:
@@ -1881,6 +2003,80 @@ onMounted(async () => {
       </div>
     </div>
 
+    <div
+      v-if="tournament"
+      class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
+    >
+      <p class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+        {{ t('admin.tournament_page.public_site_link_label') }}
+      </p>
+      <p class="mt-1 text-xs text-muted-color">
+        {{ t('admin.tournament_page.published_toggle_hint') }}
+      </p>
+      <Message
+        v-if="tournament.status === 'DRAFT' && !tournament.published"
+        severity="info"
+        :closable="false"
+        class="mt-3 w-full text-sm"
+      >
+        {{ t('admin.tournament_page.published_draft_blocked_hint') }}
+      </Message>
+      <div class="mt-4 flex flex-wrap items-center gap-3">
+        <label
+          class="flex items-center gap-2 text-sm text-surface-800 dark:text-surface-100"
+          :class="publishSwitchDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'"
+        >
+          <ToggleSwitch
+            input-id="tournament-published"
+            :model-value="!!tournament.published"
+            :disabled="publishSwitchDisabled"
+            @update:model-value="setTournamentPublished"
+          />
+          <span>{{ t('admin.tournament_page.published_toggle_label') }}</span>
+        </label>
+      </div>
+      <Message
+        v-if="!tournament.published && publicTournamentAbsoluteUrl"
+        severity="info"
+        :closable="false"
+        class="mt-3 w-full text-sm"
+      >
+        {{ t('admin.tournament_page.published_unpublished_notice') }}
+      </Message>
+      <template v-else-if="publicTournamentAbsoluteUrl && tournament.published">
+        <p class="mt-3 text-xs text-muted-color">
+          {{ t('admin.tournament_page.public_site_link_hint') }}
+        </p>
+        <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-stretch">
+          <InputText
+            :model-value="publicTournamentAbsoluteUrl"
+            readonly
+            class="w-full flex-1 font-mono text-sm"
+          />
+          <div class="flex shrink-0 flex-wrap gap-2">
+            <Button
+              type="button"
+              :label="t('admin.tournament_page.copy_public_link')"
+              icon="pi pi-copy"
+              severity="secondary"
+              @click="copyPublicTournamentLink"
+            />
+            <Button
+              type="button"
+              :label="t('admin.tournament_page.open_public_link')"
+              icon="pi pi-external-link"
+              severity="secondary"
+              outlined
+              @click="openPublicTournamentLink"
+            />
+          </div>
+        </div>
+      </template>
+      <Message v-else severity="warn" :closable="false" class="mt-3 w-full text-sm">
+        {{ t('admin.tournament_page.public_link_need_slug') }}
+      </Message>
+    </div>
+
     <TabView :activeIndex="activeTab" @update:activeIndex="(v) => (activeTab = v)">
       <TabPanel :header="t('admin.tournament_page.tab_calendar')">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
@@ -1892,7 +2088,7 @@ onMounted(async () => {
               {{ t('admin.tournament_page.manual_schedule_hint') }}
             </p>
             <Button
-              v-if="canManageManualMatches"
+              v-if="canManageManualMatches && hasScheduleMatches"
               :label="t('admin.tournament_page.add_match')"
               icon="pi pi-plus"
               size="small"
@@ -1900,6 +2096,66 @@ onMounted(async () => {
               @click="() => matchesWorkspaceRef?.openManualMatchDialog()"
             />
           </div>
+
+          <template v-if="!hasScheduleMatches">
+            <div
+              class="mt-2 flex flex-col items-center justify-center rounded-2xl border border-dashed border-surface-200 bg-gradient-to-b from-surface-50 to-transparent px-5 py-14 text-center dark:border-surface-600 dark:from-surface-900/60 dark:to-transparent"
+            >
+              <div
+                class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-primary"
+              >
+                <i class="pi pi-calendar-plus text-2xl" aria-hidden="true" />
+              </div>
+              <h3 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.calendar_empty_title') }}
+              </h3>
+              <p class="mt-2 max-w-md text-sm leading-relaxed text-muted-color">
+                <template v-if="isManualFormat">
+                  {{ t('admin.tournament_page.calendar_empty_lead_manual') }}
+                </template>
+                <template v-else>
+                  {{ t('admin.tournament_page.calendar_empty_lead_generate') }}
+                </template>
+              </p>
+              <p
+                v-if="isManualFormat && !canManageManualMatches"
+                class="mt-2 max-w-md text-xs text-muted-color"
+              >
+                {{ t('admin.tournament_page.calendar_empty_manual_need_teams') }}
+              </p>
+              <p
+                v-if="!isManualFormat && !canTournamentAutomation"
+                class="mt-3 max-w-md text-xs leading-relaxed text-amber-900 dark:text-amber-200/90"
+              >
+                {{ t('admin.tournament_page.calendar_empty_legacy_format_hint') }}
+              </p>
+              <div class="mt-6 flex flex-wrap justify-center gap-2">
+                <Button
+                  v-if="!isManualFormat && canTournamentAutomation"
+                  :label="t('admin.tournament_page.generate')"
+                  icon="pi pi-calendar-plus"
+                  :disabled="!tournament"
+                  @click="calendarDialog = true"
+                />
+                <Button
+                  v-else-if="canManageManualMatches"
+                  :label="t('admin.tournament_page.add_match')"
+                  icon="pi pi-plus"
+                  @click="() => matchesWorkspaceRef?.openManualMatchDialog()"
+                />
+                <Button
+                  v-if="isManualFormat && canManageManualMatches"
+                  :label="t('admin.tournament_page.calendar_empty_go_matches')"
+                  icon="pi pi-list"
+                  severity="secondary"
+                  outlined
+                  @click="goToMatchesTab"
+                />
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
           <div class="flex items-center justify-between gap-3">
             <div>
               <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_rounds_title') }}</h2>
@@ -1908,7 +2164,7 @@ onMounted(async () => {
               </p>
             </div>
             <Button
-              v-if="!isManualFormat"
+              v-if="!isManualFormat && canTournamentAutomation"
               :label="t('admin.tournament_page.generate')"
               icon="pi pi-calendar-plus"
               severity="secondary"
@@ -2236,6 +2492,7 @@ onMounted(async () => {
             </div>
             </template>
           </div>
+          </template>
         </div>
       </TabPanel>
 
@@ -2411,14 +2668,7 @@ onMounted(async () => {
                 }}
               </div>
 
-              <div
-                class="mt-3 grid gap-3"
-                :class="{
-                  'md:grid-cols-2': groupColumns.length <= 2,
-                  'md:grid-cols-2 lg:grid-cols-3': groupColumns.length === 3,
-                  'md:grid-cols-2 lg:grid-cols-4': groupColumns.length >= 4,
-                }"
-              >
+              <div class="mt-3 grid gap-3 md:grid-cols-2">
                 <div
                   v-for="col in groupColumns"
                   :key="col.id"
@@ -2503,7 +2753,7 @@ onMounted(async () => {
               >
                 <div class="text-sm">
                   {{ m.user.name }}
-                  <span class="text-muted-color">({{ m.user.email }})</span>
+                  <span v-if="m.user.email" class="text-muted-color">({{ m.user.email }})</span>
                 </div>
                 <div class="text-xs text-muted-color">{{ m.role }}</div>
               </li>
@@ -2528,6 +2778,14 @@ onMounted(async () => {
       :style="{ width: '48rem' }"
     >
       <div class="flex flex-col gap-3">
+        <Message
+          v-if="!canTournamentAutomation"
+          severity="warn"
+          :closable="false"
+          class="w-full text-sm"
+        >
+          {{ t('admin.tournament_page.calendar_automation_plan_notice') }}
+        </Message>
         <div>
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -2906,6 +3164,7 @@ onMounted(async () => {
               severity="secondary"
               text
               :loading="calendarSaving"
+              :disabled="!canTournamentAutomation"
               @click="generatePlayoff"
             />
           </div>
@@ -2916,7 +3175,11 @@ onMounted(async () => {
               icon="pi pi-check"
               class="min-w-40"
               :loading="calendarSaving"
-              :disabled="calendarSaving || (calendarSubmitAttempted && !canGenerateCalendar)"
+              :disabled="
+                calendarSaving ||
+                !canTournamentAutomation ||
+                (calendarSubmitAttempted && !canGenerateCalendar)
+              "
               @click="generateCalendar"
             />
           </div>

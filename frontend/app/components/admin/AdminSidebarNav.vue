@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import {
   ADMIN_NAV_ENTRIES,
+  adminNavItemResolvedTo,
+  filterAdminNavForRole,
   findActiveAdminNavSectionId,
+  isAdminNavItemLocked,
   isNavSection,
+  type AdminNavEntry,
+  type AdminNavLinkItem,
 } from '~/constants/adminNav'
+
+function asTopLevelLink(entry: AdminNavEntry): AdminNavLinkItem {
+  return entry as AdminNavLinkItem
+}
 import { useAdminSidebarCollapsed } from '~/composables/useAdminSidebarCollapsed'
 import { useAuth } from '~/composables/useAuth'
 import { userRoleLabelRu } from '~/constants/userRoles'
 import { formatUserFullNameFromParts } from '~/utils/userDisplayName'
-import { useTenantStore } from '~/stores/tenant'
-import { storeToRefs } from 'pinia'
-
 const props = withDefaults(
   defineProps<{
     /** В выезжающем меню всегда полные подписи, не «только иконки». */
@@ -30,41 +36,35 @@ const { mini } = useAdminSidebarCollapsed()
 const route = useRoute()
 const { t } = useI18n()
 
+const tenantSubscriptionPlan = computed(() => {
+  const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
+  return u?.tenantSubscription?.plan ?? null
+})
+
+const userRole = computed(() => {
+  const u = user.value as { role?: string | null } | null
+  const r = u?.role
+  return typeof r === 'string' && r.trim() ? r : null
+})
+
+/** Пункты без скрытых по роли разделов (админ турнира не видит пользователей / настроек орг. и т.д.). */
+const navEntries = computed(() => filterAdminNavForRole(userRole.value, ADMIN_NAV_ENTRIES))
+
 const effectiveMini = computed(() =>
   props.forceExpanded ? false : mini.value,
 )
-
-const tenantStore = useTenantStore()
-const { slug: tenantSlugFromStore } = storeToRefs(tenantStore)
-
-function tenantSlugFromHostname(hostname: string): string | null {
-  const host = hostname.toLowerCase()
-  const parts = host.split('.')
-  if (parts.length < 3) return null
-  const sub = parts[0]
-  if (!sub || sub === 'www' || sub === 'localhost' || sub === '127.0.0.1') return null
-  return sub
-}
 
 const clientMounted = ref(false)
 
 const openSectionId = ref<string | null>(null)
 
 watch(
-  () => route.path,
-  (path) => {
-    openSectionId.value = findActiveAdminNavSectionId(path)
+  () => [route.path, tenantSubscriptionPlan.value, userRole.value, navEntries.value] as const,
+  () => {
+    openSectionId.value = findActiveAdminNavSectionId(route.path, navEntries.value)
   },
   { immediate: true },
 )
-
-const siteLink = computed(() => {
-  const fromStore = tenantSlugFromStore.value
-  const fromHost =
-    process.client ? tenantSlugFromHostname(window.location.hostname) : null
-  const slug = fromStore || fromHost
-  return slug ? `/${slug}/table` : null
-})
 
 const userDisplayName = computed(() => {
   const u = (user.value ?? {}) as { email?: string | null }
@@ -155,7 +155,7 @@ onMounted(async () => {
         "
       >
         <div
-          v-for="entry in ADMIN_NAV_ENTRIES"
+          v-for="entry in navEntries"
           :key="isNavSection(entry) ? entry.id : entry.to"
           class="contents"
         >
@@ -167,36 +167,21 @@ onMounted(async () => {
             :items="entry.items"
             :mini="effectiveMini"
             :open-section-id="openSectionId"
+            :subscription-plan="tenantSubscriptionPlan"
+            :user-role="userRole"
             @update:open-section-id="openSectionId = $event"
           />
           <AdminNavLink
             v-else
-            :to="entry.to"
+            :to="adminNavItemResolvedTo(tenantSubscriptionPlan, userRole, asTopLevelLink(entry))"
             :label-key="entry.labelKey"
             :icon="entry.icon"
             :exact="!!entry.exact"
             :mini="effectiveMini"
+            :locked="isAdminNavItemLocked(tenantSubscriptionPlan, asTopLevelLink(entry), userRole)"
           />
         </div>
 
-        <NuxtLink
-          v-if="siteLink"
-          :to="siteLink"
-          class="flex items-center gap-2.5 rounded-lg text-muted-color transition-colors hover:bg-surface-100 dark:hover:bg-surface-800 hover:text-primary"
-          :class="
-            effectiveMini
-              ? 'w-full max-w-[2.75rem] justify-center px-0 py-2.5'
-              : 'px-3.5 py-2.5 text-[15px]'
-          "
-          :title="t('admin.sidebar.to_site')"
-        >
-          <span
-            class="pi pi-external-link inline-flex w-[1.35rem] justify-center leading-none"
-            :class="effectiveMini ? 'text-[1.35rem]' : 'text-xs'"
-            aria-hidden="true"
-          />
-          <span v-if="!effectiveMini">{{ t('admin.sidebar.to_site') }}</span>
-        </NuxtLink>
       </nav>
     </div>
 

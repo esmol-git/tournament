@@ -11,7 +11,15 @@ export default defineNuxtConfig({
     host: '0.0.0.0',
     port: 3000,
   },
-  modules: ['@pinia/nuxt', '@nuxtjs/i18n', '@primevue/nuxt-module', '@nuxtjs/tailwindcss'],
+  modules: [
+    '@pinia/nuxt',
+    '@nuxtjs/i18n',
+    '@primevue/nuxt-module',
+    '@nuxtjs/tailwindcss',
+    '@nuxt/image',
+    '@nuxt/fonts',
+    '@nuxt/icon',
+  ],
   i18n: {
     /** Иначе модуль ищет `<root>/i18n/locales`; у нас JSON в `<root>/locales` при srcDir `app/` */
     restructureDir: false,
@@ -83,6 +91,13 @@ export default defineNuxtConfig({
     }
   },
   app: {
+    /** Мягкая смена страницы в SPA; админка отключает через middleware. */
+    pageTransition: {
+      name: 'public-route-fade',
+      // Важно для UX: предотвращает "миг" пустого слота, из-за которого футер успевает
+      // подпрыгнуть вверх на долю секунды при переходе между публичными страницами.
+      mode: 'in-out',
+    },
     head: {
       title: 'Tournament Platform',
       charset: 'utf-8',

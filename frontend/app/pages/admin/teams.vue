@@ -14,6 +14,7 @@ import { getApiErrorMessage } from '~/utils/apiError'
 import { toYmdLocal as toYmd } from '~/utils/dateYmd'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { slugifyFromTitle } from '~/utils/slugify'
+import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
 
 definePageMeta({ layout: 'admin' })
 
@@ -23,6 +24,11 @@ const { apiUrl } = useApiUrl()
 const toast = useToast()
 const { t } = useI18n()
 const tenantId = useTenantId()
+
+const subscriptionPlan = computed(() => {
+  const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
+  return u?.tenantSubscription?.plan ?? null
+})
 
 /** true до первого завершённого запроса — иначе при F5 один кадр с пустым списком и «Нет команд». */
 const loading = ref(true)
@@ -135,22 +141,38 @@ const {
 
 async function fetchAgeGroupsAndRegions() {
   if (!token.value) return
-  ageGroupsLoading.value = true
-  regionsLoading.value = true
+  const canBasic = hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_basic')
+  const canStandard = hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_standard')
+  if (!canBasic && !canStandard) return
+
+  ageGroupsLoading.value = canBasic
+  regionsLoading.value = canStandard
+  if (!canBasic) ageGroupsList.value = []
+  if (!canStandard) regionsList.value = []
   try {
-    const [ag, rg] = await Promise.all([
-      authFetch<AgeGroupRow[]>(apiUrl(`/tenants/${tenantId.value}/age-groups`), {
-        headers: { Authorization: `Bearer ${token.value}` },
-      }),
-      authFetch<RegionRow[]>(apiUrl(`/tenants/${tenantId.value}/regions`), {
-        headers: { Authorization: `Bearer ${token.value}` },
-      }),
-    ])
-    ageGroupsList.value = ag
-    regionsList.value = rg
+    const parts: Promise<void>[] = []
+    if (canBasic) {
+      parts.push(
+        authFetch<AgeGroupRow[]>(apiUrl(`/tenants/${tenantId.value}/age-groups`), {
+          headers: { Authorization: `Bearer ${token.value}` },
+        }).then((ag) => {
+          ageGroupsList.value = ag
+        }),
+      )
+    }
+    if (canStandard) {
+      parts.push(
+        authFetch<RegionRow[]>(apiUrl(`/tenants/${tenantId.value}/regions`), {
+          headers: { Authorization: `Bearer ${token.value}` },
+        }).then((rg) => {
+          regionsList.value = rg
+        }),
+      )
+    }
+    if (parts.length) await Promise.all(parts)
   } catch {
-    ageGroupsList.value = []
-    regionsList.value = []
+    if (canBasic) ageGroupsList.value = []
+    if (canStandard) regionsList.value = []
   } finally {
     ageGroupsLoading.value = false
     regionsLoading.value = false
@@ -636,31 +658,50 @@ const saveRosterPlayer = async () => {
         })
         return
       }
-      const bulkRes = await authFetch<{
-        total: number
-        added: number
-        failed: number
-        results: Array<{ playerId: string; ok: boolean; error?: string }>
-      }>(apiUrl(`/tenants/${tenantId.value}/teams/${rosterTeam.value.id}/players/bulk`), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token.value}` },
-        body: { playerIds: editorPickSelected.value.map((p) => p.id) },
-      })
-      if (bulkRes.failed > 0) {
-        const firstError = bulkRes.results.find((r) => !r.ok)?.error
-        toast.add({
-          severity: bulkRes.added > 0 ? 'warn' : 'error',
-          summary: bulkRes.added > 0 ? 'Добавлены не все игроки' : 'Не удалось добавить игроков',
-          detail: firstError || `Не удалось добавить ${bulkRes.failed} из ${bulkRes.total}.`,
-          life: 7000,
-        })
-      } else {
+      const canBulk = hasSubscriptionFeature(subscriptionPlan.value, 'data_import_export')
+      if (!canBulk) {
+        let added = 0
+        for (const p of editorPickSelected.value) {
+          await authFetch(apiUrl(`/tenants/${tenantId.value}/teams/${rosterTeam.value.id}/players`), {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token.value}` },
+            body: { playerId: p.id },
+          })
+          added += 1
+        }
         toast.add({
           severity: 'success',
           summary: 'Игроки добавлены в команду',
-          detail: `Добавлено: ${bulkRes.added}.`,
+          detail: `Добавлено: ${added}.`,
           life: 3000,
         })
+      } else {
+        const bulkRes = await authFetch<{
+          total: number
+          added: number
+          failed: number
+          results: Array<{ playerId: string; ok: boolean; error?: string }>
+        }>(apiUrl(`/tenants/${tenantId.value}/teams/${rosterTeam.value.id}/players/bulk`), {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token.value}` },
+          body: { playerIds: editorPickSelected.value.map((p) => p.id) },
+        })
+        if (bulkRes.failed > 0) {
+          const firstError = bulkRes.results.find((r) => !r.ok)?.error
+          toast.add({
+            severity: bulkRes.added > 0 ? 'warn' : 'error',
+            summary: bulkRes.added > 0 ? 'Добавлены не все игроки' : 'Не удалось добавить игроков',
+            detail: firstError || `Не удалось добавить ${bulkRes.failed} из ${bulkRes.total}.`,
+            life: 7000,
+          })
+        } else {
+          toast.add({
+            severity: 'success',
+            summary: 'Игроки добавлены в команду',
+            detail: `Добавлено: ${bulkRes.added}.`,
+            life: 3000,
+          })
+        }
       }
     } else {
       if (!editorPlayerId.value) return

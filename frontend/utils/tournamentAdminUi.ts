@@ -145,7 +145,12 @@ export function formatMatchScoreDisplay(m: {
   const et = readProtocolMetaScores(m.events, EXTRA_TIME_SCORE_META)
   const pen = readProtocolMetaScores(m.events, PENALTY_SCORE_META)
   const parts: string[] = []
-  if (et) parts.push(`д.в. ${et.home}:${et.away}`)
+  if (et) {
+    const etLooksLikeFinalScore =
+      et.home === m.homeScore &&
+      et.away === m.awayScore
+    parts.push(etLooksLikeFinalScore ? 'д.в.' : `д.в. ${et.home}:${et.away}`)
+  }
   if (pen) parts.push(`пен. ${pen.home}:${pen.away}`)
   if (!parts.length) return base
   return `${base} (${parts.join(', ')})`

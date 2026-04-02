@@ -5,7 +5,7 @@ import { useApiUrl } from '~/composables/useApiUrl'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useTenantId } from '~/composables/useTenantId'
 import useVuelidate from '@vuelidate/core'
-import { helpers, required } from '@vuelidate/validators'
+import { required } from '@vuelidate/validators'
 import type { MatchRow, TenantTournamentMatchRow } from '~/types/tournament-admin'
 import type { TournamentListResponse, TournamentRow } from '~/types/admin/tournaments-index'
 import type { TeamLite } from '~/types/tournament-admin'
@@ -177,12 +177,6 @@ const editRules = computed(() => ({
   homeTeamId: { required },
   awayTeamId: { required },
   startTime: { required },
-  scheduleChangeReasonId: {
-    requiredWhenStartChanged: helpers.withMessage(
-      'reason required',
-      (v: unknown) => !editStartChanged.value || !!String(v ?? '').trim(),
-    ),
-  },
 }))
 const editV$ = useVuelidate(editRules, editForm, { $autoDirty: true })
 const editFormErrors = computed(() => ({
@@ -195,10 +189,6 @@ const editFormErrors = computed(() => ({
     editForm.homeTeamId !== editForm.awayTeamId
       ? ''
       : t('admin.validation.different_values'),
-  scheduleChangeReasonId:
-    !editStartChanged.value || editForm.scheduleChangeReasonId
-      ? ''
-      : t('admin.validation.required_reason'),
 }))
 const canEditMatch = computed(
   () =>
@@ -206,8 +196,7 @@ const canEditMatch = computed(
     !editFormErrors.value.homeTeamId &&
     !editFormErrors.value.awayTeamId &&
     !editFormErrors.value.startTime &&
-    !editFormErrors.value.sameTeams &&
-    !editFormErrors.value.scheduleChangeReasonId,
+    !editFormErrors.value.sameTeams,
 )
 const showEditHomeError = computed(
   () => (editSubmitAttempted.value || editV$.value.homeTeamId.$dirty) && !!editFormErrors.value.homeTeamId,
@@ -221,12 +210,6 @@ const showEditStartError = computed(
 const showEditSameTeamsError = computed(
   () => editSubmitAttempted.value && !!editFormErrors.value.sameTeams,
 )
-const showEditScheduleReasonError = computed(
-  () =>
-    (editSubmitAttempted.value || editV$.value.scheduleChangeReasonId.$dirty) &&
-    !!editFormErrors.value.scheduleChangeReasonId,
-)
-
 const protocolOpen = ref(false)
 const protocolMatch = ref<MatchRow | null>(null)
 
@@ -422,8 +405,8 @@ const submitEdit = async () => {
       homeTeamId: editForm.homeTeamId,
       awayTeamId: editForm.awayTeamId,
     }
-    if (editStartChanged.value) {
-      body.scheduleChangeReasonId = editForm.scheduleChangeReasonId
+    if (editStartChanged.value && editForm.scheduleChangeReasonId.trim()) {
+      body.scheduleChangeReasonId = editForm.scheduleChangeReasonId.trim()
     }
     await authFetch(
       apiUrl(`/tenants/${tenantId.value}/standalone-matches/${editForm.matchId}`),
@@ -1127,10 +1110,8 @@ onMounted(async () => {
               show-clear
               placeholder="Не выбрано"
               class="w-full"
-              :invalid="showEditScheduleReasonError"
               :disabled="editSaving"
             />
-            <p v-if="showEditScheduleReasonError" class="mt-0 text-[11px] leading-3 text-red-500">{{ editFormErrors.scheduleChangeReasonId }}</p>
           </div>
         </div>
       </div>

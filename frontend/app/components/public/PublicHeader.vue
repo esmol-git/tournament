@@ -1,21 +1,47 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
+import type { PublicTenantMeta } from '~/composables/usePublicTournamentFetch'
 
 const props = defineProps<{
   tenant: string
+  tenantMeta?: PublicTenantMeta | null
 }>()
 
 const mobileMenuOpen = ref(false)
 const mediaDropdownOpen = ref(false)
 const participantsDropdownOpen = ref(false)
+const mediaDropdownRef = ref<HTMLElement | null>(null)
+const participantsDropdownRef = ref<HTMLElement | null>(null)
 const route = useRoute()
 const { fetchTenantMeta } = usePublicTournamentFetch()
 const organizationNamesByTenant = useState<Record<string, string>>(
   'public-organization-names-by-tenant',
   () => ({}),
 )
+type PublicBranding = {
+  publicLogoUrl?: string | null
+  publicFaviconUrl?: string | null
+  publicAccentPrimary?: string | null
+  publicAccentSecondary?: string | null
+  publicThemeMode?: 'light' | 'dark' | 'system' | string | null
+  publicTagline?: string | null
+}
+type PublicSettings = {
+  publicOrganizationDisplayName?: string | null
+  publicDefaultLanding?: 'about' | 'tournaments' | 'participants' | 'media' | string | null
+}
+const brandingByTenant = useState<Record<string, PublicBranding>>(
+  'public-branding-by-tenant',
+  () => ({}),
+)
+const settingsByTenant = useState<Record<string, PublicSettings>>(
+  'public-settings-by-tenant',
+  () => ({}),
+)
 const organizationName = ref<string>(organizationNamesByTenant.value[props.tenant] ?? '')
+const organizationBranding = ref<PublicBranding>(brandingByTenant.value[props.tenant] ?? {})
+const organizationSettings = ref<PublicSettings>(settingsByTenant.value[props.tenant] ?? {})
 
 const hasTournamentContext = computed(() => {
   const tid = route.query.tid
@@ -87,6 +113,21 @@ const navLinks = computed(() => [
   },
 ])
 
+const brandHomeTarget = computed(() => {
+  const landing = String(organizationSettings.value.publicDefaultLanding ?? 'tournaments').trim().toLowerCase()
+  if (landing === 'about') return { path: `/${props.tenant}/about` }
+  if (landing === 'participants') return { path: `/${props.tenant}/participants-teams` }
+  if (landing === 'media') return { path: `/${props.tenant}/media-photo` }
+  const tid = typeof route.query.tid === 'string' && route.query.tid.trim()
+    ? route.query.tid.trim()
+    : undefined
+  return {
+    path: `/${props.tenant}/tournaments/table`,
+    query: tid ? { tid } : undefined,
+  }
+})
+
+
 const mediaOrgLinks = computed(() => [
   {
     key: 'photo' as const,
@@ -121,6 +162,29 @@ function closeMobileMenu() {
   mobileMenuOpen.value = false
 }
 
+function toggleMediaDropdown() {
+  mediaDropdownOpen.value = !mediaDropdownOpen.value
+  if (mediaDropdownOpen.value) participantsDropdownOpen.value = false
+}
+
+function toggleParticipantsDropdown() {
+  participantsDropdownOpen.value = !participantsDropdownOpen.value
+  if (participantsDropdownOpen.value) mediaDropdownOpen.value = false
+}
+
+function closeAllDesktopDropdowns() {
+  mediaDropdownOpen.value = false
+  participantsDropdownOpen.value = false
+}
+
+function onDropdownFocusOut(event: FocusEvent, kind: 'media' | 'participants') {
+  const root = kind === 'media' ? mediaDropdownRef.value : participantsDropdownRef.value
+  const next = event.relatedTarget as Node | null
+  if (root && next && root.contains(next)) return
+  if (kind === 'media') mediaDropdownOpen.value = false
+  else participantsDropdownOpen.value = false
+}
+
 const isActive = (link: { key: 'about' | 'tournaments' | 'participants' | 'media'; to: string; activePrefixes?: string[] }) => {
   if (hasTournamentContext.value || inTournamentWorkspace.value) {
     if (link.key === 'tournaments') return true
@@ -132,6 +196,81 @@ const isActive = (link: { key: 'about' | 'tournaments' | 'participants' | 'media
     route.path.startsWith(`${prefix}/`) ||
     (prefix.endsWith('-') && route.path.startsWith(prefix)),
   )
+}
+
+function normalizeHex(value: unknown, fallback: string) {
+  const v = String(value ?? '').trim()
+  return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : fallback
+}
+
+function shiftHex(hex: string, amount: number) {
+  const normalized = normalizeHex(hex, '#123c67').slice(1)
+  const n = Number.parseInt(normalized, 16)
+  const r = Math.max(0, Math.min(255, ((n >> 16) & 0xff) + amount))
+  const g = Math.max(0, Math.min(255, ((n >> 8) & 0xff) + amount))
+  const b = Math.max(0, Math.min(255, (n & 0xff) + amount))
+  return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`
+}
+
+function resolveThemeMode(raw: unknown): 'light' | 'dark' {
+  const mode = String(raw ?? '').trim().toLowerCase()
+  if (mode === 'light' || mode === 'dark') return mode
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+    return 'dark'
+  }
+  return 'light'
+}
+
+const brandPrimary = computed(() =>
+  normalizeHex(organizationBranding.value.publicAccentPrimary, '#123c67'),
+)
+const brandSecondary = computed(() =>
+  normalizeHex(organizationBranding.value.publicAccentSecondary, '#c80a48'),
+)
+const brandTertiary = computed(() => shiftHex(brandPrimary.value, 58))
+const brandLogoUrl = computed(() => {
+  const raw = String(organizationBranding.value.publicLogoUrl ?? '').trim()
+  return raw || '/logo.png'
+})
+const brandTagline = computed(() => {
+  const raw = String(organizationBranding.value.publicTagline ?? '').trim()
+  return raw || 'Лига и турниры'
+})
+const topBarStyle = computed(() => ({
+  backgroundColor: brandPrimary.value,
+}))
+const navBarStyle = computed(() => ({
+  backgroundColor: shiftHex(brandPrimary.value, -8),
+}))
+const activeNavStyle = computed(() => ({
+  backgroundColor: brandSecondary.value,
+}))
+const activeArrowStyle = computed(() => ({
+  backgroundColor: brandSecondary.value,
+}))
+const inactiveNavStyle = computed(() => ({
+  backgroundColor: 'transparent',
+}))
+
+function applyPublicBranding() {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+  root.style.setProperty('--public-brand-primary', brandPrimary.value)
+  root.style.setProperty('--public-brand-secondary', brandSecondary.value)
+  root.style.setProperty('--public-accent-primary', brandPrimary.value)
+  root.style.setProperty('--public-accent-secondary', brandSecondary.value)
+  root.style.setProperty('--public-accent-tertiary', brandTertiary.value)
+  root.setAttribute('data-public-theme', resolveThemeMode(organizationBranding.value.publicThemeMode))
+  const faviconUrl = String(organizationBranding.value.publicFaviconUrl ?? '').trim()
+  if (faviconUrl) {
+    let link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    link.href = faviconUrl
+  }
 }
 
 function isMediaActive() {
@@ -153,51 +292,85 @@ function isParticipantsActive() {
 async function loadOrganizationName() {
   try {
     const meta = await fetchTenantMeta(props.tenant)
-    const normalized = meta?.name?.trim() ?? ''
-    organizationName.value = normalized
-    if (normalized) {
-      organizationNamesByTenant.value = {
-        ...organizationNamesByTenant.value,
-        [props.tenant]: normalized,
-      }
-    }
+    applyMeta(meta)
   } catch {
     organizationName.value = organizationNamesByTenant.value[props.tenant] ?? ''
+    organizationBranding.value = brandingByTenant.value[props.tenant] ?? {}
+    organizationSettings.value = settingsByTenant.value[props.tenant] ?? {}
+    applyPublicBranding()
   }
+}
+
+function applyMeta(meta: PublicTenantMeta | null | undefined) {
+  const normalized = String(meta?.name ?? '').trim()
+  const displayName = String(meta?.publicSettings?.publicOrganizationDisplayName ?? '').trim()
+  organizationName.value = displayName || normalized || organizationName.value
+  organizationBranding.value = meta?.branding ?? organizationBranding.value
+  organizationSettings.value = meta?.publicSettings ?? organizationSettings.value
+
+  if (normalized) {
+    organizationNamesByTenant.value = {
+      ...organizationNamesByTenant.value,
+      [props.tenant]: normalized,
+    }
+  }
+  brandingByTenant.value = {
+    ...brandingByTenant.value,
+    [props.tenant]: meta?.branding ?? {},
+  }
+  settingsByTenant.value = {
+    ...settingsByTenant.value,
+    [props.tenant]: meta?.publicSettings ?? {},
+  }
+  applyPublicBranding()
 }
 
 watch(() => props.tenant, () => {
   organizationName.value = organizationNamesByTenant.value[props.tenant] ?? ''
-  void loadOrganizationName()
+  organizationBranding.value = brandingByTenant.value[props.tenant] ?? {}
+  organizationSettings.value = settingsByTenant.value[props.tenant] ?? {}
+  applyPublicBranding()
+  if (!props.tenantMeta) void loadOrganizationName()
 })
+
+watch(
+  () => props.tenantMeta,
+  (meta) => {
+    if (meta) applyMeta(meta)
+  },
+  { immediate: true },
+)
 
 watch(
   () => route.fullPath,
   () => {
-    mediaDropdownOpen.value = false
-    participantsDropdownOpen.value = false
+    closeAllDesktopDropdowns()
   },
 )
 
 onMounted(() => {
-  void loadOrganizationName()
+  applyPublicBranding()
+  if (props.tenantMeta) applyMeta(props.tenantMeta)
+  else void loadOrganizationName()
 })
 </script>
 
 <template>
   <header class="w-full border-b border-[#d0d7e2] shadow-[0_6px_14px_rgba(15,23,42,0.1)]">
-    <div class="bg-[#123c67] text-white">
+    <div class="text-white" :style="topBarStyle">
       <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         <div class="flex min-w-0 items-center gap-3">
-          <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm">
-            <img src="/logo.png" alt="Tournament Platform" class="h-full w-full object-contain" />
-          </div>
-          <div class="min-w-0">
-            <p class="truncate text-lg font-semibold tracking-wide">
-              {{ organizationName || 'Tournament Platform' }}
-            </p>
-            <p class="truncate text-xs text-white/75">Лига и турниры</p>
-          </div>
+          <NuxtLink :to="brandHomeTarget" class="flex items-center gap-3 min-w-0">
+            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm">
+              <img :src="brandLogoUrl" alt="Tournament Platform" class="h-full w-full object-contain" />
+            </div>
+            <div class="min-w-0">
+              <p class="truncate text-lg font-semibold tracking-wide">
+                {{ organizationName || 'Tournament Platform' }}
+              </p>
+              <p class="truncate text-xs text-white/75">{{ brandTagline }}</p>
+            </div>
+          </NuxtLink>
         </div>
         <Button
           class="md:!hidden !text-white"
@@ -210,30 +383,42 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="bg-[#1a5a8c] border-t border-white/10">
+    <div class="border-t border-white/10" :style="navBarStyle">
       <div class="mx-auto hidden max-w-6xl items-stretch px-4 md:flex">
         <template v-for="link in navLinks">
           <div
             v-if="link.key === 'participants'"
             :key="link.to + link.label"
+            ref="participantsDropdownRef"
             class="relative"
             @mouseenter="participantsDropdownOpen = true"
             @mouseleave="participantsDropdownOpen = false"
+            @focusout="onDropdownFocusOut($event, 'participants')"
           >
             <button
               type="button"
+              :aria-expanded="participantsDropdownOpen ? 'true' : 'false'"
+              aria-haspopup="menu"
               class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-              :class="isParticipantsActive() ? 'bg-[#c80a48] text-white' : 'hover:bg-[#24679e]'"
+              :class="isParticipantsActive() ? 'text-white' : 'hover:bg-[#24679e]'"
+              :style="isParticipantsActive() ? activeNavStyle : inactiveNavStyle"
+              @click="toggleParticipantsDropdown"
+              @keydown.escape.prevent="closeAllDesktopDropdowns"
+              @keydown.enter.prevent="toggleParticipantsDropdown"
+              @keydown.space.prevent="toggleParticipantsDropdown"
+              @keydown.arrow-down.prevent="participantsDropdownOpen = true"
             >
               <span>{{ link.label }}</span>
               <span
                 v-if="isParticipantsActive()"
-                class="pointer-events-none absolute -right-4 top-0 h-full w-4 bg-[#c80a48]"
+                class="pointer-events-none absolute -right-4 top-0 h-full w-4"
+                :style="activeArrowStyle"
                 style="clip-path: polygon(0 0, 100% 50%, 0 100%)"
               />
             </button>
             <div
               v-if="participantsDropdownOpen"
+              role="menu"
               class="absolute left-0 top-full z-30 w-56 overflow-hidden rounded-b-lg border border-[#d6e0ee] bg-white shadow-lg"
             >
               <NuxtLink
@@ -249,24 +434,36 @@ onMounted(() => {
           <div
             v-else-if="link.key === 'media'"
             :key="link.to + link.label"
+            ref="mediaDropdownRef"
             class="relative"
             @mouseenter="mediaDropdownOpen = true"
             @mouseleave="mediaDropdownOpen = false"
+            @focusout="onDropdownFocusOut($event, 'media')"
           >
             <button
               type="button"
+              :aria-expanded="mediaDropdownOpen ? 'true' : 'false'"
+              aria-haspopup="menu"
               class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-              :class="isMediaActive() ? 'bg-[#c80a48] text-white' : 'hover:bg-[#24679e]'"
+              :class="isMediaActive() ? 'text-white' : 'hover:bg-[#24679e]'"
+              :style="isMediaActive() ? activeNavStyle : inactiveNavStyle"
+              @click="toggleMediaDropdown"
+              @keydown.escape.prevent="closeAllDesktopDropdowns"
+              @keydown.enter.prevent="toggleMediaDropdown"
+              @keydown.space.prevent="toggleMediaDropdown"
+              @keydown.arrow-down.prevent="mediaDropdownOpen = true"
             >
               <span>{{ link.label }}</span>
               <span
                 v-if="isMediaActive()"
-                class="pointer-events-none absolute -right-4 top-0 h-full w-4 bg-[#c80a48]"
+                class="pointer-events-none absolute -right-4 top-0 h-full w-4"
+                :style="activeArrowStyle"
                 style="clip-path: polygon(0 0, 100% 50%, 0 100%)"
               />
             </button>
             <div
               v-if="mediaDropdownOpen"
+              role="menu"
               class="absolute left-0 top-full z-30 w-56 overflow-hidden rounded-b-lg border border-[#d6e0ee] bg-white shadow-lg"
             >
               <NuxtLink
@@ -284,12 +481,14 @@ onMounted(() => {
             :key="link.to + link.label"
             :to="{ path: link.to, query: link.query }"
             class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-            :class="isActive(link) ? 'bg-[#c80a48] text-white' : 'hover:bg-[#24679e]'"
+            :class="isActive(link) ? 'text-white' : 'hover:bg-[#24679e]'"
+            :style="isActive(link) ? activeNavStyle : inactiveNavStyle"
           >
             <span>{{ link.label }}</span>
             <span
               v-if="isActive(link)"
-              class="pointer-events-none absolute -right-4 top-0 h-full w-4 bg-[#c80a48]"
+              class="pointer-events-none absolute -right-4 top-0 h-full w-4"
+              :style="activeArrowStyle"
               style="clip-path: polygon(0 0, 100% 50%, 0 100%)"
             />
           </NuxtLink>

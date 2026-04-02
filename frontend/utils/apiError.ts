@@ -1,3 +1,12 @@
+function messageFromUnknownBody(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null
+  const o = body as Record<string, unknown>
+  const msg = o.message
+  if (typeof msg === 'string' && msg.trim()) return msg.trim()
+  if (Array.isArray(msg) && msg.length && typeof msg[0] === 'string') return msg.join(', ')
+  return null
+}
+
 /**
  * Текст ошибки из ответа API ($fetch / ofetch) или общее сообщение.
  */
@@ -6,12 +15,11 @@ export function getApiErrorMessage(error: unknown, fallback = 'Произошл�
 
   if (typeof error === 'object') {
     const e = error as Record<string, unknown>
-    const data = e.data
-    if (data && typeof data === 'object') {
-      const msg = (data as Record<string, unknown>).message
-      if (typeof msg === 'string' && msg.trim()) return msg
-      if (Array.isArray(msg) && msg.length && typeof msg[0] === 'string') return msg.join(', ')
-    }
+    const fromData = messageFromUnknownBody(e.data)
+    if (fromData) return fromData
+    const response = e.response as Record<string, unknown> | undefined
+    const fromResponseData = messageFromUnknownBody(response?._data)
+    if (fromResponseData) return fromResponseData
     if (typeof e.message === 'string' && e.message.trim()) return e.message
     if (typeof e.statusMessage === 'string' && e.statusMessage.trim()) return e.statusMessage
   }
@@ -30,10 +38,10 @@ export function getApiErrorMessages(error: unknown, fallback = 'Произошл
 
   if (typeof error === 'object') {
     const e = error as Record<string, unknown>
-    const data = e.data
-    if (data && typeof data === 'object') {
-      const msg = (data as Record<string, unknown>).message
-      if (typeof msg === 'string' && msg.trim()) return [msg]
+    const tryBody = (body: unknown): string[] | null => {
+      if (!body || typeof body !== 'object') return null
+      const msg = (body as Record<string, unknown>).message
+      if (typeof msg === 'string' && msg.trim()) return [msg.trim()]
       if (Array.isArray(msg)) {
         const list = msg
           .filter((x): x is string => typeof x === 'string')
@@ -41,7 +49,13 @@ export function getApiErrorMessages(error: unknown, fallback = 'Произошл
           .filter(Boolean)
         if (list.length) return list
       }
+      return null
     }
+    const fromData = tryBody(e.data)
+    if (fromData) return fromData
+    const response = e.response as Record<string, unknown> | undefined
+    const fromRd = tryBody(response?._data)
+    if (fromRd) return fromRd
     if (typeof e.message === 'string' && e.message.trim()) return [e.message]
     if (typeof e.statusMessage === 'string' && e.statusMessage.trim()) return [e.statusMessage]
   }

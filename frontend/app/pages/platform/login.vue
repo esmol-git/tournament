@@ -102,7 +102,11 @@ async function submit() {
       </FloatLabel>
       <p v-if="showPasswordError" class="-mt-2 text-[11px] leading-3 text-red-500">{{ formErrors.password }}</p>
 
-      <p v-if="error" class="text-sm text-danger-500">
+      <p
+        v-if="error"
+        role="alert"
+        class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
+      >
         {{ error }}
       </p>
 

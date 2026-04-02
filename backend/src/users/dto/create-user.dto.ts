@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsEnum,
@@ -12,8 +13,15 @@ export class CreateUserDto {
   @MinLength(3)
   username: string;
 
+  /** Необязателен (в отличие от регистрации организации). Пустая строка → null. */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === null || value === undefined) return undefined;
+    const s = String(value).trim();
+    return s === '' ? undefined : s;
+  })
   @IsEmail()
-  email: string;
+  email?: string;
 
   @IsString()
   @MinLength(3)

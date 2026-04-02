@@ -6,6 +6,7 @@ import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.gu
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
+import { PatchTenantDto } from './dto/patch-tenant.dto';
 import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
 import { PlatformService } from './platform.service';
 
@@ -37,6 +38,11 @@ export class PlatformController {
     @Body() dto: PatchTenantSubscriptionDto,
   ) {
     return this.platformService.updateTenantSubscription(id, dto);
+  }
+
+  @Patch('tenants/:id')
+  async patchTenant(@Param('id') id: string, @Body() dto: PatchTenantDto) {
+    return this.platformService.updateTenant(id, dto);
   }
 
   @Patch('tenants/:id/block')

@@ -20,6 +20,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreatePlayerDto } from './dto/create-player.dto';
 import { PlayersFilterQueryDto } from './dto/players-filter-query.dto';
@@ -32,6 +33,7 @@ import { PlayersService } from './players.service';
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
 )
 @Controller()
 export class PlayersController {

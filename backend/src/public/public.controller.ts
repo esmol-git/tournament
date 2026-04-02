@@ -8,7 +8,7 @@ import { PublicHttpCacheInterceptor } from './public-http-cache.interceptor';
 
 /**
  * Публичный read-only API по slug тенанта из URL (`/[tenant]/…`).
- * Без JWT: только турниры со статусом ACTIVE | COMPLETED | ARCHIVED.
+ * Без JWT: турниры с флагом published; в общем списке — также ACTIVE | COMPLETED | ARCHIVED.
  */
 @ApiTags('public')
 @UseInterceptors(PublicHttpCacheInterceptor)
@@ -28,6 +28,21 @@ export class PublicController {
     return this.tournaments.listPublicManagementCached(tenantSlug);
   }
 
+  @Get('participants/teams')
+  @ApiOperation({ summary: 'Публичные команды организации (агрегировано по турнирам)' })
+  async participantsTeams(@Param('tenantSlug') tenantSlug: string) {
+    return this.tournaments.listPublicOrganizationTeamsCached(tenantSlug);
+  }
+
+  @Get('participants/players')
+  @ApiOperation({
+    summary:
+      'Публичная статистика игроков организации (агрегировано по турнирам, по протоколам матчей)',
+  })
+  async participantsPlayers(@Param('tenantSlug') tenantSlug: string) {
+    return this.tournaments.listPublicOrganizationPlayersCached(tenantSlug);
+  }
+
   @Get('tournaments')
   @ApiOperation({ summary: 'Список публичных турниров тенанта' })
   async listTournaments(
@@ -43,8 +58,18 @@ export class PublicController {
     @Param('tenantSlug') tenantSlug: string,
     @Param('tournamentId') tournamentId: string,
     @Query('groupId') groupId?: string,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.tournaments.getPublicTableCached(tenantSlug, tournamentId, groupId);
+    const parsedOffset = Number.isFinite(Number(offset)) ? Math.max(0, Number(offset)) : undefined;
+    const parsedLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : undefined;
+    return this.tournaments.getPublicTableCached(
+      tenantSlug,
+      tournamentId,
+      groupId,
+      parsedOffset,
+      parsedLimit,
+    );
   }
 
   @Get('tournaments/:tournamentId/roster')

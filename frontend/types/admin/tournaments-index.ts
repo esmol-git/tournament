@@ -20,8 +20,12 @@ export interface TournamentRow {
   startsAt: string | null
   endsAt: string | null
   status: TournamentStatus
+  /** Виден на публичном сайте. */
+  published?: boolean
   teamsCount: number
   logoUrl?: string | null
+  /** Цвет матчей турнира в админ-календаре (#RRGGBB), null — по умолчанию */
+  calendarColor?: string | null
   seasonId?: string | null
   season?: { id: string; name: string; code?: string | null } | null
   competitionId?: string | null
@@ -50,10 +54,12 @@ export interface TournamentDetails {
   description?: string | null
   category?: string | null
   logoUrl?: string | null
+  calendarColor?: string | null
   format: TournamentFormat
   groupCount?: number
   playoffQualifiersPerGroup?: number
   status: TournamentStatus
+  published?: boolean
   startsAt?: string | null
   endsAt?: string | null
   intervalDays: number

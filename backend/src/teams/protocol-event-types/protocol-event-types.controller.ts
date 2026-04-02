@@ -15,16 +15,24 @@ import { JwtPayload } from '../../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../../auth/subscription-plan-feature.guard';
 import { CreateProtocolEventTypeDto } from './dto/create-protocol-event-type.dto';
 import { UpdateProtocolEventTypeDto } from './dto/update-protocol-event-type.dto';
 import { ProtocolEventTypesService } from './protocol-event-types.service';
 
+@RequireSubscriptionPlanFeature('reference_directory_advanced')
 @ApiTags('protocol-event-types')
 @UseGuards(
   JwtAuthGuard,
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class ProtocolEventTypesController {

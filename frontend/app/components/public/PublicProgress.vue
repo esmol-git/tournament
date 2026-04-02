@@ -15,7 +15,7 @@ const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantCont
 const tenant = tenantSlug
 const { fetchTable, fetchTournamentDetail } = usePublicTournamentFetch()
 
-const loading = ref(false)
+const loading = ref(!!props.tournamentId)
 const errorText = ref('')
 
 const rows = ref<TableRow[]>([])
@@ -118,7 +118,10 @@ async function load() {
   errorText.value = ''
   rows.value = []
   matches.value = []
-  if (!props.tournamentId) return
+  if (!props.tournamentId) {
+    loading.value = false
+    return
+  }
 
   await ensureTenantResolved()
   if (tenantNotFound.value) {
@@ -151,7 +154,7 @@ watch(
 </script>
 
 <template>
-  <div class="rounded-2xl border border-[#b7c7dd] bg-white p-4">
+  <div class="w-full max-w-full rounded-2xl border border-[#b7c7dd] bg-white p-4">
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="text-sm font-semibold text-[#123c67]">Прогресс</div>

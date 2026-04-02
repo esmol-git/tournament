@@ -3,11 +3,14 @@ import { Transform } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
+  Min,
+  Max,
   Matches,
 } from 'class-validator';
-import { MatchStatus } from '@prisma/client';
+import { MatchStage, MatchStatus } from '@prisma/client';
 
 const parseCsvToArray = (value: unknown): unknown[] => {
   if (value === undefined || value === null) return [];
@@ -47,4 +50,30 @@ export class MatchesFilterQueryDto {
   @IsArray()
   @IsString({ each: true })
   teamIds?: string[];
+
+  @ApiPropertyOptional({ enum: MatchStage, example: MatchStage.PLAYOFF })
+  @IsOptional()
+  @IsEnum(MatchStage)
+  stage?: MatchStage;
+
+  @ApiPropertyOptional({ example: 0, description: 'Pagination offset for matches' })
+  @IsOptional()
+  @Transform(({ value }) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : undefined;
+  })
+  @IsInt()
+  @Min(0)
+  matchesOffset?: number;
+
+  @ApiPropertyOptional({ example: 50, description: 'Pagination limit for matches (1..200)' })
+  @IsOptional()
+  @Transform(({ value }) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : undefined;
+  })
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  matchesLimit?: number;
 }

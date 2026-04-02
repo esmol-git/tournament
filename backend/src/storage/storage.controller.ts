@@ -25,12 +25,13 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
 import { encodeRasterImageToWebp } from './encode-raster-to-webp';
 import { StorageService } from './storage.service';
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-/** Префикс ключа в бакете: media, docs, tournaments, teams, players, news, gallery */
+/** Префикс ключа в бакете: media, docs, tournaments, teams, players, news, gallery, tenant-branding */
 const UPLOAD_FOLDERS = [
   'media',
   'docs',
@@ -39,6 +40,7 @@ const UPLOAD_FOLDERS = [
   'players',
   'news',
   'gallery',
+  'tenant-branding',
 ] as const;
 type UploadFolder = (typeof UPLOAD_FOLDERS)[number];
 
@@ -81,6 +83,7 @@ function safeExtension(
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
 )
 @Controller('upload')
 export class StorageController {
@@ -100,7 +103,7 @@ export class StorageController {
     required: false,
     enum: UPLOAD_FOLDERS,
     description:
-      'Префикс пути: media (default), docs, tournaments, teams, players, news, gallery',
+      'Префикс пути: media (default), docs, tournaments, teams, players, news, gallery, tenant-branding',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -113,7 +116,7 @@ export class StorageController {
           type: 'string',
           enum: [...UPLOAD_FOLDERS],
           description:
-            'Префикс пути в бакете: media | docs | tournaments | teams | players | news | gallery',
+            'Префикс пути в бакете: media | docs | tournaments | teams | players | news | gallery | tenant-branding',
         },
       },
     },

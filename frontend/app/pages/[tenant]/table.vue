@@ -1,35 +1,40 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useAutoAnimate } from '@formkit/auto-animate/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import type { MatchRow, TableRow, TournamentDetails } from '~/types/tournament-admin'
 
-import PublicHeader from '~/app/components/public/PublicHeader.vue'
-import PublicFooter from '~/app/components/public/PublicFooter.vue'
 import PublicChessboard from '~/app/components/public/PublicChessboard.vue'
 import PublicPlayoff from '~/app/components/public/PublicPlayoff.vue'
 import PublicProgress from '~/app/components/public/PublicProgress.vue'
-import PublicTournamentSidebar from '~/app/components/public/PublicTournamentSidebar.vue'
 import PublicTournamentTabs from '~/app/components/public/PublicTournamentTabs.vue'
-import PublicTournamentContextCard from '~/app/components/public/PublicTournamentContextCard.vue'
 import { getTournamentCapabilities } from '~/utils/tournamentFormatCapabilities'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
-import { usePublicTournamentSelection } from '~/composables/usePublicTournamentSelection'
-import type { PublicTenantMeta } from '~/composables/usePublicTournamentFetch'
+import { usePublicTournamentWorkspace } from '~/composables/usePublicTournamentWorkspace'
+import { PUBLIC_AUTO_ANIMATE } from '~/constants/publicMotion'
+import { usePublicTournamentSidebarTopStatsStore } from '~/composables/usePublicTournamentSidebarTopStatsStore'
 
 definePageMeta({
-  layout: 'public',
+  layout: 'public-tournament',
   path: '/:tenant/tournaments/table',
   alias: ['/:tenant/tournaments', '/:tenant/table'],
 })
 
 const route = useRoute()
 const router = useRouter()
-const { loadAllTournaments, fetchTournamentDetail, fetchTable: fetchTablePublic, fetchTenantMeta, fetchRoster } =
-  usePublicTournamentFetch()
+const { fetchTournamentDetail, fetchTable: fetchTablePublic, fetchTablePage, fetchRoster } = usePublicTournamentFetch()
 
-const { tenantSlug, selectedTid, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
-const tenant = tenantSlug
+const { ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
+const {
+  tenant,
+  tenantMeta,
+  selectedTournamentId,
+  selectedTournament,
+  loading,
+  workspaceReady,
+  pageContentLoading,
+} = usePublicTournamentWorkspace()
 
 const loadingTable = ref(false)
 const errorText = ref('')
@@ -42,93 +47,117 @@ const teamLogosLoadedForTid = ref<string | null>(null)
 const teamLogoById = ref<Record<string, string>>({})
 const playerById = ref<Record<string, { fullName: string; teamName: string | null; photoUrl: string | null }>>({})
 const isInitializing = ref(true)
+const suppressWatchEffects = ref(true)
 const detailsRequestId = ref(0)
 const tableRequestId = ref(0)
+// kept only for query sync / legacy; actual slider runs in sidebar
 const topStatsSlideIndex = ref(0)
-let topStatsSlideTimer: ReturnType<typeof setInterval> | null = null
+const { publish: publishSidebarTopStats, clear: clearSidebarTopStats } =
+  usePublicTournamentSidebarTopStatsStore()
+const TABLE_PAGE_SIZE = 50
+const debugRequestCounts = ref({
+  details: 0,
+  roster: 0,
+  table: 0,
+  tableMore: 0,
+})
+const showDebugPanel = computed(() => {
+  if (!import.meta.dev) return false
+  const raw = String(route.query.debug ?? '').trim().toLowerCase()
+  return raw === '1' || raw === 'true'
+})
+const debugPanelCollapsed = ref(false)
+const DEBUG_PANEL_COLLAPSE_KEY = 'public-table-debug-panel-collapsed'
+const resetDebugRequestCounts = () => {
+  debugRequestCounts.value = {
+    details: 0,
+    roster: 0,
+    table: 0,
+    tableMore: 0,
+  }
+}
+
+// Teleport удалён: top-stats теперь рендерится внутри `PublicTournamentSidebar.vue`.
 
 const tournamentDetails = ref<TournamentDetails | null>(null)
-const tenantMeta = ref<PublicTenantMeta | null>(null)
-const {
-  tournaments,
-  selectedTournamentId,
-  selectedTournament,
-  loading,
-  initializeSelectionFromContext,
-  fetchTournaments,
-} = usePublicTournamentSelection({
-  tenant,
-  selectedTid,
-  loadAllTournaments,
-})
 /** Несколько групп: отдельная таблица на каждую (только групповой этап). */
 const groupTableSections = ref<{ id: string; name: string; rows: TableRow[] }[]>([])
+const groupTableViewMode = ref<'tabs' | 'list'>('tabs')
+const activeGroupSectionId = ref<string | null>(null)
 /** Одна группа или без деления — одна таблица. */
 const singleTableRows = ref<TableRow[]>([])
+const singleTableTotalRows = ref(0)
+const factsLeaderRow = ref<TableRow | null>(null)
+const factsLeaderLoadedForTid = ref<string | null>(null)
+const tableLoadingMore = ref(false)
+const tableLoadMoreSentinel = ref<HTMLElement | null>(null)
+const tableSentinelIntersecting = ref(false)
+let tableLoadMoreObserver: IntersectionObserver | null = null
 
-const tournamentStatusLabel = computed(() => {
-  switch (selectedTournament.value?.status) {
-    case 'ACTIVE':
-      return 'Идет'
-    case 'COMPLETED':
-      return 'Завершен'
-    case 'ARCHIVED':
-      return 'Архив'
-    case 'DRAFT':
-      return 'Черновик'
-    default:
-      return 'Не указан'
-  }
+const hasSplitGroups = computed(() => {
+  const detailsGroups = tournamentDetails.value?.groups?.length ?? 0
+  if (detailsGroups > 1) return true
+  return groupTableSections.value.length > 1
 })
-
-const tournamentStatusBadgeClass = computed(() => {
-  switch (selectedTournament.value?.status) {
-    case 'ACTIVE':
-      return 'bg-[#eef5ff] text-[#1a5a8c] ring-1 ring-[#d2e2f7]'
-    case 'COMPLETED':
-      return 'bg-[#fff2f7] text-[#b10f46] ring-1 ring-[#f4c8d8]'
-    case 'ARCHIVED':
-      return 'bg-slate-100 text-slate-700 ring-1 ring-slate-300'
-    case 'DRAFT':
-      return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
-    default:
-      return 'bg-surface-100 text-surface-700 ring-1 ring-surface-200'
-  }
+const visibleGroupTableSections = computed(() => {
+  if (!groupTableSections.value.length) return []
+  if (groupTableViewMode.value === 'list') return groupTableSections.value
+  const active = groupTableSections.value.find((sec) => sec.id === activeGroupSectionId.value)
+  return active ? [active] : [groupTableSections.value[0]]
 })
-
-const dateLabel = computed(() => {
-  const t = selectedTournament.value
-  if (!t) return 'Даты не указаны'
-  const s = t.startsAt ? new Date(t.startsAt).toLocaleDateString('ru-RU') : null
-  const e = t.endsAt ? new Date(t.endsAt).toLocaleDateString('ru-RU') : null
-  if (s && e) return `${s} - ${e}`
-  if (s) return `С ${s}`
-  if (e) return `До ${e}`
-  return 'Даты не указаны'
-})
-
-const hasSplitGroups = computed(() => groupTableSections.value.length > 1)
 
 const leader = computed(() => {
   if (hasSplitGroups.value) return null
-  return singleTableRows.value[0] ?? null
+  return singleTableRows.value[0] ?? factsLeaderRow.value ?? null
 })
 
-const matchesPlayed = computed(() => {
-  if (groupTableSections.value.length) {
-    return groupTableSections.value.reduce(
-      (sum, sec) => sum + sec.rows.reduce((acc, row) => acc + Number(row.played ?? 0), 0),
-      0,
-    )
-  }
-  return singleTableRows.value.reduce((acc, row) => acc + Number(row.played ?? 0), 0)
+const isPlayoffTournament = computed(
+  () => selectedTournament.value?.format === 'PLAYOFF',
+)
+
+const matchesCountDisplay = computed(() => {
+  const fromSummary = tournamentDetails.value?.summary?.matchesTotal
+  if (typeof fromSummary === 'number' && fromSummary >= 0) return fromSummary
+  const fromTotal = tournamentDetails.value?.matchesTotal
+  if (typeof fromTotal === 'number' && fromTotal >= 0) return fromTotal
+  const fromDetails = tournamentDetails.value?.matches?.length
+  if (typeof fromDetails === 'number' && fromDetails > 0) return fromDetails
+
+  // Fallback for partial data: table stores team appearances, so divide by 2.
+  const teamAppearances = groupTableSections.value.length
+    ? groupTableSections.value.reduce(
+        (sum, sec) => sum + sec.rows.reduce((acc, row) => acc + Number(row.played ?? 0), 0),
+        0,
+      )
+    : singleTableRows.value.reduce((acc, row) => acc + Number(row.played ?? 0), 0)
+  return Math.floor(teamAppearances / 2)
 })
 
 const teamsCountDisplay = computed(() => {
+  const fromSummary = tournamentDetails.value?.summary
+  if (fromSummary) {
+    if (isPlayoffTournament.value) return fromSummary.teamsExpectedTotal
+    return fromSummary.teamsRegisteredTotal
+  }
+  if (isPlayoffTournament.value && Number.isFinite(Number(tournamentDetails.value?.minTeams ?? NaN))) {
+    return Number(tournamentDetails.value?.minTeams ?? 0)
+  }
   if (groupTableSections.value.length) {
     return groupTableSections.value.reduce((s, g) => s + g.rows.length, 0)
   }
   return singleTableRows.value.length
+})
+
+const factsThirdLabel = computed(() => {
+  if (isPlayoffTournament.value) return 'Победитель:'
+  return 'Лидер:'
+})
+
+const factsThirdValue = computed(() => {
+  if (isPlayoffTournament.value) {
+    return tournamentDetails.value?.summary?.championTeamName ?? 'Определится после финала'
+  }
+  return hasSplitGroups.value ? 'Отдельно по группам' : (leader.value?.teamName ?? '—')
 })
 
 const groupsCountLabel = computed(() => {
@@ -143,8 +172,6 @@ const groupsCountLabel = computed(() => {
 const hasSelectedTournament = computed(
   () => !!selectedTournamentId.value && !!selectedTournament.value,
 )
-const showTournamentSidebar = computed(() => hasSelectedTournament.value)
-const tableLayoutClass = computed(() => (showTournamentSidebar.value ? 'public-grid' : 'public-container'))
 const showPageSkeleton = computed(() => {
   return (
     !pageReady.value ||
@@ -165,6 +192,24 @@ const availableViews = computed(() => {
   if (tournamentCapabilities.value.showProgress) views.push('progress')
   if (tournamentCapabilities.value.showPlayoff) views.push('playoff')
   return views
+})
+const tenantPublicSettings = computed(() => tenantMeta.value?.publicSettings ?? null)
+const showLeaderInFacts = computed(() => tenantPublicSettings.value?.publicShowLeaderInFacts !== false)
+const showTopStats = computed(() => tenantPublicSettings.value?.publicShowTopStats !== false)
+const orderedAvailableViews = computed(() => {
+  const views = availableViews.value
+  const preferred = String(tenantPublicSettings.value?.publicTournamentTabsOrder ?? '')
+    .split(',')
+    .map(v => v.trim().toLowerCase())
+    .filter(v => v === 'table' || v === 'chessboard' || v === 'progress' || v === 'playoff') as Array<'table' | 'chessboard' | 'progress' | 'playoff'>
+  const ordered: Array<'table' | 'chessboard' | 'progress' | 'playoff'> = []
+  for (const v of preferred) {
+    if (views.includes(v) && !ordered.includes(v)) ordered.push(v)
+  }
+  for (const v of views) {
+    if (!ordered.includes(v)) ordered.push(v)
+  }
+  return ordered
 })
 
 const playoffQualifiersPerGroup = computed(() => {
@@ -416,25 +461,25 @@ const topStatsSlides = computed(() => {
   ] as const
 })
 
-const currentTopStatsSlide = computed(() => {
-  const slides = topStatsSlides.value
-  if (!slides.length) return null
-  const idx = Math.max(0, Math.min(topStatsSlideIndex.value, slides.length - 1))
-  return slides[idx] ?? null
-})
+// no longer used (top-stats UI moved to sidebar)
 
-function setTopStatsSlide(index: number) {
-  const total = topStatsSlides.value.length
-  if (!total) return
-  topStatsSlideIndex.value = ((index % total) + total) % total
-}
+// no-op
 
-function startTopStatsSlider() {
-  if (topStatsSlideTimer) clearInterval(topStatsSlideTimer)
-  topStatsSlideTimer = setInterval(() => {
-    setTopStatsSlide(topStatsSlideIndex.value + 1)
-  }, 4500)
-}
+// no-op: слайдер крутится внутри сайдбара
+
+watch(
+  [hasSelectedTournament, showPageSkeleton, showTopStats, selectedTournamentId, tenant, topStatsSlides],
+  () => {
+    const t = String(tenant.value ?? '').trim()
+    const tid = String(selectedTournamentId.value ?? '').trim()
+    if (!hasSelectedTournament.value || !t || !tid || showPageSkeleton.value || !showTopStats.value) {
+      if (t && tid) clearSidebarTopStats(t, tid)
+      return
+    }
+    publishSidebarTopStats(t, tid, topStatsSlides.value as any)
+  },
+  { immediate: true },
+)
 
 function syncTidAndViewToQuery(nextId: string | null) {
   const q: Record<string, any> = { ...route.query, view: viewType.value }
@@ -451,11 +496,42 @@ function parseQueryView(
   return null
 }
 
+function debugLog(event: string, meta?: Record<string, unknown>) {
+  if (!import.meta.dev) return
+  // eslint-disable-next-line no-console
+  console.debug('[public-table]', event, { ...debugRequestCounts.value, ...(meta ?? {}) })
+}
+
+async function bootstrapTablePage(opts?: { syncTenantRoute?: boolean }) {
+  await ensureTenantResolved()
+
+  if (tenantNotFound.value) {
+    errorText.value = 'Тенант не найден. Проверьте ссылку.'
+    return
+  }
+
+  if (opts?.syncTenantRoute && String(route.params.tenant ?? '') !== tenant.value) {
+    await router.replace({ params: { tenant: tenant.value }, query: route.query })
+  }
+
+  const qView = parseQueryView(route.query.view)
+  if (qView) viewType.value = qView
+  await fetchTournamentDetails()
+  if (viewType.value !== 'table') {
+    await ensureFactsLeaderLoaded()
+  }
+  if (viewType.value === 'table') {
+    await fetchTable()
+  }
+}
+
 async function fetchTournamentDetails() {
   if (!selectedTournamentId.value) {
     tournamentDetails.value = null
     singleTableRows.value = []
     groupTableSections.value = []
+    factsLeaderRow.value = null
+    factsLeaderLoadedForTid.value = null
     tableDataLoadedForTid.value = null
     teamLogosLoadedForTid.value = null
     teamLogoById.value = {}
@@ -468,11 +544,17 @@ async function fetchTournamentDetails() {
   if (tournamentDetails.value?.id === tid) return
   const reqId = ++detailsRequestId.value
   tableDataLoadedForTid.value = null
+  factsLeaderRow.value = null
+  factsLeaderLoadedForTid.value = null
   try {
+    debugRequestCounts.value.details += 1
+    debugLog('fetchTournamentDetails:start', { tid })
     const detail = await fetchTournamentDetail(tenant.value, tid)
     if (reqId !== detailsRequestId.value || tid !== selectedTournamentId.value) return
     tournamentDetails.value = detail
     if (teamLogosLoadedForTid.value !== tid) {
+      debugRequestCounts.value.roster += 1
+      debugLog('fetchRoster:start', { tid })
       const roster = await fetchRoster(tenant.value, tid)
       if (reqId !== detailsRequestId.value || tid !== selectedTournamentId.value) return
       const nextMap: Record<string, string> = {}
@@ -498,6 +580,46 @@ async function fetchTournamentDetails() {
   }
 }
 
+async function ensureFactsLeaderLoaded() {
+  const tid = selectedTournamentId.value
+  if (!tid) {
+    factsLeaderRow.value = null
+    factsLeaderLoadedForTid.value = null
+    return
+  }
+  if (factsLeaderLoadedForTid.value === tid) return
+  const details = tournamentDetails.value
+  if (!details) return
+  if (details.format === 'PLAYOFF') {
+    factsLeaderRow.value = null
+    factsLeaderLoadedForTid.value = tid
+    return
+  }
+  if ((details.groups?.length ?? 0) > 1) {
+    factsLeaderRow.value = null
+    factsLeaderLoadedForTid.value = tid
+    return
+  }
+  if (singleTableRows.value.length > 0) {
+    factsLeaderRow.value = singleTableRows.value[0]
+    factsLeaderLoadedForTid.value = tid
+    return
+  }
+  try {
+    const groupId = details.groups?.length === 1 ? details.groups[0].id : undefined
+    const page = await fetchTablePage(tenant.value, tid, {
+      groupId,
+      offset: 0,
+      limit: 1,
+    })
+    if (tid !== selectedTournamentId.value) return
+    factsLeaderRow.value = page.items[0] ?? null
+    factsLeaderLoadedForTid.value = tid
+  } catch {
+    // No-op: facts card can show fallback when table request fails.
+  }
+}
+
 async function fetchTable() {
   if (!selectedTournamentId.value) {
     singleTableRows.value = []
@@ -517,6 +639,8 @@ async function fetchTable() {
   loadingTable.value = true
   errorText.value = ''
   try {
+    debugRequestCounts.value.table += 1
+    debugLog('fetchTable:start', { tid })
     const detail = tournamentDetails.value
     const groups = detail.groups ?? []
 
@@ -530,12 +654,30 @@ async function fetchTable() {
       )
       groupTableSections.value = sections
       singleTableRows.value = []
+      singleTableTotalRows.value = 0
+      factsLeaderRow.value = null
+      factsLeaderLoadedForTid.value = tid
     } else if (groups.length === 1) {
-      singleTableRows.value = await fetchTablePublic(tenant.value, tid, groups[0].id)
+      const page = await fetchTablePage(tenant.value, tid, {
+        groupId: groups[0].id,
+        offset: 0,
+        limit: TABLE_PAGE_SIZE,
+      })
+      singleTableRows.value = page.items
+      singleTableTotalRows.value = page.total
       groupTableSections.value = []
+      factsLeaderRow.value = page.items[0] ?? null
+      factsLeaderLoadedForTid.value = tid
     } else {
-      singleTableRows.value = await fetchTablePublic(tenant.value, tid)
+      const page = await fetchTablePage(tenant.value, tid, {
+        offset: 0,
+        limit: TABLE_PAGE_SIZE,
+      })
+      singleTableRows.value = page.items
+      singleTableTotalRows.value = page.total
       groupTableSections.value = []
+      factsLeaderRow.value = page.items[0] ?? null
+      factsLeaderLoadedForTid.value = tid
     }
     if (reqId !== tableRequestId.value || tid !== selectedTournamentId.value) return
     tableDataLoadedForTid.value = tid
@@ -551,12 +693,74 @@ async function fetchTable() {
   }
 }
 
+const canLoadMoreTableRows = computed(
+  () =>
+    viewType.value === 'table' &&
+    !loadingTable.value &&
+    !tableLoadingMore.value &&
+    !groupTableSections.value.length &&
+    singleTableRows.value.length < singleTableTotalRows.value,
+)
+
+function initTableLoadMoreObserver() {
+  tableLoadMoreObserver?.disconnect()
+  tableLoadMoreObserver = null
+  if (typeof window === 'undefined') return
+  if (!tableLoadMoreSentinel.value) return
+  tableLoadMoreObserver = new IntersectionObserver(
+    (entries) => {
+      const isIntersecting = entries.some((entry) => entry.isIntersecting)
+      const becameVisible = isIntersecting && !tableSentinelIntersecting.value
+      tableSentinelIntersecting.value = isIntersecting
+      if (becameVisible && canLoadMoreTableRows.value) {
+        void loadMoreTableRows()
+      }
+    },
+    { root: null, rootMargin: '400px 0px', threshold: 0.01 },
+  )
+  tableLoadMoreObserver.observe(tableLoadMoreSentinel.value)
+}
+
+async function loadMoreTableRows() {
+  if (!canLoadMoreTableRows.value || !selectedTournamentId.value) return
+  const tid = selectedTournamentId.value
+  tableLoadingMore.value = true
+  try {
+    debugRequestCounts.value.tableMore += 1
+    debugLog('loadMoreTableRows:start', { tid, loaded: singleTableRows.value.length })
+    const groupId =
+      tournamentDetails.value?.groups?.length === 1
+        ? tournamentDetails.value.groups[0].id
+        : undefined
+    const page = await fetchTablePage(tenant.value, tid, {
+      groupId,
+      offset: singleTableRows.value.length,
+      limit: TABLE_PAGE_SIZE,
+    })
+    if (tid !== selectedTournamentId.value) return
+    const merged = [...singleTableRows.value, ...page.items]
+    const seen = new Set<string>()
+    singleTableRows.value = merged.filter((row) => {
+      if (seen.has(row.teamId)) return false
+      seen.add(row.teamId)
+      return true
+    })
+    singleTableTotalRows.value = page.total
+  } finally {
+    tableLoadingMore.value = false
+  }
+}
+
 watch(selectedTournamentId, async () => {
-  if (isInitializing.value) return
+  if (isInitializing.value || suppressWatchEffects.value) return
   tableDataLoadedForTid.value = null
+  factsLeaderLoadedForTid.value = null
+  factsLeaderRow.value = null
   await fetchTournamentDetails()
   if (viewType.value === 'table') {
     await fetchTable()
+  } else {
+    await ensureFactsLeaderLoaded()
   }
   syncTidAndViewToQuery(selectedTournamentId.value || null)
 })
@@ -573,78 +777,82 @@ watch(
 )
 
 watch(viewType, async () => {
-  if (isInitializing.value) return
+  if (isInitializing.value || suppressWatchEffects.value) return
   syncTidAndViewToQuery(selectedTournamentId.value || null)
   if (viewType.value === 'table') {
     await fetchTable()
+  } else {
+    await ensureFactsLeaderLoaded()
   }
+})
+
+watch(tableLoadMoreSentinel, () => {
+  initTableLoadMoreObserver()
 })
 
 watch(selectedTournamentId, () => {
   topStatsSlideIndex.value = 0
 })
 
-onMounted(async () => {
-  try {
-    await ensureTenantResolved()
+watch(groupTableSections, (sections) => {
+  if (!sections.length) {
+    activeGroupSectionId.value = null
+    return
+  }
+  if (!sections.some((sec) => sec.id === activeGroupSectionId.value)) {
+    activeGroupSectionId.value = sections[0].id
+  }
+}, { immediate: true })
 
-    if (tenantNotFound.value) {
-      errorText.value = 'Тенант не найден. Проверьте ссылку.'
-      return
-    }
+watch(debugPanelCollapsed, (next) => {
+  if (!showDebugPanel || typeof window === 'undefined') return
+  window.localStorage.setItem(DEBUG_PANEL_COLLAPSE_KEY, next ? '1' : '0')
+})
 
-    // Синхронизируем сегмент `/{tenant}` в URL с реальным tenantSlug в БД,
-    // чтобы ссылки внутри публичного сайта не уводили в другой tenant.
-    if (String(route.params.tenant ?? '') !== tenant.value) {
-      await router.replace({ params: { tenant: tenant.value }, query: route.query })
-    }
+watch(
+  showPageSkeleton,
+  (v) => {
+    pageContentLoading.value = v
+  },
+  { immediate: true },
+)
 
-    initializeSelectionFromContext()
-    tenantMeta.value = await fetchTenantMeta(tenant.value)
-    const qView = parseQueryView(route.query.view)
-    if (qView) viewType.value = qView
-    await fetchTournaments({
-      onError: (e: any) => {
-        singleTableRows.value = []
-        groupTableSections.value = []
-        const status = e?.response?.status ?? e?.statusCode
-        errorText.value =
-          status === 404 ? 'Тенант не найден. Проверьте ссылку.' : 'Не удалось загрузить турниры.'
-      },
-    })
-    await fetchTournamentDetails()
-    if (viewType.value === 'table') {
-      await fetchTable()
+watch(
+  workspaceReady,
+  async (ready) => {
+    if (!ready) return
+    suppressWatchEffects.value = true
+    try {
+      await bootstrapTablePage({ syncTenantRoute: true })
+    } finally {
+      isInitializing.value = false
+      pageReady.value = true
+      await nextTick()
+      suppressWatchEffects.value = false
     }
-  } finally {
-    isInitializing.value = false
-    pageReady.value = true
-    startTopStatsSlider()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  if (showDebugPanel && typeof window !== 'undefined') {
+    debugPanelCollapsed.value = window.localStorage.getItem(DEBUG_PANEL_COLLAPSE_KEY) === '1'
   }
 })
 
 onBeforeUnmount(() => {
-  if (topStatsSlideTimer) {
-    clearInterval(topStatsSlideTimer)
-    topStatsSlideTimer = null
-  }
+  tableLoadMoreObserver?.disconnect()
+  tableLoadMoreObserver = null
 })
 </script>
 
 <template>
-  <div class="public-shell">
-    <PublicHeader :tenant="tenant" />
-
-    <div :class="tableLayoutClass">
-      <div class="space-y-4">
-        <div class="public-stage">
-        <Transition name="public-fade" mode="out-in">
-        <div v-if="showPageSkeleton" key="skeleton" class="space-y-4">
-          <div class="public-card">
-            <Skeleton width="100%" height="2rem" />
-            <Skeleton class="mt-2" width="100%" height="1rem" />
-            <Skeleton class="mt-4" width="100%" height="2.75rem" />
-          </div>
+  <div class="contents">
+  <Transition
+    name="public-view-fade"
+    mode="in-out"
+  >
+        <div v-if="showPageSkeleton" key="skeleton" class="space-y-4 min-h-[65vh]">
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div
               v-for="i in 3"
@@ -660,18 +868,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-else key="content" class="space-y-4">
-        <PublicTournamentContextCard
-          v-if="hasSelectedTournament"
-          v-model="selectedTournamentId"
-          :options="tournaments"
-          :loading="loading"
-          :title="selectedTournament?.name || `Турнир тенанта ${tenant}`"
-          :subtitle="dateLabel"
-          :status-label="tournamentStatusLabel"
-          :status-class="tournamentStatusBadgeClass"
-        />
-
+        <div v-else key="content" class="space-y-4 min-h-[65vh]">
         <div v-if="showPodium" class="podium-grid">
           <div
             v-for="slot in podium"
@@ -707,9 +904,10 @@ onBeforeUnmount(() => {
         </div>
 
         <PublicTournamentTabs
-          v-if="hasSelectedTournament"
+          v-if="hasSelectedTournament && !(availableViews.length === 1 && availableViews[0] === 'playoff')"
           v-model="viewType"
           :capabilities="tournamentCapabilities"
+          :tab-order="orderedAvailableViews"
         />
 
         <div
@@ -728,24 +926,30 @@ onBeforeUnmount(() => {
           <div class="tournament-fact">
             <span class="info-card__icon"><i class="pi pi-calendar-clock text-sm" /></span>
             <span class="text-[#4f6b8c]">Матчей:</span>
-            <strong class="text-[#123c67]">{{ matchesPlayed }}</strong>
+            <strong class="text-[#123c67]">{{ matchesCountDisplay }}</strong>
           </div>
-          <div class="tournament-fact">
+          <div v-if="showLeaderInFacts" class="tournament-fact">
             <span class="info-card__icon"><i class="pi pi-trophy text-sm" /></span>
-            <span class="text-[#4f6b8c]">Лидер:</span>
+            <span class="text-[#4f6b8c]">{{ factsThirdLabel }}</span>
             <strong class="truncate text-[#123c67]">
-              {{ hasSplitGroups ? 'Отдельно по группам' : (leader?.teamName ?? '—') }}
+              {{ factsThirdValue }}
             </strong>
           </div>
         </div>
 
-        <div
-          v-if="
-            hasSelectedTournament &&
-            tournamentCapabilities.showTable &&
-            viewType === 'table'
-          "
-        >
+        <div class="min-h-[80vh]">
+          <Transition
+            name="public-view-fade"
+            mode="in-out"
+          >
+          <div
+              v-if="
+                hasSelectedTournament &&
+                tournamentCapabilities.showTable &&
+                viewType === 'table'
+              "
+              class="overflow-hidden min-h-[65vh]"
+            >
           <div
             v-if="isMultiGroupStandings && playoffQualifiersPerGroup > 0"
             class="mb-3 rounded-xl border border-[#d2e2f7] bg-[#eef5ff] px-3 py-2 text-sm text-[#1a5a8c]"
@@ -754,7 +958,48 @@ onBeforeUnmount(() => {
           </div>
           <template v-if="groupTableSections.length">
             <div
-              v-for="sec in groupTableSections"
+              v-if="groupTableSections.length > 1"
+              class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#d6e0ee] bg-white px-3 py-2"
+            >
+              <span class="text-sm text-[#4f6b8c]">Отображение групп:</span>
+              <div class="inline-flex rounded-lg border border-[#d6e0ee] bg-[#f8fbff] p-0.5">
+                <button
+                  type="button"
+                  class="rounded-md px-2.5 py-1 text-xs font-medium transition"
+                  :class="groupTableViewMode === 'tabs' ? 'bg-white text-[#123c67] shadow-sm' : 'text-[#4f6b8c] hover:bg-white/80'"
+                  @click="groupTableViewMode = 'tabs'"
+                >
+                  Табы
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-2.5 py-1 text-xs font-medium transition"
+                  :class="groupTableViewMode === 'list' ? 'bg-white text-[#123c67] shadow-sm' : 'text-[#4f6b8c] hover:bg-white/80'"
+                  @click="groupTableViewMode = 'list'"
+                >
+                  Список
+                </button>
+              </div>
+            </div>
+            <div
+              v-if="groupTableSections.length > 1 && groupTableViewMode === 'tabs'"
+              class="mb-3 overflow-x-auto"
+            >
+              <div class="inline-flex min-w-max gap-2">
+                <button
+                  v-for="sec in groupTableSections"
+                  :key="`tab-${sec.id}`"
+                  type="button"
+                  class="rounded-full border px-3 py-1.5 text-sm font-medium transition"
+                  :class="activeGroupSectionId === sec.id ? 'border-[#1a5a8c] bg-[#eef5ff] text-[#1a5a8c]' : 'border-[#d6e0ee] bg-white text-[#4f6b8c] hover:bg-surface-50'"
+                  @click="activeGroupSectionId = sec.id"
+                >
+                  {{ sec.name }}
+                </button>
+              </div>
+            </div>
+            <div
+              v-for="sec in visibleGroupTableSections"
               :key="sec.id"
               class="space-y-2 mb-6 last:mb-0"
             >
@@ -769,18 +1014,18 @@ onBeforeUnmount(() => {
                 v-else
                 class="public-table-wrap"
               >
-                <table class="public-table">
+                <table class="public-table public-stagger-tbody">
                   <thead>
                     <tr>
-                      <th class="text-center" style="width: 4rem">#</th>
+                      <th class="text-center" style="width: 3rem">#</th>
                       <th class="text-left">Команда</th>
-                      <th class="text-center" style="width: 4rem">И</th>
-                      <th class="text-center" style="width: 4rem">В</th>
-                      <th class="text-center" style="width: 4rem">Н</th>
-                      <th class="text-center" style="width: 4rem">П</th>
-                      <th class="text-center" style="width: 8rem">Мячи</th>
-                      <th class="text-center" style="width: 5rem">+/-</th>
-                      <th class="text-center" style="width: 6rem">Очки</th>
+                      <th class="text-center" style="width: 3rem">И</th>
+                      <th class="text-center" style="width: 3rem">В</th>
+                      <th class="text-center" style="width: 3rem">Н</th>
+                      <th class="text-center" style="width: 3rem">П</th>
+                      <th class="text-center" style="width: 5.25rem">Мячи</th>
+                      <th class="text-center" style="width: 4rem">+/-</th>
+                      <th class="text-center" style="width: 4.5rem">Очки</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -801,7 +1046,7 @@ onBeforeUnmount(() => {
                               @error="handleTeamLogoError"
                             />
                           </div>
-                          <span class="font-medium text-surface-900">{{ row.teamName }}</span>
+                          <span class="table-team-name font-medium text-surface-900">{{ row.teamName }}</span>
                         </div>
                       </td>
                       <td class="text-center">{{ row.played }}</td>
@@ -826,18 +1071,18 @@ onBeforeUnmount(() => {
             >
               Таблица пока пуста. Матчи еще не сыграны.
             </div>
-            <table v-else class="public-table">
+            <table v-else class="public-table public-stagger-tbody">
               <thead>
                 <tr>
-                  <th class="text-center" style="width: 4rem">#</th>
+                  <th class="text-center" style="width: 3rem">#</th>
                   <th class="text-left">Команда</th>
-                  <th class="text-center" style="width: 4rem">И</th>
-                  <th class="text-center" style="width: 4rem">В</th>
-                  <th class="text-center" style="width: 4rem">Н</th>
-                  <th class="text-center" style="width: 4rem">П</th>
-                  <th class="text-center" style="width: 8rem">Мячи</th>
-                  <th class="text-center" style="width: 5rem">+/-</th>
-                  <th class="text-center" style="width: 6rem">Очки</th>
+                  <th class="text-center" style="width: 3rem">И</th>
+                  <th class="text-center" style="width: 3rem">В</th>
+                  <th class="text-center" style="width: 3rem">Н</th>
+                  <th class="text-center" style="width: 3rem">П</th>
+                  <th class="text-center" style="width: 5.25rem">Мячи</th>
+                  <th class="text-center" style="width: 4rem">+/-</th>
+                  <th class="text-center" style="width: 4.5rem">Очки</th>
                 </tr>
               </thead>
               <tbody>
@@ -858,7 +1103,7 @@ onBeforeUnmount(() => {
                           @error="handleTeamLogoError"
                         />
                       </div>
-                      <span class="font-medium text-surface-900">{{ row.teamName }}</span>
+                      <span class="table-team-name font-medium text-surface-900">{{ row.teamName }}</span>
                     </div>
                   </td>
                   <td class="text-center">{{ row.played }}</td>
@@ -873,6 +1118,20 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+            <div
+              v-if="canLoadMoreTableRows || tableLoadingMore"
+              ref="tableLoadMoreSentinel"
+              class="flex items-center justify-center py-3"
+            >
+              <div class="flex flex-col items-center gap-2">
+                <div class="text-xs text-muted-color">
+                  Загружено {{ singleTableRows.length }} из {{ singleTableTotalRows }} команд
+                </div>
+                <div class="text-xs text-[#4f6b8c]">
+                  {{ tableLoadingMore ? 'Загружаем еще команды...' : 'Прокрутите ниже для автодогрузки' }}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -882,12 +1141,13 @@ onBeforeUnmount(() => {
             tournamentCapabilities.showChessboard &&
             viewType === 'chessboard'
           "
+          class="w-full max-w-full overflow-hidden min-h-[65vh]"
         >
           <template v-if="groupTableSections.length">
             <div
               v-for="sec in groupTableSections"
               :key="`ch-${sec.id}`"
-              class="space-y-2 mb-6 last:mb-0"
+              class="space-y-2 mb-6 last:mb-0 w-full max-w-full"
             >
               <h2 class="text-lg font-semibold text-surface-900 px-1">{{ sec.name }}</h2>
               <PublicChessboard :tournament-id="selectedTournamentId" :group-id="sec.id" :team-logos="teamLogoById" />
@@ -902,12 +1162,13 @@ onBeforeUnmount(() => {
             tournamentCapabilities.showProgress &&
             viewType === 'progress'
           "
+          class="w-full max-w-full overflow-hidden min-h-[65vh]"
         >
           <template v-if="groupTableSections.length">
             <div
               v-for="sec in groupTableSections"
               :key="`pr-${sec.id}`"
-              class="space-y-2 mb-6 last:mb-0"
+              class="space-y-2 mb-6 last:mb-0 w-full max-w-full"
             >
               <h2 class="text-lg font-semibold text-surface-900 px-1">{{ sec.name }}</h2>
               <PublicProgress :tournament-id="selectedTournamentId" :group-id="sec.id" :team-logos="teamLogoById" />
@@ -922,68 +1183,46 @@ onBeforeUnmount(() => {
             tournamentCapabilities.showPlayoff &&
             viewType === 'playoff'
           "
+          class="overflow-hidden min-h-[65vh]"
         >
           <PublicPlayoff :tournament-id="selectedTournamentId" :team-logos="teamLogoById" />
         </div>
+          </Transition>
         </div>
-        </Transition>
         </div>
-      </div>
-
-      <div v-if="showTournamentSidebar" class="space-y-3">
-        <PublicTournamentSidebar
-          :tenant="tenant"
-          :tid="selectedTournamentId"
-          :tournament-name="selectedTournament?.name"
-          :social-links="tenantMeta?.socialLinks ?? null"
-          :loading="showPageSkeleton"
-          active="table"
-        />
-        <div
-          v-if="hasSelectedTournament && currentTopStatsSlide && !showPageSkeleton"
-          :class="['public-card stats-slider-card', `stats-slider-card--${currentTopStatsSlide.key}`]"
-        >
-          <div class="flex items-center gap-2">
-            <span class="info-card__icon">
-              <i :class="['pi', currentTopStatsSlide.icon, 'text-sm']" />
-            </span>
-            <p class="text-sm font-semibold text-[#123c67]">{{ currentTopStatsSlide.title }}</p>
-          </div>
-          <div v-if="currentTopStatsSlide.rows.length" class="mt-2.5 space-y-1.5">
-            <div
-              v-for="(row, idx) in currentTopStatsSlide.rows"
-              :key="`${currentTopStatsSlide.key}-${row.playerId}`"
-              class="stats-slide-row"
-              :class="row.isPlaceholder ? 'stats-slide-row--placeholder' : ''"
-            >
-              <span class="stats-slide-rank">{{ idx + 1 }}</span>
-              <div class="min-w-0 stats-slide-meta">
-                <p class="truncate text-[13px] font-semibold text-[#123c67]">{{ row.fullName }}</p>
-                <p
-                  class="truncate text-[11px] text-[#4f6b8c]"
-                  :class="row.isPlaceholder || !row.teamName || row.teamName === '—' ? 'opacity-0' : ''"
-                >
-                  {{ row.teamName || '—' }}
-                </p>
-              </div>
-              <span class="stats-slide-value">{{ row.isPlaceholder ? '—' : row.value }}</span>
-            </div>
-          </div>
-          <div class="mt-2.5 flex items-center justify-center gap-1.5">
-            <button
-              v-for="(slide, idx) in topStatsSlides"
-              :key="`dot-${slide.key}`"
-              type="button"
-              class="stats-dot"
-              :class="idx === topStatsSlideIndex ? 'stats-dot--active' : ''"
-              :aria-label="`Показать слайд ${idx + 1}`"
-              @click="setTopStatsSlide(idx)"
-            />
-          </div>
+    </Transition>
+    <div
+      v-if="showDebugPanel"
+      class="fixed bottom-4 right-4 z-[60] rounded-lg border border-[#d6e0ee] bg-white/95 px-3 py-2 text-[11px] text-[#123c67] shadow-lg backdrop-blur"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <div class="font-semibold">debug: table requests</div>
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="rounded border border-[#d6e0ee] px-1.5 py-0.5 text-[10px] text-[#4f6b8c] hover:bg-surface-50"
+            @click="debugPanelCollapsed = !debugPanelCollapsed"
+          >
+            {{ debugPanelCollapsed ? 'expand' : 'collapse' }}
+          </button>
+          <button
+            type="button"
+            class="rounded border border-[#d6e0ee] px-1.5 py-0.5 text-[10px] text-[#4f6b8c] hover:bg-surface-50"
+            @click="resetDebugRequestCounts"
+          >
+            reset
+          </button>
         </div>
       </div>
+      <template v-if="!debugPanelCollapsed">
+        <div class="mt-1 text-[#4f6b8c]">tid: {{ selectedTournamentId || 'none' }}</div>
+        <div class="text-[#4f6b8c]">view: {{ viewType }}</div>
+        <div class="mt-1">detail: {{ debugRequestCounts.details }}</div>
+        <div>roster: {{ debugRequestCounts.roster }}</div>
+        <div>table: {{ debugRequestCounts.table }}</div>
+        <div>tableMore: {{ debugRequestCounts.tableMore }}</div>
+      </template>
     </div>
-    <PublicFooter />
   </div>
 </template>
 
@@ -1131,98 +1370,13 @@ onBeforeUnmount(() => {
   border: 1px solid #d2e2f7;
 }
 
-.stats-slider-card {
-  border: 1px solid #d6e0ee;
-  min-height: 8.2rem;
-  padding: 0.65rem 0.75rem;
-  position: relative;
+.table-team-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-}
-
-.stats-slider-card::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: #c7d6ea;
-}
-
-.stats-slider-card--goals::before {
-  background: #c80a48;
-}
-
-.stats-slider-card--assists::before {
-  background: #1a5a8c;
-}
-
-.stats-slider-card--yellowCards::before {
-  background: #d97706;
-}
-
-.stats-slider-card--redCards::before {
-  background: #e11d48;
-}
-
-.stats-slide-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  border-radius: 0.55rem;
-  padding: 0.28rem 0.28rem;
-  background: transparent;
-  border: 1px solid #edf2fa;
-  min-height: 2.9rem;
-}
-
-.stats-slide-row--placeholder {
-  opacity: 0.62;
-}
-
-.stats-slide-meta {
-  min-height: 2rem;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.stats-slide-rank {
-  width: 1.3rem;
-  height: 1.3rem;
-  border-radius: 999px;
-  background: #eef5ff;
-  color: #1a5a8c;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.72rem;
-  font-weight: 700;
-  flex: 0 0 auto;
-}
-
-.stats-slide-value {
-  margin-left: auto;
-  border-radius: 999px;
-  padding: 0.11rem 0.48rem;
-  background: #fff2f7;
-  color: #c80a48;
-  font-weight: 700;
-  font-size: 0.75rem;
-  line-height: 1;
-}
-
-.stats-dot {
-  width: 0.36rem;
-  height: 0.36rem;
-  border-radius: 999px;
-  border: 0;
-  background: #c7d6ea;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.stats-dot--active {
-  width: 0.9rem;
-  background: #c80a48;
+  line-height: 1.2;
+  max-height: 2.4em;
 }
 </style>
 

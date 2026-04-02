@@ -77,13 +77,13 @@ const userRules = computed(() => ({
   username: { required, minLength: minLength(3) },
   name: { required, minLength: minLength(3) },
   email: {
-    requiredWhenCreate: helpers.withMessage(
-      'email required',
-      (v: unknown) => isEdit.value || String(v ?? '').trim().length > 0,
-    ),
-    emailWhenCreate: helpers.withMessage(
+    formatWhenFilled: helpers.withMessage(
       'email invalid',
-      (v: unknown) => isEdit.value || EMAIL_RE.test(String(v ?? '').trim()),
+      (v: unknown) => {
+        const s = String(v ?? '').trim()
+        if (!s) return true
+        return EMAIL_RE.test(s)
+      },
     ),
   },
   password: {
@@ -101,14 +101,11 @@ const v$ = useVuelidate(userRules, form, { $autoDirty: true })
 const formErrors = computed(() => ({
   username: form.username.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
   name: form.name.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
-  email:
-    isEdit.value
-      ? ''
-      : !form.email.trim()
-        ? t('admin.validation.required')
-        : EMAIL_RE.test(form.email.trim())
-          ? ''
-          : t('admin.validation.invalid_email'),
+  email: (() => {
+    const s = form.email.trim()
+    if (!s) return ''
+    return EMAIL_RE.test(s) ? '' : t('admin.validation.invalid_email')
+  })(),
   password:
     isEdit.value
       ? form.password && form.password.length < 6
@@ -188,7 +185,7 @@ const openCreate = () => {
 const openEdit = (user: UserRow) => {
   submitAttempted.value = false
   editingUser.value = user
-  form.email = user.email
+  form.email = user.email ?? ''
   form.username = user.username
   form.name = user.name
   form.lastName = user.lastName ?? ''
@@ -213,7 +210,8 @@ const saveUser = async () => {
   }
 
   if (!isEdit.value) {
-    body.email = form.email
+    const em = form.email.trim()
+    if (em) body.email = em
     body.password = form.password
   } else if (form.password) {
     body.password = form.password
@@ -246,7 +244,7 @@ const deleteUserPending = ref<UserRow | null>(null)
 const deleteUserMessage = computed(() => {
   const u = deleteUserPending.value
   if (!u) return ''
-  return `Удалить пользователя ${u.email}? Действие необратимо.`
+  return `Удалить пользователя ${u.email ?? u.username}? Действие необратимо.`
 })
 
 function requestDeleteUser(user: UserRow) {
@@ -435,7 +433,13 @@ onMounted(() => {
           </span>
         </template>
       </Column>
-      <Column field="email" header="Email" />
+      <Column header="Email" style="min-width: 11rem">
+        <template #body="{ data }">
+          <span :class="data.email ? 'text-surface-900' : 'text-muted-color'">
+            {{ data.email ?? '—' }}
+          </span>
+        </template>
+      </Column>
       <Column field="username" header="Логин" />
       <Column header="Роль" style="min-width: 10rem">
         <template #body="{ data }">
@@ -511,7 +515,13 @@ onMounted(() => {
         </div>
         <div>
           <label class="text-sm block mb-1">Email</label>
-          <InputText v-model="form.email" class="w-full" :disabled="isEdit" :invalid="showEmailError" />
+          <InputText
+            v-model="form.email"
+            class="w-full"
+            :disabled="isEdit"
+            :invalid="showEmailError"
+            :placeholder="isEdit ? undefined : 'Необязательно'"
+          />
           <p v-if="showEmailError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.email }}</p>
         </div>
         <div>

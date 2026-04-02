@@ -20,7 +20,6 @@
 
 - Текущая карта и правила каталогов: [`CATALOGS_STATUS.md`](CATALOGS_STATUS.md)
 
+## Продукт и доменная логика
 
-defw2e1eault
-
-RobleeoRobalmicpo@hotmail.com | Melinda2Candace | xanhsm2000#ё
+- Статусы турнира, публикация на сайте, правки протоколов после завершения: [`docs/tournament-status-and-publication.md`](docs/tournament-status-and-publication.md)

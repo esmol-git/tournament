@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useAutoAnimate } from '@formkit/auto-animate/vue'
 import { computed, onMounted, ref } from 'vue'
 import PublicHeader from '~/app/components/public/PublicHeader.vue'
 import PublicFooter from '~/app/components/public/PublicFooter.vue'
+import { PUBLIC_AUTO_ANIMATE } from '~/constants/publicMotion'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 
@@ -17,12 +19,14 @@ type OrgTeam = {
 
 const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const tenant = tenantSlug
-const { loadAllTournaments, fetchRoster } = usePublicTournamentFetch()
+const { fetchOrganizationTeams } = usePublicTournamentFetch()
 
 const loading = ref(true)
 const errorText = ref('')
 const teams = ref<OrgTeam[]>([])
 const TEAM_PLACEHOLDER_SRC = '/placeholders/team.svg'
+
+const [teamsGridRef] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
 
 const hasTeams = computed(() => teams.value.length > 0)
 
@@ -48,35 +52,8 @@ onMounted(async () => {
       errorText.value = 'Тенант не найден. Проверьте ссылку.'
       return
     }
-    const tournaments = await loadAllTournaments(tenant.value)
-    const rosterChunks = await Promise.all(
-      tournaments.slice(0, 20).map(async (t) => ({
-        tournamentName: t.name,
-        roster: await fetchRoster(tenant.value, t.id),
-      })),
-    )
-
-    const byId = new Map<string, OrgTeam>()
-    for (const chunk of rosterChunks) {
-      for (const team of chunk.roster) {
-        const existing = byId.get(team.teamId)
-        if (!existing) {
-          byId.set(team.teamId, {
-            id: team.teamId,
-            name: team.teamName,
-            logoUrl: team.logoUrl ?? null,
-            category: team.category ?? null,
-            tournaments: [chunk.tournamentName],
-          })
-          continue
-        }
-        if (!existing.tournaments.includes(chunk.tournamentName)) {
-          existing.tournaments.push(chunk.tournamentName)
-        }
-      }
-    }
-
-    teams.value = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+    const items = await fetchOrganizationTeams(tenant.value)
+    teams.value = (items as OrgTeam[]).slice().sort((a, b) => a.name.localeCompare(b.name, 'ru'))
   } catch {
     errorText.value = 'Не удалось загрузить команды организации.'
     teams.value = []
@@ -118,9 +95,14 @@ onMounted(async () => {
               После публикации турниров и заявок здесь автоматически появится список команд организации.
             </p>
           </div>
-          <div v-else key="content" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <article v-for="team in teams" :key="team.id" class="public-card">
-              <div class="flex items-center gap-3">
+          <div
+            v-else
+            key="content"
+            ref="teamsGridRef"
+            class="public-stagger-appear grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+          >
+            <article v-for="team in teams" :key="team.id" class="public-card teams-card">
+              <div class="teams-card__head">
                 <div class="h-12 w-12 overflow-hidden rounded-full">
                   <img
                     :src="resolveImageUrl(team.logoUrl, TEAM_PLACEHOLDER_SRC)"
@@ -131,11 +113,11 @@ onMounted(async () => {
                   />
                 </div>
                 <div class="min-w-0">
-                  <p class="truncate text-base font-semibold text-[#123c67]">{{ team.name }}</p>
-                  <p v-if="team.category" class="truncate text-xs text-[#4f6b8c]">{{ team.category }}</p>
+                  <p class="team-name-clamp text-base font-semibold text-[#123c67]">{{ team.name }}</p>
+                  <p v-if="team.category" class="team-category-clamp text-xs text-[#4f6b8c]">{{ team.category }}</p>
                 </div>
               </div>
-              <p class="mt-3 text-xs text-[#4f6b8c]">
+              <p class="teams-card__meta text-xs text-[#4f6b8c]">
                 Турниров: {{ team.tournaments.length }}
               </p>
             </article>
@@ -146,3 +128,41 @@ onMounted(async () => {
     <PublicFooter />
   </div>
 </template>
+
+<style scoped>
+.teams-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 7.4rem;
+}
+
+.teams-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3rem;
+}
+
+.teams-card__meta {
+  margin-top: 0.75rem;
+}
+
+.team-name-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.2;
+  max-height: 2.4em;
+}
+
+.team-category-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.2;
+  max-height: 2.4em;
+}
+</style>

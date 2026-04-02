@@ -19,8 +19,9 @@ export default defineNuxtRouteMiddleware(async (to) => {
 
   const isAuthPage = to.path === '/admin/login'
   const isSubscriptionExpiredPage = to.path === '/admin/subscription-expired'
+  const isAccessDeniedPage = to.path === '/admin/access-denied'
 
-  if (!loggedIn.value && !isAuthPage && !isSubscriptionExpiredPage) {
+  if (!loggedIn.value && !isAuthPage && !isSubscriptionExpiredPage && !isAccessDeniedPage) {
     return navigateTo('/admin/login')
   }
 
@@ -28,11 +29,21 @@ export default defineNuxtRouteMiddleware(async (to) => {
     return navigateTo('/admin')
   }
 
+  if (isAccessDeniedPage && !loggedIn.value) {
+    return navigateTo('/admin/login')
+  }
+
   /**
    * До монтирования страниц админки подтягиваем ui-settings — иначе первым уходит
    * запрос данных (players и т.д.), тема с сервера применяется позже и даёт мигание.
    */
-  if (import.meta.client && loggedIn.value && !isAuthPage && !isSubscriptionExpiredPage) {
+  if (
+    import.meta.client &&
+    loggedIn.value &&
+    !isAuthPage &&
+    !isSubscriptionExpiredPage &&
+    !isAccessDeniedPage
+  ) {
     const adminSettings = useAdminSettingsStore()
     await adminSettings.fetchFromServerIfLoggedIn()
     try {

@@ -115,6 +115,24 @@ onMounted(async () => {
   text-decoration: underline;
 }
 
+.media-org-video-markdown :deep(iframe),
+.media-org-video-markdown :deep(video) {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  border: 0;
+  border-radius: 0.45rem;
+  background: #000;
+}
+
+.media-org-video-markdown :deep(table) {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
 .media-video-skeleton-title {
   border-radius: 0.45rem;
 }

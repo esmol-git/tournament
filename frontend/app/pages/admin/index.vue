@@ -46,8 +46,8 @@ const greetingName = computed(() => {
   if (!user.value) return ''
   const full = formatUserFullNameFromParts(user.value)
   if (full) return full
-  const u = user.value as { email?: string }
-  return u.email?.split('@')[0] ?? ''
+  const u = user.value as { email?: string | null; username?: string }
+  return u.email?.split('@')[0] ?? u.username ?? ''
 })
 
 const todayLabel = computed(() =>

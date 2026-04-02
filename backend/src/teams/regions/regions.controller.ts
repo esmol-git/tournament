@@ -15,16 +15,24 @@ import { JwtPayload } from '../../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import {
+  RequireSubscriptionPlanFeature,
+  SubscriptionPlanFeatureGuard,
+} from '../../auth/subscription-plan-feature.guard';
 import { CreateRegionDto } from './dto/create-region.dto';
 import { UpdateRegionDto } from './dto/update-region.dto';
 import { RegionsService } from './regions.service';
 
+@RequireSubscriptionPlanFeature('reference_directory_standard')
 @ApiTags('regions')
 @UseGuards(
   JwtAuthGuard,
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
+  SubscriptionPlanFeatureGuard,
 )
 @Controller()
 export class RegionsController {

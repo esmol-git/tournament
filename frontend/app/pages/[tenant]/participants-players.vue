@@ -1,10 +1,15 @@
 <script setup lang="ts">
+import { useAutoAnimate } from '@formkit/auto-animate/vue'
 import { computed, onMounted, ref, watch } from 'vue'
-import type { TournamentDetails } from '~/types/tournament-admin'
+import { useRoute, useRouter } from 'vue-router'
 import PublicHeader from '~/app/components/public/PublicHeader.vue'
 import PublicFooter from '~/app/components/public/PublicFooter.vue'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
-import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
+import {
+  usePublicTournamentFetch,
+  type PublicOrganizationPlayersResponse,
+} from '~/composables/usePublicTournamentFetch'
+import { PUBLIC_AUTO_ANIMATE } from '~/constants/publicMotion'
 
 definePageMeta({ layout: 'public' })
 
@@ -31,16 +36,21 @@ type TournamentPlayerStatsRow = PlayerStatsRow & {
 type SortKey =
   | 'lastName'
   | 'firstName'
-  | 'birthDate'
   | 'teamName'
   | 'goals'
   | 'assists'
   | 'yellowCards'
   | 'redCards'
 
+const DEFAULT_SORT_KEY: SortKey = 'lastName'
+const DEFAULT_SORT_DIR: 'asc' | 'desc' = 'asc'
+const DEFAULT_ROWS_PER_PAGE = 11
+
 const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const tenant = tenantSlug
-const { loadAllTournaments, fetchRoster, fetchTournamentDetail } = usePublicTournamentFetch()
+const { fetchOrganizationPlayers } = usePublicTournamentFetch()
+const route = useRoute()
+const router = useRouter()
 
 const loading = ref(true)
 const errorText = ref('')
@@ -49,33 +59,22 @@ const tournamentOptions = ref<Array<{ value: string; label: string }>>([])
 
 const selectedTournamentId = ref<string | null>(null)
 const selectedTeamId = ref<string | null>(null)
-const birthYearFilter = ref<string | null>(null)
 const searchQuery = ref('')
-const sortKey = ref<SortKey>('lastName')
-const sortDir = ref<'asc' | 'desc'>('asc')
+const sortKey = ref<SortKey>(DEFAULT_SORT_KEY)
+const sortDir = ref<'asc' | 'desc'>(DEFAULT_SORT_DIR)
 const first = ref(0)
-const rowsPerPage = ref(11)
+const rowsPerPage = ref(DEFAULT_ROWS_PER_PAGE)
 const pageSizeOptions = [11, 25, 50, 100]
 
 const PLAYER_PLACEHOLDER_SRC = '/placeholders/player.svg'
 const TEAM_PLACEHOLDER_SRC = '/placeholders/team.svg'
 
-function normalizeDateIso(value: string | Date | null | undefined) {
-  if (!value) return ''
-  const dt = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(dt.getTime())) return ''
-  const y = dt.getFullYear()
-  const m = String(dt.getMonth() + 1).padStart(2, '0')
-  const d = String(dt.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
-function formatBirthDate(value: string | null) {
-  if (!value) return '—'
-  const dt = new Date(value)
-  if (Number.isNaN(dt.getTime())) return '—'
-  return dt.toLocaleDateString('ru-RU')
-}
+const [playersFiltersRef] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
+const [playersTbodyRef] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
+const SORT_QUERY_KEY = 'sort'
+const DIR_QUERY_KEY = 'dir'
+const PAGE_QUERY_KEY = 'page'
+const ROWS_QUERY_KEY = 'rows'
 
 function resolveImageUrl(url: string | null | undefined, fallback: string) {
   const normalized = String(url ?? '').trim()
@@ -89,44 +88,6 @@ function handleImageError(event: Event, fallback: string) {
   target.src = fallback
 }
 
-function parseCardColor(event: TournamentDetails['matches'][number]['events'][number]): 'yellow' | 'red' | null {
-  const payload = (event.payload ?? {}) as Record<string, unknown>
-  const direct = String(payload.cardType ?? payload.color ?? payload.cardColor ?? '')
-    .trim()
-    .toLowerCase()
-  if (direct === 'y' || direct === 'yellow_card' || direct === 'yellowcard') return 'yellow'
-  if (direct === 'r' || direct === 'red_card' || direct === 'redcard') return 'red'
-  if (direct === 'жк' || direct === 'yellow' || direct === 'yc') return 'yellow'
-  if (direct === 'кк' || direct === 'red' || direct === 'rc') return 'red'
-  if (direct.includes('yellow') || direct.includes('желт')) return 'yellow'
-  if (direct.includes('red') || direct.includes('крас')) return 'red'
-  const typeName = String(event.protocolEventType?.name ?? '').trim().toLowerCase()
-  if (typeName === 'жк' || typeName === 'yellow' || typeName === 'yc') return 'yellow'
-  if (typeName === 'кк' || typeName === 'red' || typeName === 'rc') return 'red'
-  if (typeName.includes('yellow') || typeName.includes('желт')) return 'yellow'
-  if (typeName.includes('red') || typeName.includes('крас')) return 'red'
-  return null
-}
-
-function parseAssistPlayerId(event: TournamentDetails['matches'][number]['events'][number]): string {
-  const payload = (event.payload ?? {}) as Record<string, unknown>
-  return String(
-    payload.assistId ??
-      payload.assistPlayerId ??
-      payload.assistantId ??
-      payload.assistantPlayerId ??
-      payload.assist_player_id ??
-      '',
-  ).trim()
-}
-
-function playerNameParts(p: { firstName: string; lastName: string } | null | undefined) {
-  return {
-    firstName: String(p?.firstName ?? '').trim(),
-    lastName: String(p?.lastName ?? '').trim(),
-  }
-}
-
 function toggleSort(next: SortKey) {
   if (sortKey.value === next) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
@@ -134,7 +95,7 @@ function toggleSort(next: SortKey) {
   }
   sortKey.value = next
   sortDir.value =
-    next === 'lastName' || next === 'firstName' || next === 'teamName' || next === 'birthDate'
+    next === 'lastName' || next === 'firstName' || next === 'teamName'
       ? 'asc'
       : 'desc'
 }
@@ -142,6 +103,68 @@ function toggleSort(next: SortKey) {
 function sortIndicator(next: SortKey) {
   if (sortKey.value !== next) return ''
   return sortDir.value === 'asc' ? ' ↑' : ' ↓'
+}
+
+function ariaSortFor(next: SortKey): 'ascending' | 'descending' | 'none' {
+  if (sortKey.value !== next) return 'none'
+  return sortDir.value === 'asc' ? 'ascending' : 'descending'
+}
+
+function sortButtonAriaLabel(next: SortKey, label: string) {
+  if (sortKey.value !== next) return `Сортировать по: ${label}`
+  return `Сортировка по: ${label}, ${sortDir.value === 'asc' ? 'по возрастанию' : 'по убыванию'}`
+}
+
+function sortButtonClass(next: SortKey) {
+  return sortKey.value === next
+    ? 'players-sort-btn players-sort-btn--active'
+    : 'players-sort-btn'
+}
+
+function normalizeSortKey(value: unknown): SortKey | null {
+  const raw = String(Array.isArray(value) ? value[0] : value ?? '').trim()
+  const allowed: SortKey[] = ['lastName', 'firstName', 'teamName', 'goals', 'assists', 'yellowCards', 'redCards']
+  return allowed.includes(raw as SortKey) ? (raw as SortKey) : null
+}
+
+function normalizeSortDir(value: unknown): 'asc' | 'desc' | null {
+  const raw = String(Array.isArray(value) ? value[0] : value ?? '').trim().toLowerCase()
+  return raw === 'asc' || raw === 'desc' ? raw : null
+}
+
+function normalizePositiveInt(value: unknown): number | null {
+  const raw = String(Array.isArray(value) ? value[0] : value ?? '').trim()
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) return null
+  return n
+}
+
+function syncSortQuery() {
+  const currentSort = String(route.query[SORT_QUERY_KEY] ?? '')
+  const currentDir = String(route.query[DIR_QUERY_KEY] ?? '')
+  if (currentSort === sortKey.value && currentDir === sortDir.value) return
+  void router.replace({
+    query: {
+      ...route.query,
+      [SORT_QUERY_KEY]: sortKey.value,
+      [DIR_QUERY_KEY]: sortDir.value,
+    },
+  })
+}
+
+function syncPaginationQuery() {
+  const nextPage = String(Math.floor(first.value / rowsPerPage.value) + 1)
+  const nextRows = String(rowsPerPage.value)
+  const currentPage = String(route.query[PAGE_QUERY_KEY] ?? '')
+  const currentRows = String(route.query[ROWS_QUERY_KEY] ?? '')
+  if (currentPage === nextPage && currentRows === nextRows) return
+  void router.replace({
+    query: {
+      ...route.query,
+      [PAGE_QUERY_KEY]: nextPage,
+      [ROWS_QUERY_KEY]: nextRows,
+    },
+  })
 }
 
 const rowsByTournament = computed(() => {
@@ -188,24 +211,11 @@ const teamOptions = computed(() => {
     .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
 })
 
-const birthYearOptions = computed(() => {
-  const years = new Set<string>()
-  for (const row of aggregatedRows.value) {
-    const y = normalizeDateIso(row.birthDate).slice(0, 4)
-    if (y) years.add(y)
-  }
-  return Array.from(years)
-    .sort((a, b) => Number(b) - Number(a))
-    .map((year) => ({ value: year, label: year }))
-})
-
 const filteredRows = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   const teamId = selectedTeamId.value
-  const birthYear = String(birthYearFilter.value ?? '').trim()
   return aggregatedRows.value.filter((row) => {
     if (teamId && row.teamId !== teamId) return false
-    if (birthYear && normalizeDateIso(row.birthDate).slice(0, 4) !== birthYear) return false
     if (!q) return true
     const text = `${row.lastName} ${row.firstName}`.toLowerCase()
     return text.includes(q)
@@ -222,8 +232,6 @@ const sortedRows = computed(() => {
         return dir * str(a.lastName).localeCompare(str(b.lastName), 'ru')
       case 'firstName':
         return dir * str(a.firstName).localeCompare(str(b.firstName), 'ru')
-      case 'birthDate':
-        return dir * str(a.birthDate).localeCompare(str(b.birthDate), 'ru')
       case 'teamName':
         return dir * str(a.teamName).localeCompare(str(b.teamName), 'ru')
       case 'goals':
@@ -248,8 +256,14 @@ const pagedRows = computed(() => {
   return sortedRows.value.slice(start, start + rowsPerPage.value)
 })
 
-watch([selectedTournamentId, selectedTeamId, birthYearFilter, searchQuery, sortKey, sortDir], () => {
+watch([selectedTournamentId, selectedTeamId, searchQuery, sortKey, sortDir], () => {
   first.value = 0
+})
+watch([sortKey, sortDir], () => {
+  syncSortQuery()
+})
+watch([first, rowsPerPage], () => {
+  syncPaginationQuery()
 })
 
 watch([totalRows, rowsPerPage], () => {
@@ -265,6 +279,13 @@ function onPageChange(event: { first: number; rows: number }) {
   rowsPerPage.value = event.rows
 }
 
+function resetViewState() {
+  sortKey.value = DEFAULT_SORT_KEY
+  sortDir.value = DEFAULT_SORT_DIR
+  rowsPerPage.value = DEFAULT_ROWS_PER_PAGE
+  first.value = 0
+}
+
 function toCsvCell(value: string | number | null | undefined) {
   const raw = String(value ?? '')
   const escaped = raw.replace(/"/g, '""')
@@ -275,7 +296,6 @@ function exportCsv() {
   const head = [
     'Фамилия',
     'Имя',
-    'Дата рождения',
     'Команда',
     'Голы',
     'Ассисты',
@@ -285,7 +305,6 @@ function exportCsv() {
   const body = sortedRows.value.map((row) => [
     row.lastName,
     row.firstName,
-    formatBirthDate(row.birthDate),
     row.teamName ?? '—',
     row.goals,
     row.assists,
@@ -305,6 +324,14 @@ function exportCsv() {
 }
 
 onMounted(async () => {
+  const qSort = normalizeSortKey(route.query[SORT_QUERY_KEY])
+  const qDir = normalizeSortDir(route.query[DIR_QUERY_KEY])
+  const qPage = normalizePositiveInt(route.query[PAGE_QUERY_KEY])
+  const qRows = normalizePositiveInt(route.query[ROWS_QUERY_KEY])
+  if (qSort) sortKey.value = qSort
+  if (qDir) sortDir.value = qDir
+  if (qRows && pageSizeOptions.includes(qRows)) rowsPerPage.value = qRows
+  if (qPage) first.value = (qPage - 1) * rowsPerPage.value
   loading.value = true
   errorText.value = ''
   try {
@@ -314,64 +341,14 @@ onMounted(async () => {
       return
     }
 
-    const tournaments = await loadAllTournaments(tenant.value)
-    tournamentOptions.value = tournaments.map((t) => ({ value: t.id, label: t.name }))
-    const chunks = await Promise.all(
-      tournaments.slice(0, 20).map(async (t) => {
-        const [roster, detail] = await Promise.all([
-          fetchRoster(tenant.value, t.id),
-          fetchTournamentDetail(tenant.value, t.id),
-        ])
-        const byPlayer = new Map<string, TournamentPlayerStatsRow>()
-        for (const team of roster) {
-          for (const p of team.players) {
-            const names = playerNameParts(p)
-            byPlayer.set(p.id, {
-              tournamentId: t.id,
-              tournamentName: t.name,
-              playerId: p.id,
-              firstName: names.firstName,
-              lastName: names.lastName,
-              birthDate: p.birthDate ?? null,
-              teamId: team.teamId ?? null,
-              teamName: team.teamName ?? null,
-              teamLogoUrl: team.logoUrl ?? null,
-              playerPhotoUrl: p.photoUrl ?? null,
-              goals: 0,
-              assists: 0,
-              yellowCards: 0,
-              redCards: 0,
-            })
-          }
-        }
-
-        for (const match of detail.matches ?? []) {
-          for (const event of match.events ?? []) {
-            const playerId = event.playerId ?? null
-            if (!playerId) continue
-            const row = byPlayer.get(playerId)
-            if (!row) continue
-            if (event.type === 'GOAL') {
-              row.goals += 1
-              const assistId = parseAssistPlayerId(event)
-              if (assistId) {
-                const assistRow = byPlayer.get(assistId)
-                if (assistRow) assistRow.assists += 1
-              }
-              continue
-            }
-            if (event.type === 'CARD') {
-              const card = parseCardColor(event)
-              if (card === 'yellow') row.yellowCards += 1
-              if (card === 'red') row.redCards += 1
-            }
-          }
-        }
-
-        return Array.from(byPlayer.values())
-      }),
-    )
-    allRows.value = chunks.flat()
+    const payload = (await fetchOrganizationPlayers(
+      tenant.value,
+    )) as PublicOrganizationPlayersResponse
+    tournamentOptions.value = (payload.tournaments ?? []).map((t) => ({
+      value: t.id,
+      label: t.name,
+    }))
+    allRows.value = (payload.rows ?? []) as TournamentPlayerStatsRow[]
   } catch {
     errorText.value = 'Не удалось загрузить игроков организации.'
     allRows.value = []
@@ -413,17 +390,29 @@ onMounted(async () => {
           <div v-else key="content" class="public-card space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <h2 class="text-lg font-semibold text-[#123c67]">Реестр игроков</h2>
-              <Button
-                label="Экспорт CSV"
-                icon="pi pi-download"
-                size="small"
-                outlined
-                class="!border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#f4c8d8] hover:!text-[#c80a48]"
-                @click="exportCsv"
-              />
+              <div class="flex flex-wrap items-center gap-2">
+                <Button
+                  label="Сброс вида"
+                  icon="pi pi-filter-slash"
+                  size="small"
+                  outlined
+                  aria-label="Сброс вида"
+                  class="reset-view-btn !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#f4c8d8] hover:!text-[#c80a48]"
+                  @click="resetViewState"
+                />
+                <Button
+                  label="Экспорт CSV"
+                  icon="pi pi-download"
+                  size="small"
+                  outlined
+                  aria-label="Экспорт CSV"
+                  class="export-csv-btn !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#f4c8d8] hover:!text-[#c80a48]"
+                  @click="exportCsv"
+                />
+              </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-3 lg:grid-cols-4">
+            <div ref="playersFiltersRef" class="public-stagger-appear grid grid-cols-1 gap-3 lg:grid-cols-3">
               <div>
                 <InputText
                   v-model="searchQuery"
@@ -451,17 +440,6 @@ onMounted(async () => {
                   show-clear
                   class="w-full"
                   placeholder="Фильтр по команде"
-                />
-              </div>
-              <div>
-                <Select
-                  v-model="birthYearFilter"
-                  :options="birthYearOptions"
-                  option-label="label"
-                  option-value="value"
-                  show-clear
-                  class="w-full"
-                  placeholder="Год рождения"
                 />
               </div>
             </div>
@@ -492,30 +470,29 @@ onMounted(async () => {
               </div>
 
             <div class="public-table-wrap players-table-wrap">
-              <table class="public-table">
+              <table class="public-table public-stagger-tbody">
                 <thead>
                   <tr>
                     <th style="width: 3.5rem"></th>
-                    <th><button class="font-semibold" @click="toggleSort('lastName')">Игрок{{ sortIndicator('lastName') }}</button></th>
-                    <th><button class="font-semibold" @click="toggleSort('birthDate')">Дата рожд.{{ sortIndicator('birthDate') }}</button></th>
-                    <th><button class="font-semibold" @click="toggleSort('teamName')">Команда{{ sortIndicator('teamName') }}</button></th>
-                    <th class="text-center"><button class="font-semibold" @click="toggleSort('goals')">Голы{{ sortIndicator('goals') }}</button></th>
-                    <th class="text-center"><button class="font-semibold" @click="toggleSort('assists')">Ассисты{{ sortIndicator('assists') }}</button></th>
-                    <th class="text-center">
-                      <button class="inline-flex items-center gap-1 font-semibold" @click="toggleSort('yellowCards')">
+                    <th class="players-table-col-player" :aria-sort="ariaSortFor('lastName')"><button :class="sortButtonClass('lastName')" :aria-label="sortButtonAriaLabel('lastName', 'игрок')" @click="toggleSort('lastName')">Игрок{{ sortIndicator('lastName') }}</button></th>
+                    <th class="players-table-col-team" :aria-sort="ariaSortFor('teamName')"><button :class="sortButtonClass('teamName')" :aria-label="sortButtonAriaLabel('teamName', 'команда')" @click="toggleSort('teamName')">Команда{{ sortIndicator('teamName') }}</button></th>
+                    <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('goals')"><button :class="sortButtonClass('goals')" :aria-label="sortButtonAriaLabel('goals', 'голы')" @click="toggleSort('goals')">Голы{{ sortIndicator('goals') }}</button></th>
+                    <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('assists')"><button :class="sortButtonClass('assists')" :aria-label="sortButtonAriaLabel('assists', 'ассисты')" @click="toggleSort('assists')">Ассисты{{ sortIndicator('assists') }}</button></th>
+                    <th class="text-center players-table-col-card" :aria-sort="ariaSortFor('yellowCards')">
+                      <button :class="`${sortButtonClass('yellowCards')} inline-flex items-center justify-center gap-1`" :aria-label="sortButtonAriaLabel('yellowCards', 'желтые карточки')" @click="toggleSort('yellowCards')">
                         <span class="card-mini card-mini-yellow" />
-                        ЖК{{ sortIndicator('yellowCards') }}
+                        {{ sortIndicator('yellowCards') }}
                       </button>
                     </th>
-                    <th class="text-center">
-                      <button class="inline-flex items-center gap-1 font-semibold" @click="toggleSort('redCards')">
+                    <th class="text-center players-table-col-card" :aria-sort="ariaSortFor('redCards')">
+                      <button :class="`${sortButtonClass('redCards')} inline-flex items-center justify-center gap-1`" :aria-label="sortButtonAriaLabel('redCards', 'красные карточки')" @click="toggleSort('redCards')">
                         <span class="card-mini card-mini-red" />
-                        КК{{ sortIndicator('redCards') }}
+                        {{ sortIndicator('redCards') }}
                       </button>
                     </th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody ref="playersTbodyRef">
                   <tr v-for="row in pagedRows" :key="row.playerId">
                     <td>
                       <div class="h-9 w-9 overflow-hidden rounded-full">
@@ -528,9 +505,15 @@ onMounted(async () => {
                         />
                       </div>
                     </td>
-                    <td class="font-medium">{{ `${row.lastName || ''} ${row.firstName || ''}`.trim() || '—' }}</td>
-                    <td>{{ formatBirthDate(row.birthDate) }}</td>
-                    <td>
+                    <td class="players-table-cell-player font-medium">
+                      <span
+                        class="player-name-clamp"
+                        :title="`${row.lastName || ''} ${row.firstName || ''}`.trim() || '—'"
+                      >
+                        {{ `${row.lastName || ''} ${row.firstName || ''}`.trim() || '—' }}
+                      </span>
+                    </td>
+                    <td class="players-table-cell-team">
                       <div class="flex items-center gap-2">
                         <img
                           :src="resolveImageUrl(row.teamLogoUrl, TEAM_PLACEHOLDER_SRC)"
@@ -539,7 +522,7 @@ onMounted(async () => {
                           loading="lazy"
                           @error="(e) => handleImageError(e, TEAM_PLACEHOLDER_SRC)"
                         />
-                        <span>{{ row.teamName || '—' }}</span>
+                        <span class="team-name-clamp" :title="row.teamName || '—'">{{ row.teamName || '—' }}</span>
                       </div>
                     </td>
                     <td class="text-center tabular-nums">{{ row.goals }}</td>
@@ -569,6 +552,41 @@ onMounted(async () => {
   top: 0;
   z-index: 2;
   background: #f4f7fc;
+}
+
+.players-table-wrap :deep(.players-sort-btn) {
+  border-radius: 0.4rem;
+  padding: 0.16rem 0.35rem;
+  font-weight: 600;
+  color: #355a82;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.players-table-wrap :deep(.players-sort-btn:hover) {
+  background: #eef5ff;
+}
+
+.players-table-wrap :deep(.players-sort-btn--active) {
+  background: #e8f2ff;
+  color: #123c67;
+}
+
+.players-table-col-num {
+  width: 5.1rem;
+}
+
+.players-table-col-player,
+.players-table-cell-player {
+  min-width: 12rem;
+}
+
+.players-table-col-team,
+.players-table-cell-team {
+  min-width: 11rem;
+}
+
+.players-table-col-card {
+  width: 4.3rem;
 }
 
 .card-mini {
@@ -606,5 +624,62 @@ onMounted(async () => {
 .card-pill-red {
   background: #ffe4e6;
   color: #9f1239;
+}
+
+.player-name-clamp,
+.team-name-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+  max-height: 2.4em;
+}
+
+@media (max-width: 640px) {
+  .reset-view-btn :deep(.p-button-label),
+  .export-csv-btn :deep(.p-button-label) {
+    display: none;
+  }
+
+  .reset-view-btn :deep(.p-button-icon),
+  .export-csv-btn :deep(.p-button-icon) {
+    margin-right: 0;
+  }
+
+  .reset-view-btn,
+  .export-csv-btn {
+    min-width: 2.5rem;
+  }
+
+  .players-table-col-player,
+  .players-table-cell-player {
+    min-width: 9.5rem;
+  }
+
+  .players-table-col-team,
+  .players-table-cell-team {
+    min-width: 8.5rem;
+  }
+
+  .players-table-wrap :deep(.public-table th),
+  .players-table-wrap :deep(.public-table td) {
+    padding: 0.45rem 0.4rem;
+  }
+
+  .players-table-wrap :deep(.public-table th) {
+    font-size: 0.76rem;
+  }
+
+  .players-table-wrap :deep(.public-table td) {
+    font-size: 0.82rem;
+    line-height: 1.2;
+  }
+
+  .players-table-wrap :deep(.card-pill) {
+    min-width: 1.5rem;
+    padding: 0.08rem 0.36rem;
+  }
 }
 </style>

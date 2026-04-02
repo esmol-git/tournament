@@ -8,6 +8,16 @@ type Params = {
   loadAllTournaments: (tenantSlug: string) => Promise<TournamentRow[]>
 }
 
+/**
+ * Список турниров для публичных страниц кэшируется в `useState` по тенанту.
+ * Иначе при каждом переходе календарь ↔ таблица монтируется новая страница с пустым списком,
+ * снова включается `loading` и скелетон — ощущение «всё перезагружается», хотя данные уже были.
+ */
+const tournamentsByTenant = useState<Record<string, TournamentRow[]>>(
+  'public-tournament-list-by-tenant',
+  () => ({}),
+)
+
 export function usePublicTournamentSelection(params: Params) {
   const route = useRoute()
   const router = useRouter()
@@ -21,10 +31,14 @@ export function usePublicTournamentSelection(params: Params) {
   )
 
   function syncTidToQuery(nextId: string | null) {
-    const q: Record<string, any> = { ...route.query }
-    if (nextId) q.tid = nextId
+    const cur = typeof route.query.tid === 'string' ? route.query.tid.trim() : ''
+    const next = (nextId ?? '').trim()
+    if (next && cur === next) return
+    if (!next && !cur) return
+    const q: Record<string, unknown> = { ...route.query }
+    if (next) q.tid = next
     else delete q.tid
-    void router.replace({ query: q })
+    void router.replace({ query: q as Record<string, any> })
   }
 
   function initializeSelectionFromContext() {
@@ -52,19 +66,40 @@ export function usePublicTournamentSelection(params: Params) {
   }
 
   async function fetchTournaments(options?: { onError?: (e: any) => void }) {
-    loading.value = true
+    const tenantSlug = unref(params.tenant)
+    const warmList = tournamentsByTenant.value[tenantSlug]
+    const showLoading = !warmList?.length
+    if (showLoading) loading.value = true
     try {
-      const loaded = await params.loadAllTournaments(unref(params.tenant))
+      const loaded = await params.loadAllTournaments(tenantSlug)
+      tournamentsByTenant.value = { ...tournamentsByTenant.value, [tenantSlug]: loaded }
       applyPreferredTournament(loaded)
       return loaded
     } catch (e: any) {
       tournaments.value = []
+      const next = { ...tournamentsByTenant.value }
+      delete next[tenantSlug]
+      tournamentsByTenant.value = next
       options?.onError?.(e)
       return []
     } finally {
       loading.value = false
     }
   }
+
+  watch(
+    () => unref(params.tenant),
+    (slug, prev) => {
+      if (!String(slug ?? '').trim()) return
+      const cached = tournamentsByTenant.value[String(slug)]
+      if (cached?.length) {
+        applyPreferredTournament(cached)
+      } else if (prev !== undefined && slug !== prev) {
+        tournaments.value = []
+      }
+    },
+    { immediate: true },
+  )
 
   watch(
     () => unref(params.selectedTid),

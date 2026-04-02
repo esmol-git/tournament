@@ -8,13 +8,18 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
+import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
+import { TournamentCreatorAccessGuard } from '../auth/tournament-creator-access.guard';
+import { JwtPayload } from '../auth/jwt.strategy';
 import { TournamentsService } from './tournaments.service';
 import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
@@ -42,6 +47,7 @@ import { UpdateNewsTagDto } from './dto/update-news-tag.dto';
   TenantSubscriptionGuard,
   TenantParamConsistencyGuard,
   TenantZoneGuard,
+  TenantAdminStaffGuard,
 )
 @Controller()
 export class TournamentsController {
@@ -51,16 +57,21 @@ export class TournamentsController {
   async listByTenant(
     @Param('tenantId') tenantId: string,
     @Query() query: ListTenantTournamentsQueryDto,
+    @Req() req: Request & { user: JwtPayload },
   ) {
-    return this.tournamentsService.listByTenant(tenantId, query);
+    return this.tournamentsService.listByTenant(tenantId, query, {
+      userId: req.user.sub,
+      role: req.user.role,
+    });
   }
 
   @Post('tenants/:tenantId/tournaments')
   async create(
     @Param('tenantId') tenantId: string,
     @Body() dto: CreateTournamentDto,
+    @Req() req: Request & { user: JwtPayload },
   ) {
-    return this.tournamentsService.create(tenantId, dto);
+    return this.tournamentsService.create(tenantId, dto, req.user.sub);
   }
 
   @Get('tenants/:tenantId/news')
@@ -127,6 +138,7 @@ export class TournamentsController {
   }
 
   @Get('tournaments/:id')
+  @UseGuards(TournamentCreatorAccessGuard)
   async getById(
     @Param('id') id: string,
     @Query() filters?: MatchesFilterQueryDto,
@@ -135,31 +147,43 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id')
+  @UseGuards(TournamentCreatorAccessGuard)
   async update(@Param('id') id: string, @Body() dto: UpdateTournamentDto) {
     return this.tournamentsService.update(id, dto);
   }
 
   @Delete('tournaments/:id')
+  @UseGuards(TournamentCreatorAccessGuard)
   async delete(@Param('id') id: string) {
     return this.tournamentsService.delete(id);
   }
 
   @Get('tournaments/:id/table')
-  async getTable(@Param('id') id: string, @Query('groupId') groupId?: string) {
-    return this.tournamentsService.getTable(id, groupId);
+  async getTable(
+    @Param('id') id: string,
+    @Query('groupId') groupId?: string,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedOffset = Number.isFinite(Number(offset)) ? Math.max(0, Number(offset)) : undefined;
+    const parsedLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : undefined;
+    return this.tournamentsService.getTable(id, groupId, parsedOffset, parsedLimit);
   }
 
   @Post('tournaments/:id/teams/:teamId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async addTeam(@Param('id') id: string, @Param('teamId') teamId: string) {
     return this.tournamentsService.addTeam(id, teamId);
   }
 
   @Delete('tournaments/:id/teams/:teamId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async removeTeam(@Param('id') id: string, @Param('teamId') teamId: string) {
     return this.tournamentsService.removeTeam(id, teamId);
   }
 
   @Patch('tournaments/:id/teams/:teamId/group')
+  @UseGuards(TournamentCreatorAccessGuard)
   async setTeamGroup(
     @Param('id') id: string,
     @Param('teamId') teamId: string,
@@ -173,6 +197,7 @@ export class TournamentsController {
   }
 
   @Put('tournaments/:id/teams/group-layout')
+  @UseGuards(TournamentCreatorAccessGuard)
   async syncTeamsGroupLayout(
     @Param('id') id: string,
     @Body() dto: SyncTeamsGroupLayoutDto,
@@ -181,6 +206,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/teams/:teamId/rating')
+  @UseGuards(TournamentCreatorAccessGuard)
   async setTeamRating(
     @Param('id') id: string,
     @Param('teamId') teamId: string,
@@ -190,6 +216,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:id/calendar')
+  @UseGuards(TournamentCreatorAccessGuard)
   async generateCalendar(
     @Param('id') id: string,
     @Body() dto: GenerateCalendarDto,
@@ -198,6 +225,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:id/calendar/from-template')
+  @UseGuards(TournamentCreatorAccessGuard)
   async generateCalendarFromTemplate(
     @Param('id') id: string,
     @Body() dto: GenerateFromTemplateDto,
@@ -206,11 +234,13 @@ export class TournamentsController {
   }
 
   @Delete('tournaments/:id/calendar')
+  @UseGuards(TournamentCreatorAccessGuard)
   async clearCalendar(@Param('id') id: string) {
     return this.tournamentsService.clearCalendar(id);
   }
 
   @Post('tournaments/:id/playoff')
+  @UseGuards(TournamentCreatorAccessGuard)
   async generatePlayoff(@Param('id') id: string) {
     return this.tournamentsService.generatePlayoff(id, {
       replaceExisting: true,
@@ -218,6 +248,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:tournamentId/rounds/:roundDate/reorder')
+  @UseGuards(TournamentCreatorAccessGuard)
   async reorderRound(
     @Param('tournamentId') tournamentId: string,
     @Param('roundDate') roundDate: string,
@@ -227,6 +258,7 @@ export class TournamentsController {
   }
 
   @Get('tournaments/:id/news')
+  @UseGuards(TournamentCreatorAccessGuard)
   async listNews(
     @Param('id') id: string,
     @Query() query: ListTournamentNewsQueryDto,
@@ -235,6 +267,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:id/news')
+  @UseGuards(TournamentCreatorAccessGuard)
   async createNews(
     @Param('id') id: string,
     @Body() dto: CreateTournamentNewsDto,
@@ -243,6 +276,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/news/:newsId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async updateNews(
     @Param('id') id: string,
     @Param('newsId') newsId: string,
@@ -252,16 +286,19 @@ export class TournamentsController {
   }
 
   @Delete('tournaments/:id/news/:newsId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async deleteNews(@Param('id') id: string, @Param('newsId') newsId: string) {
     return this.tournamentsService.deleteNews(id, newsId);
   }
 
   @Get('tournaments/:id/gallery')
+  @UseGuards(TournamentCreatorAccessGuard)
   async listGallery(@Param('id') id: string) {
     return this.tournamentsService.listGallery(id);
   }
 
   @Post('tournaments/:id/gallery')
+  @UseGuards(TournamentCreatorAccessGuard)
   async createGalleryImage(
     @Param('id') id: string,
     @Body() dto: CreateGalleryImageDto,
@@ -271,6 +308,7 @@ export class TournamentsController {
 
   /** Должен быть выше `gallery/:imageId`, иначе `reorder` попадёт в imageId. */
   @Patch('tournaments/:id/gallery/reorder')
+  @UseGuards(TournamentCreatorAccessGuard)
   async reorderGallery(
     @Param('id') id: string,
     @Body() dto: ReorderGalleryDto,
@@ -279,6 +317,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/gallery/:imageId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async updateGalleryImage(
     @Param('id') id: string,
     @Param('imageId') imageId: string,
@@ -288,6 +327,7 @@ export class TournamentsController {
   }
 
   @Delete('tournaments/:id/gallery/:imageId')
+  @UseGuards(TournamentCreatorAccessGuard)
   async deleteGalleryImage(
     @Param('id') id: string,
     @Param('imageId') imageId: string,
