@@ -39,6 +39,15 @@ class TournamentAdminDto {
 }
 
 export class CreateTournamentDto {
+  @ApiProperty({
+    required: false,
+    description:
+      'Id шаблона турнира тенанта: поля пресета подставляются до значений из тела запроса.',
+  })
+  @IsOptional()
+  @IsString()
+  templateId?: string;
+
   @ApiProperty({ example: 'Весенний кубок 2026' })
   @IsString()
   @IsNotEmpty()
@@ -80,9 +89,13 @@ export class CreateTournamentDto {
   @ApiProperty({
     enum: TournamentFormat,
     example: TournamentFormat.SINGLE_GROUP,
+    required: false,
+    description:
+      'Если передан templateId, формат можно не указывать — возьмётся из шаблона.',
   })
+  @ValidateIf((o: CreateTournamentDto) => !String(o.templateId ?? '').trim())
   @IsEnum(TournamentFormat)
-  format: TournamentFormat;
+  format?: TournamentFormat;
 
   @ApiProperty({
     required: false,
@@ -257,21 +270,37 @@ export class CreateTournamentDto {
 
   @ApiProperty({
     required: false,
+    type: [String],
+    description:
+      'Несколько площадок турнира по порядку; первый элемент = основной стадион (stadiumId). Если передан — имеет приоритет над одним stadiumId.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  stadiumIds?: string[];
+
+  @ApiProperty({
+    required: false,
     nullable: true,
     description: 'Сезон из справочника тенанта (опционально)',
   })
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   seasonId?: string | null;
 
   @ApiProperty({
     required: false,
     nullable: true,
-    description: 'Тип соревнования из справочника (чемпионат, кубок и т.д., опционально)',
+    description:
+      'Тип соревнования из справочника (чемпионат, кубок и т.д., опционально)',
   })
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   competitionId?: string | null;
 
@@ -281,7 +310,9 @@ export class CreateTournamentDto {
     description: 'Возрастная группа из справочника (опционально)',
   })
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   ageGroupId?: string | null;
 
@@ -294,4 +325,15 @@ export class CreateTournamentDto {
   @IsArray()
   @IsString({ each: true })
   refereeIds?: string[];
+
+  @ApiProperty({
+    required: false,
+    type: [String],
+    description:
+      'Пользователи с ролью MODERATOR в тенанте: модераторы турнира (протокол и матчи, без правки карточки)',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  moderatorIds?: string[];
 }

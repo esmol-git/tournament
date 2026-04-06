@@ -1,10 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  ValidateIf,
-} from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 export class CreateTeamDto {
   @ApiProperty({ example: 'Спартак U12' })
@@ -24,13 +19,28 @@ export class CreateTeamDto {
 
   @ApiPropertyOptional({ description: 'Возрастная группа из справочника' })
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   ageGroupId?: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'Категория команды из справочника (правила состава: возраст, пол)',
+  })
+  @IsOptional()
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
+  @IsString()
+  teamCategoryId?: string | null;
+
   @ApiPropertyOptional({ description: 'Регион из справочника' })
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   regionId?: string | null;
 
@@ -68,5 +78,4 @@ export class CreateTeamDto {
   @IsOptional()
   @IsString()
   description?: string;
-
 }

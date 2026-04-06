@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { maxTeamsPerTenant } from '../auth/subscription-plan-features.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateTeamDto } from './dto/create-team.dto';
@@ -13,6 +15,7 @@ import { TeamQueryDto } from './dto/team-query.dto';
 import { TeamPlayersQueryDto } from './dto/team-players-query.dto';
 import { UpdateTeamDto } from './dto/update-team.dto';
 import { UpdateTeamPlayerDto } from './dto/update-team-player.dto';
+import { assertPlayerFitsTeamCategory } from './team-category-player.assert';
 
 @Injectable()
 export class TeamsService {
@@ -68,14 +71,57 @@ export class TeamsService {
     return where;
   }
 
+  /** Подпись для фильтра `category`: приоритет у категории состава, иначе возрастная группа. */
+  private async resolveTeamCategoryLabel(
+    tenantId: string,
+    teamCategoryId: string | null,
+    ageGroupId: string | null,
+  ): Promise<string | null> {
+    if (teamCategoryId) {
+      const tc = await this.prisma.teamCategory.findFirst({
+        where: { id: teamCategoryId, tenantId },
+        select: { name: true },
+      });
+      return tc?.name ?? null;
+    }
+    if (ageGroupId) {
+      const ag = await this.prisma.ageGroup.findFirst({
+        where: { id: ageGroupId, tenantId },
+        select: { name: true },
+      });
+      return ag?.name ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * @param categoryIdOverride — если задан, проверка идёт по этой категории (нужно при смене
+   *   категории команды до записи в БД; иначе из команды читается текущий teamCategoryId).
+   */
   private async assertPlayerMatchesTeamCategory(
     tenantId: string,
     teamId: string,
     playerId: string,
+    categoryIdOverride?: string | null,
   ) {
-    void tenantId;
-    void teamId;
-    void playerId;
+    let categoryFk: string | null = null;
+    if (categoryIdOverride !== undefined) {
+      categoryFk = categoryIdOverride;
+    } else {
+      const team = await this.prisma.team.findFirst({
+        where: { id: teamId, tenantId },
+        select: { teamCategoryId: true },
+      });
+      categoryFk = team?.teamCategoryId ?? null;
+    }
+    if (!categoryFk) return;
+
+    await assertPlayerFitsTeamCategory(
+      this.prisma,
+      tenantId,
+      categoryFk,
+      playerId,
+    );
   }
 
   async list(
@@ -156,6 +202,8 @@ export class TeamsService {
           ageGroup_id: string | null;
           ageGroup_name: string | null;
           ageGroup_shortLabel: string | null;
+          teamCategory_id: string | null;
+          teamCategory_name: string | null;
           region_id: string | null;
           region_name: string | null;
         }>
@@ -172,10 +220,13 @@ export class TeamsService {
           ag."id" AS "ageGroup_id",
           ag."name" AS "ageGroup_name",
           ag."shortLabel" AS "ageGroup_shortLabel",
+          tc."id" AS "teamCategory_id",
+          tc."name" AS "teamCategory_name",
           r."id" AS "region_id",
           r."name" AS "region_name"
         FROM "Team" t
         LEFT JOIN "AgeGroup" ag ON ag."id" = t."ageGroupId"
+        LEFT JOIN "TeamCategory" tc ON tc."id" = t."teamCategoryId"
         LEFT JOIN "Region" r ON r."id" = t."regionId"
         WHERE t."tenantId" = ${tenantId}
           AND (${nameParam}::text IS NULL OR t."name" ILIKE ('%' || ${nameParam} || '%'))
@@ -221,6 +272,11 @@ export class TeamsService {
             t.region_id && t.region_name
               ? { id: t.region_id, name: t.region_name }
               : null,
+          teamCategoryId: t.teamCategory_id,
+          teamCategory:
+            t.teamCategory_id && t.teamCategory_name
+              ? { id: t.teamCategory_id, name: t.teamCategory_name }
+              : null,
         })),
         total,
         page: pageResolved,
@@ -244,6 +300,7 @@ export class TeamsService {
         ageGroup: {
           select: { id: true, name: true, shortLabel: true },
         },
+        teamCategory: { select: { id: true, name: true } },
         region: { select: { id: true, name: true } },
       },
     });
@@ -266,6 +323,10 @@ export class TeamsService {
               shortLabel: t.ageGroup.shortLabel,
             }
           : null,
+        teamCategoryId: t.teamCategoryId,
+        teamCategory: t.teamCategory
+          ? { id: t.teamCategory.id, name: t.teamCategory.name }
+          : null,
         regionId: t.regionId,
         region: t.region ? { id: t.region.id, name: t.region.name } : null,
       })),
@@ -282,11 +343,28 @@ export class TeamsService {
     });
     if (conflict) throw new BadRequestException('Team slug already exists');
 
+    const tenantRow = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { subscriptionPlan: true },
+    });
+    if (!tenantRow) {
+      throw new NotFoundException('Tenant not found');
+    }
+    const maxTeams = maxTeamsPerTenant(tenantRow.subscriptionPlan);
+    if (maxTeams !== null) {
+      const teamsCount = await this.prisma.team.count({ where: { tenantId } });
+      if (teamsCount >= maxTeams) {
+        throw new ForbiddenException({
+          message: `Превышен лимит команд в организации (${maxTeams})`,
+          code: 'TENANT_TEAMS_LIMIT_EXCEEDED',
+        });
+      }
+    }
+
     const logoUrlCreate =
       dto.logoUrl === undefined || dto.logoUrl === '' ? undefined : dto.logoUrl;
 
     let ageGroupIdToSet: string | undefined = undefined;
-    let derivedCategory: string | null = null;
     const rawAg = dto.ageGroupId?.trim();
     if (rawAg) {
       const ag = await this.prisma.ageGroup.findFirst({
@@ -297,8 +375,26 @@ export class TeamsService {
         throw new BadRequestException('Возрастная группа не найдена');
       }
       ageGroupIdToSet = ag.id;
-      derivedCategory = ag.name;
     }
+
+    let teamCategoryIdToSet: string | undefined = undefined;
+    const rawTc = dto.teamCategoryId?.trim();
+    if (rawTc) {
+      const tc = await this.prisma.teamCategory.findFirst({
+        where: { id: rawTc, tenantId },
+        select: { id: true },
+      });
+      if (!tc) {
+        throw new BadRequestException('Категория команды не найдена');
+      }
+      teamCategoryIdToSet = tc.id;
+    }
+
+    const categoryLabel = await this.resolveTeamCategoryLabel(
+      tenantId,
+      teamCategoryIdToSet ?? null,
+      ageGroupIdToSet ?? null,
+    );
 
     let regionIdToSet: string | undefined = undefined;
     const rawReg = dto.regionId?.trim();
@@ -318,7 +414,8 @@ export class TeamsService {
         tenantId,
         name: dto.name,
         slug: dto.slug,
-        category: derivedCategory,
+        category: categoryLabel,
+        teamCategoryId: teamCategoryIdToSet,
         logoUrl: logoUrlCreate,
         coachName: dto.coachName,
         coachPhone: dto.coachPhone,
@@ -337,7 +434,13 @@ export class TeamsService {
   async update(tenantId: string, id: string, dto: UpdateTeamDto) {
     const team = await this.prisma.team.findFirst({
       where: { id, tenantId },
-      select: { id: true, slug: true, logoUrl: true },
+      select: {
+        id: true,
+        slug: true,
+        logoUrl: true,
+        ageGroupId: true,
+        teamCategoryId: true,
+      },
     });
     if (!team) throw new NotFoundException('Team not found');
 
@@ -356,25 +459,49 @@ export class TeamsService {
           ? null
           : dto.logoUrl;
 
-    let ageGroupForUpdate: string | null | undefined = undefined;
-    let categoryForUpdate: string | null | undefined = undefined;
+    let nextAgeGroupId = team.ageGroupId;
     if (dto.ageGroupId !== undefined) {
       if (dto.ageGroupId === null || dto.ageGroupId === '') {
-        ageGroupForUpdate = null;
-        categoryForUpdate = null;
+        nextAgeGroupId = null;
       } else {
         const aid = String(dto.ageGroupId).trim();
         const ag = await this.prisma.ageGroup.findFirst({
           where: { id: aid, tenantId },
-          select: { id: true, name: true },
+          select: { id: true },
         });
         if (!ag) {
           throw new BadRequestException('Возрастная группа не найдена');
         }
-        ageGroupForUpdate = aid;
-        categoryForUpdate = ag.name;
+        nextAgeGroupId = aid;
       }
     }
+
+    let nextTeamCategoryId = team.teamCategoryId;
+    if (dto.teamCategoryId !== undefined) {
+      if (dto.teamCategoryId === null || dto.teamCategoryId === '') {
+        nextTeamCategoryId = null;
+      } else {
+        const cid = String(dto.teamCategoryId).trim();
+        const tc = await this.prisma.teamCategory.findFirst({
+          where: { id: cid, tenantId },
+          select: { id: true },
+        });
+        if (!tc) {
+          throw new BadRequestException('Категория команды не найдена');
+        }
+        nextTeamCategoryId = cid;
+      }
+    }
+
+    const touchCategoryLabel =
+      dto.ageGroupId !== undefined || dto.teamCategoryId !== undefined;
+    const categoryLabel = touchCategoryLabel
+      ? await this.resolveTeamCategoryLabel(
+          tenantId,
+          nextTeamCategoryId,
+          nextAgeGroupId,
+        )
+      : undefined;
 
     let regionForUpdate: string | null | undefined = undefined;
     if (dto.regionId !== undefined) {
@@ -399,14 +526,30 @@ export class TeamsService {
       logoUrlResolved !== undefined &&
       (logoUrlResolved === null || logoUrlResolved !== previousLogoUrl);
 
+    // Любое обновление команды: если после слия DTO с текущей строкой у команды
+    // задана категория состава — состав должен ей соответствовать (в т.ч. первое
+    // назначение категории и PATCH только с logoUrl/name без поля teamCategoryId).
+    if (nextTeamCategoryId) {
+      const roster = await this.prisma.teamPlayer.findMany({
+        where: { teamId: id },
+        select: { playerId: true },
+      });
+      for (const row of roster) {
+        await this.assertPlayerMatchesTeamCategory(
+          tenantId,
+          id,
+          row.playerId,
+          nextTeamCategoryId,
+        );
+      }
+    }
+
     const updated = await this.prisma.team.update({
       where: { id },
       data: {
         name: dto.name,
         slug: dto.slug,
-        ...(categoryForUpdate !== undefined
-          ? { category: categoryForUpdate }
-          : {}),
+        ...(categoryLabel !== undefined ? { category: categoryLabel } : {}),
         logoUrl: logoUrlResolved,
         coachName: dto.coachName,
         coachPhone: dto.coachPhone,
@@ -414,8 +557,9 @@ export class TeamsService {
         contactName: dto.contactName,
         contactPhone: dto.contactPhone,
         description: dto.description,
-        ...(ageGroupForUpdate !== undefined
-          ? { ageGroupId: ageGroupForUpdate }
+        ...(dto.ageGroupId !== undefined ? { ageGroupId: nextAgeGroupId } : {}),
+        ...(dto.teamCategoryId !== undefined
+          ? { teamCategoryId: nextTeamCategoryId }
           : {}),
         ...(regionForUpdate !== undefined ? { regionId: regionForUpdate } : {}),
       },
@@ -678,13 +822,16 @@ export class TeamsService {
     dto: CreateTeamPlayersBulkDto,
   ) {
     const ids = Array.from(
-      new Set((dto.playerIds ?? []).map((x) => String(x).trim()).filter(Boolean)),
+      new Set(
+        (dto.playerIds ?? []).map((x) => String(x).trim()).filter(Boolean),
+      ),
     );
     if (!ids.length) {
       throw new BadRequestException('playerIds must not be empty');
     }
 
-    const results: Array<{ playerId: string; ok: boolean; error?: string }> = [];
+    const results: Array<{ playerId: string; ok: boolean; error?: string }> =
+      [];
     let added = 0;
 
     for (const playerId of ids) {

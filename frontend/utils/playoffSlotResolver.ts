@@ -73,7 +73,11 @@ function buildMatchNumberById(matches: MatchRow[]): Record<string, number> {
     .slice()
     .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))
   const map: Record<string, number> = {}
-  for (let i = 0; i < sorted.length; i++) map[sorted[i].id] = i + 1
+  for (let i = 0; i < sorted.length; i++) {
+    const row = sorted[i]
+    if (!row) continue
+    map[row.id] = i + 1
+  }
   return map
 }
 
@@ -135,6 +139,7 @@ export function buildPlayoffSlotLabels(
     }
     for (let i = 0; i < firstRoundMatches.length; i++) {
       const m = firstRoundMatches[i]
+      if (!m) continue
       seedLabelByTeamId.set(m.homeTeam.id, seedLabelByIndex(i))
       seedLabelByTeamId.set(m.awayTeam.id, seedLabelByIndex(qualifiersCount - 1 - i))
     }
@@ -156,7 +161,9 @@ export function buildPlayoffSlotLabels(
     if (m.playoffRound === 'FINAL' || m.playoffRound === 'THIRD_PLACE') {
       const parent = byRound.get(rn - 1) ?? []
       if (parent.length < 2) continue
-      const [left, right] = parent
+      const left = parent[0]
+      const right = parent[1]
+      if (!left || !right) continue
       const usesLoser = m.playoffRound === 'THIRD_PLACE'
       result[m.id] = {
         home:

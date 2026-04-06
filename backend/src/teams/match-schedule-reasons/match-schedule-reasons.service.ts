@@ -28,7 +28,11 @@ export class MatchScheduleReasonsService {
     });
   }
 
-  async update(tenantId: string, id: string, dto: UpdateMatchScheduleReasonDto) {
+  async update(
+    tenantId: string,
+    id: string,
+    dto: UpdateMatchScheduleReasonDto,
+  ) {
     const row = await this.prisma.matchScheduleReason.findFirst({
       where: { id, tenantId },
     });

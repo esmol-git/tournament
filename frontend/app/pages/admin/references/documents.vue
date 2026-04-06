@@ -8,9 +8,13 @@ import { useTenantId } from '~/composables/useTenantId'
 import type { ReferenceDocumentRow } from '~/types/admin/reference-document'
 import type { TournamentRow, TournamentListResponse } from '~/types/admin/tournaments-index'
 import { getApiErrorMessage } from '~/utils/apiError'
-import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
+import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
+import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 const SKELETON_ROW_COUNT = 6
@@ -23,9 +27,12 @@ const toast = useToast()
 const { t } = useI18n()
 const tenantId = useTenantId()
 
-const loading = ref(true)
+const { items, loading, error, isEmpty, run, retry } = useAdminAsyncListState<ReferenceDocumentRow>({
+  initialLoading: true,
+  minLoadingMs: MIN_SKELETON_DISPLAY_MS,
+  clearItemsOnError: true,
+})
 const saving = ref(false)
-const items = ref<ReferenceDocumentRow[]>([])
 const tournaments = ref<TournamentRow[]>([])
 const tournamentsLoading = ref(false)
 const showForm = ref(false)
@@ -99,19 +106,12 @@ const fetchItems = async () => {
     loading.value = false
     return
   }
-  const loadStartedAt = Date.now()
-  loading.value = true
-  try {
+  await run(async () => {
     items.value = await authFetch<ReferenceDocumentRow[]>(
       apiUrl(`/tenants/${tenantId.value}/reference-documents`),
       { headers: { Authorization: `Bearer ${token.value}` } },
     )
-  } catch {
-    toast.add({ severity: 'error', summary: 'Не удалось загрузить документы', life: 5000 })
-  } finally {
-    await sleepRemainingAfter(MIN_SKELETON_DISPLAY_MS, loadStartedAt)
-    loading.value = false
-  }
+  })
 }
 
 const openCreate = () => {
@@ -222,17 +222,24 @@ const onDocFileChange = async (e: Event) => {
   }
 }
 
-const removeUploadedUrl = async () => {
-  if (!token.value) return
-  if (docUploading.value) return
-  if (!form.url.trim()) return
-  if (!confirm('Очистить ссылку на файл?')) return
+const clearUrlDialogVisible = ref(false)
+const clearUrlSaving = ref(false)
 
+const openClearUrlDialog = () => {
+  if (docUploading.value || !form.url.trim()) return
+  clearUrlDialogVisible.value = true
+}
+
+const confirmClearUrl = async () => {
+  if (!token.value || !form.url.trim()) {
+    clearUrlDialogVisible.value = false
+    return
+  }
+  clearUrlSaving.value = true
   const prev = form.url
   form.url = ''
-
-  if (isEdit.value && editing.value?.id) {
-    try {
+  try {
+    if (isEdit.value && editing.value?.id) {
       await authFetch(
         apiUrl(`/tenants/${tenantId.value}/reference-documents/${editing.value.id}`),
         {
@@ -242,18 +249,19 @@ const removeUploadedUrl = async () => {
         },
       )
       await fetchItems()
-      toast.add({ severity: 'success', summary: 'Ссылка очищена', life: 2500 })
-    } catch (err: unknown) {
-      form.url = prev
-      toast.add({
-        severity: 'error',
-        summary: 'Не удалось очистить ссылку',
-        detail: getApiErrorMessage(err),
-        life: 6000,
-      })
     }
-  } else {
     toast.add({ severity: 'success', summary: 'Ссылка очищена', life: 2500 })
+    clearUrlDialogVisible.value = false
+  } catch (err: unknown) {
+    form.url = prev
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось очистить ссылку',
+      detail: getApiErrorMessage(err),
+      life: 6000,
+    })
+  } finally {
+    clearUrlSaving.value = false
   }
 }
 
@@ -308,17 +316,26 @@ const save = async () => {
   }
 }
 
-const remove = async (row: ReferenceDocumentRow) => {
-  if (!token.value) return
-  if (!confirm(`Удалить «${row.title}»?`)) return
+const deleteDialogVisible = ref(false)
+const deleteTarget = ref<ReferenceDocumentRow | null>(null)
+const deleteSaving = ref(false)
+
+const openDeleteDialog = (row: ReferenceDocumentRow) => {
+  deleteTarget.value = row
+  deleteDialogVisible.value = true
+}
+
+const confirmDelete = async () => {
+  if (!token.value || !deleteTarget.value) return
+  const row = deleteTarget.value
+  deleteSaving.value = true
   try {
-    await authFetch(
-      apiUrl(`/tenants/${tenantId.value}/reference-documents/${row.id}`),
-      {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token.value}` },
-      },
-    )
+    await authFetch(apiUrl(`/tenants/${tenantId.value}/reference-documents/${row.id}`), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    deleteDialogVisible.value = false
+    deleteTarget.value = null
     await fetchItems()
     toast.add({ severity: 'success', summary: 'Удалено', life: 2500 })
   } catch (e: unknown) {
@@ -328,13 +345,20 @@ const remove = async (row: ReferenceDocumentRow) => {
       detail: getApiErrorMessage(e),
       life: 6000,
     })
+  } finally {
+    deleteSaving.value = false
   }
+}
+
+const onDeleteDialogHide = () => {
+  deleteTarget.value = null
 }
 
 onMounted(() => {
   if (process.client) {
     syncWithStorage()
     if (!loggedIn.value) {
+      loading.value = false
       router.push('/admin/login')
       return
     }
@@ -344,11 +368,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="p-6 space-y-4">
-    <header class="flex flex-wrap items-center justify-between gap-3">
+  <section class="admin-page">
+    <header class="admin-toolbar-responsive flex flex-wrap items-center justify-between gap-2 sm:gap-3">
       <div>
-        <h1 class="text-xl font-semibold text-surface-900 dark:text-surface-0">Документы</h1>
-        <p class="mt-1 text-sm text-muted-color max-w-2xl">
+        <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-xl">Документы</h1>
+        <p class="mt-1 max-w-2xl text-xs leading-relaxed text-muted-color sm:text-sm">
           Регламенты, положения, шаблоны: файл в хранилище (PDF и т.д.) или внешняя ссылка и
           примечание. Это отдельный каталог от данных турниров и матчей — удобно хранить
           нормативные документы организации в одном месте.
@@ -357,63 +381,52 @@ onMounted(() => {
       <Button label="Добавить" icon="pi pi-plus" @click="openCreate" />
     </header>
 
-    <Transition name="doc-fade" mode="out-in">
-      <div
-        v-if="loading"
-        key="sk"
-        class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 overflow-hidden min-h-[22rem]"
-        aria-busy="true"
-      >
-        <div
-          class="grid grid-cols-1 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,5rem)_minmax(0,1.2fr)_minmax(0,4rem)_minmax(0,5rem)_auto] gap-3 px-4 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-800/50"
-        >
-          <Skeleton height="0.75rem" width="6rem" class="rounded-md" />
-          <Skeleton height="0.75rem" width="3rem" class="rounded-md" />
-          <Skeleton height="0.75rem" width="5rem" class="rounded-md" />
-          <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
-          <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
-          <div class="hidden sm:flex justify-end gap-1">
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-            <Skeleton shape="circle" width="2rem" height="2rem" />
+    <AdminDataState
+      :loading="loading"
+      :error="error"
+      :empty="isEmpty"
+      empty-title="Пока нет документов"
+      empty-description="Добавьте ссылки на положения и регламенты (ссылка должна начинаться с https://)."
+      empty-icon="pi pi-file"
+      error-title="Не удалось загрузить документы"
+      @retry="retry"
+    >
+      <template #loading>
+        <div class="min-h-[22rem]">
+          <div
+            class="grid grid-cols-1 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,5rem)_minmax(0,1.2fr)_minmax(0,4rem)_minmax(0,5rem)_auto] gap-3 px-4 py-3 border-b border-surface-200 dark:border-surface-700 bg-surface-50/80 dark:bg-surface-800/50"
+          >
+            <Skeleton height="0.75rem" width="6rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="3rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="5rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
+            <div class="hidden sm:flex justify-end gap-1">
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+            </div>
+          </div>
+          <div
+            v-for="row in skeletonRows"
+            :key="row.id"
+            class="grid grid-cols-1 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,5rem)_minmax(0,1.2fr)_minmax(0,4rem)_minmax(0,5rem)_auto] gap-3 items-center px-4 py-3.5 border-b border-surface-100 dark:border-surface-800 last:border-0"
+          >
+            <Skeleton width="72%" height="1rem" class="rounded-md max-w-xs" />
+            <Skeleton width="45%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="85%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="40%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="55%" height="0.875rem" class="rounded-md" />
+            <div class="flex justify-end gap-1 sm:col-start-6">
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+            </div>
           </div>
         </div>
-        <div
-          v-for="row in skeletonRows"
-          :key="row.id"
-          class="grid grid-cols-1 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,5rem)_minmax(0,1.2fr)_minmax(0,4rem)_minmax(0,5rem)_auto] gap-3 items-center px-4 py-3.5 border-b border-surface-100 dark:border-surface-800 last:border-0"
-        >
-          <Skeleton width="72%" height="1rem" class="rounded-md max-w-xs" />
-          <Skeleton width="45%" height="0.875rem" class="rounded-md" />
-          <Skeleton width="85%" height="0.875rem" class="rounded-md" />
-          <Skeleton width="40%" height="0.875rem" class="rounded-md" />
-          <Skeleton width="55%" height="0.875rem" class="rounded-md" />
-          <div class="flex justify-end gap-1 sm:col-start-6">
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-          </div>
-        </div>
-      </div>
-
-      <div
-        v-else-if="!items.length"
-        key="empty"
-        class="rounded-xl border border-dashed border-surface-300 bg-surface-0/60 px-6 py-14 text-center dark:border-surface-600 dark:bg-surface-900/40"
-      >
-        <div
-          class="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-inner"
-        >
-          <i class="pi pi-file text-3xl" aria-hidden="true" />
-        </div>
-        <h2 class="mt-5 text-lg font-semibold text-surface-900 dark:text-surface-0">
-          Пока нет документов
-        </h2>
-        <p class="mt-2 text-sm text-muted-color max-w-md mx-auto leading-relaxed">
-          Добавьте ссылки на положения и регламенты (ссылка должна начинаться с https://).
-        </p>
-        <Button class="mt-6" label="Добавить документ" icon="pi pi-plus" @click="openCreate" />
-      </div>
-
-      <DataTable v-else key="dt" :value="items" data-key="id" striped-rows>
+      </template>
+      <template #empty-actions>
+        <Button label="Добавить документ" icon="pi pi-plus" @click="openCreate" />
+      </template>
+      <DataTable :value="items" data-key="id" striped-rows>
         <Column field="title" header="Название" style="min-width: 10rem" />
         <Column field="code" header="Код" />
         <Column header="Область" style="min-width: 10rem">
@@ -450,16 +463,17 @@ onMounted(() => {
         <Column header="" style="width: 8rem" body-class="!text-end">
           <template #body="{ data }">
             <Button icon="pi pi-pencil" text rounded severity="secondary" @click="openEdit(data)" />
-            <Button icon="pi pi-trash" text rounded severity="danger" @click="remove(data)" />
+            <Button icon="pi pi-trash" text rounded severity="danger" @click="openDeleteDialog(data)" />
           </template>
         </Column>
       </DataTable>
-    </Transition>
+    </AdminDataState>
 
     <Dialog
       :visible="showForm"
       @update:visible="(v) => (showForm = v)"
       modal
+      block-scroll
       :header="isEdit ? 'Редактировать документ' : 'Новый документ'"
       :style="{ width: 'min(28rem, calc(100vw - 2rem))' }"
     >
@@ -504,7 +518,7 @@ onMounted(() => {
               text
               aria-label="Очистить ссылку"
               :disabled="docUploading"
-              @click="removeUploadedUrl"
+              @click="openClearUrlDialog"
             />
             <input
               ref="docFileInput"
@@ -548,24 +562,77 @@ onMounted(() => {
         </div>
         <div>
           <label class="text-sm block mb-1">Примечание</label>
-          <AdminMarkdownEditor v-model="form.note" compact />
+          <Textarea
+            v-model="form.note"
+            class="w-full"
+            rows="4"
+            auto-resize
+            placeholder="Произвольный текст"
+          />
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <Button label="Отмена" text @click="showForm = false" />
-          <Button label="Сохранить" icon="pi pi-check" :loading="saving" :disabled="saving || docUploading || (submitAttempted && !canSave)" @click="save" />
+          <Button type="button" label="Отмена" text @click="showForm = false" />
+          <Button type="button" label="Сохранить" icon="pi pi-check" :loading="saving" :disabled="saving || docUploading || (submitAttempted && !canSave)" @click="save" />
         </div>
       </div>
     </Dialog>
+
+    <Dialog
+      :visible="clearUrlDialogVisible"
+      modal
+      block-scroll
+      header="Очистить ссылку на файл?"
+      :style="{ width: 'min(24rem, 100vw - 2rem)' }"
+      :closable="!clearUrlSaving"
+      @update:visible="(v) => (clearUrlDialogVisible = v)"
+    >
+      <p class="text-sm text-surface-700 dark:text-surface-200">
+        Ссылка в карточке документа будет сброшена. Для уже сохранённой записи изменение сразу
+        отправится на сервер.
+      </p>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button type="button" label="Отмена" text :disabled="clearUrlSaving" @click="clearUrlDialogVisible = false" />
+          <Button
+            type="button"
+            label="Очистить"
+            icon="pi pi-trash"
+            severity="danger"
+            :loading="clearUrlSaving"
+            @click="confirmClearUrl"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      :visible="deleteDialogVisible"
+      modal
+      block-scroll
+      header="Удалить документ?"
+      :style="{ width: 'min(24rem, 100vw - 2rem)' }"
+      :closable="!deleteSaving"
+      @update:visible="(v) => (deleteDialogVisible = v)"
+      @hide="onDeleteDialogHide"
+    >
+      <p v-if="deleteTarget" class="text-sm text-surface-700 dark:text-surface-200">
+        Документ
+        <span class="font-semibold text-surface-900 dark:text-surface-0">«{{ deleteTarget.title }}»</span>
+        будет удалён. Если он привязан к турнирам, операция может быть отклонена сервером.
+      </p>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button type="button" label="Отмена" text :disabled="deleteSaving" @click="deleteDialogVisible = false" />
+          <Button
+            type="button"
+            label="Удалить"
+            icon="pi pi-trash"
+            severity="danger"
+            :loading="deleteSaving"
+            @click="confirmDelete"
+          />
+        </div>
+      </template>
+    </Dialog>
   </section>
 </template>
-
-<style scoped>
-.doc-fade-enter-active,
-.doc-fade-leave-active {
-  transition: opacity 0.22s ease;
-}
-.doc-fade-enter-from,
-.doc-fade-leave-to {
-  opacity: 0;
-}
-</style>

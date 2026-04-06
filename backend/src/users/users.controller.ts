@@ -30,6 +30,7 @@ import { UiSettingsDto } from './dto/ui-settings.dto';
 import { UpdateTenantSocialLinksDto } from './dto/update-tenant-social-links.dto';
 import { UpdateTenantPublicBrandingDto } from './dto/update-tenant-public-branding.dto';
 import { UpdateMyTenantSubscriptionPlanDto } from './dto/update-my-tenant-subscription-plan.dto';
+import { UpdateTenantAllowUserDeletionDto } from './dto/update-tenant-allow-user-deletion.dto';
 
 @ApiTags('users')
 @UseGuards(
@@ -73,12 +74,16 @@ export class UsersController {
       req.user.sub,
       req.user.tenantId,
       dto,
+      req.user.role,
     );
   }
 
   @Get('me/tenant-social-links')
   async getMyTenantSocialLinks(@Req() req: Request & { user: JwtPayload }) {
-    return this.usersService.getMyTenantSocialLinks(req.user.sub, req.user.tenantId);
+    return this.usersService.getMyTenantSocialLinks(
+      req.user.sub,
+      req.user.tenantId,
+    );
   }
 
   @Patch('me/tenant-social-links')
@@ -95,7 +100,10 @@ export class UsersController {
 
   @Get('me/tenant-public-branding')
   async getMyTenantPublicBranding(@Req() req: Request & { user: JwtPayload }) {
-    return this.usersService.getMyTenantPublicBranding(req.user.sub, req.user.tenantId);
+    return this.usersService.getMyTenantPublicBranding(
+      req.user.sub,
+      req.user.tenantId,
+    );
   }
 
   @Patch('me/tenant-public-branding')
@@ -111,7 +119,9 @@ export class UsersController {
   }
 
   @Get('me/tenant-subscription-plan')
-  async getMyTenantSubscriptionPlan(@Req() req: Request & { user: JwtPayload }) {
+  async getMyTenantSubscriptionPlan(
+    @Req() req: Request & { user: JwtPayload },
+  ) {
     return this.usersService.getMyTenantSubscriptionPlan(
       req.user.sub,
       req.user.tenantId,
@@ -127,6 +137,18 @@ export class UsersController {
       req.user.sub,
       req.user.tenantId,
       dto,
+    );
+  }
+
+  @Patch('me/tenant-allow-user-deletion')
+  async patchMyTenantAllowUserDeletion(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateTenantAllowUserDeletionDto,
+  ) {
+    return this.usersService.updateMyTenantAllowUserDeletion(
+      req.user.sub,
+      req.user.tenantId,
+      dto.allowUserDeletion,
     );
   }
 
@@ -182,6 +204,11 @@ export class UsersController {
     @Param('id') id: string,
     @Body('blocked') blocked: boolean,
   ) {
-    return this.usersService.setBlocked(req.user.tenantId, id, blocked, req.user.sub);
+    return this.usersService.setBlocked(
+      req.user.tenantId,
+      id,
+      blocked,
+      req.user.sub,
+    );
   }
 }

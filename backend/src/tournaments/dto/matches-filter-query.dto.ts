@@ -56,7 +56,10 @@ export class MatchesFilterQueryDto {
   @IsEnum(MatchStage)
   stage?: MatchStage;
 
-  @ApiPropertyOptional({ example: 0, description: 'Pagination offset for matches' })
+  @ApiPropertyOptional({
+    example: 0,
+    description: 'Pagination offset for matches',
+  })
   @IsOptional()
   @Transform(({ value }) => {
     const n = Number(value);
@@ -66,7 +69,10 @@ export class MatchesFilterQueryDto {
   @Min(0)
   matchesOffset?: number;
 
-  @ApiPropertyOptional({ example: 50, description: 'Pagination limit for matches (1..200)' })
+  @ApiPropertyOptional({
+    example: 50,
+    description: 'Pagination limit for matches (1..200)',
+  })
   @IsOptional()
   @Transform(({ value }) => {
     const n = Number(value);

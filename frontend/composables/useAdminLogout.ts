@@ -14,6 +14,7 @@ export function useAdminLogout() {
     try {
       await $fetch(apiUrl('/auth/logout'), {
         method: 'POST',
+        credentials: 'include',
         headers: token.value
           ? {
               Authorization: `Bearer ${token.value}`,

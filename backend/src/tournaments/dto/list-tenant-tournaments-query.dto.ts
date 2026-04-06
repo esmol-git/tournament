@@ -28,7 +28,8 @@ export class ListTenantTournamentsQueryDto {
   seasonId?: string;
 
   @ApiPropertyOptional({
-    description: 'Фильтр по id типа соревнования из справочника «Соревнования».',
+    description:
+      'Фильтр по id типа соревнования из справочника «Соревнования».',
   })
   @IsOptional()
   @IsString()

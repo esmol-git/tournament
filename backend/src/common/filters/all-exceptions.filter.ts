@@ -4,9 +4,17 @@ import {
   ExceptionFilter,
   HttpException,
   HttpStatus,
+  Injectable,
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { JwtPayload } from '../../auth/jwt.strategy';
+import { AuditService } from '../../audit/audit.service';
+import { buildAuditRequestSnapshot } from '../../audit/audit-request-snapshot';
+import {
+  isAuditableAdminApiPath,
+  resolveAdminAuditMeta,
+} from '../../audit/admin-audit-resolve';
 
 function httpErrorTitle(status: number): string {
   const map: Record<number, string> = {
@@ -25,13 +33,18 @@ function httpErrorTitle(status: number): string {
 }
 
 @Catch()
+@Injectable()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
+
+  constructor(private readonly audit: AuditService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
-    const request = ctx.getRequest<Request & { requestId?: string }>();
+    const request = ctx.getRequest<
+      Request & { requestId?: string; user?: JwtPayload }
+    >();
 
     const isProd = process.env.NODE_ENV === 'production';
     const requestId = request.requestId;
@@ -81,11 +94,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.error('Unknown exception', exception);
     }
 
+    const path = request.url?.split('?')[0] ?? request.url ?? '';
+    const method = request.method ?? 'GET';
+    this.maybeAuditFailure(request, path, method, status, clientCode);
+
     const payload: Record<string, unknown> = {
       statusCode: status,
       error,
       message,
-      path: request.url?.split('?')[0] ?? request.url,
+      path,
       timestamp: new Date().toISOString(),
     };
 
@@ -97,5 +114,51 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     response.status(status).json(payload);
+  }
+
+  private maybeAuditFailure(
+    request: Request & { user?: JwtPayload },
+    path: string,
+    method: string,
+    status: number,
+    clientCode: unknown,
+  ): void {
+    if (!isAuditableAdminApiPath(path)) {
+      return;
+    }
+    if (status !== 401 && status !== 403 && status !== 500) {
+      return;
+    }
+
+    const resolved = resolveAdminAuditMeta(method, path);
+    const auditMeta = resolved ?? {
+      action: `${method} ${path}`,
+      resourceType: 'admin_api',
+      resourceId: null as string | null,
+    };
+    const user = request.user;
+    const errorCode =
+      typeof clientCode === 'string'
+        ? clientCode
+        : clientCode != null
+          ? String(clientCode)
+          : null;
+
+    const snap = buildAuditRequestSnapshot(request);
+    this.audit.enqueue({
+      userId: user?.sub ?? null,
+      tenantId: user?.tenantId ?? null,
+      role: user?.role ?? null,
+      action: auditMeta.action,
+      resourceType: auditMeta.resourceType,
+      resourceId: auditMeta.resourceId,
+      result: status === 500 ? 'error' : 'denied',
+      httpStatus: status,
+      errorCode,
+      path,
+      method,
+      requestBody: snap.requestBody,
+      requestHeaders: snap.requestHeaders,
+    });
   }
 }

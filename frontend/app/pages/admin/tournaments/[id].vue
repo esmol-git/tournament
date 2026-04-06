@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
-import { useTenantId } from '~/composables/useTenantId'
 import type {
   CalendarRound,
   CalendarViewMode,
   MatchRow,
   TableRow,
-  TeamLite,
   TournamentDetails,
 } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
@@ -27,11 +25,21 @@ import {
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
 import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
+import { displayTeamNameForUi } from '~/utils/teamDisplayName'
+import { adminTooltip } from '~/utils/adminTooltip'
+import { formatUserListLabel } from '~/utils/userDisplayName'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
 import { useTenantStore } from '~/stores/tenant'
+import { useAdminTenantTeamsAllQuery } from '~/composables/admin/useAdminTenantListQueries'
+import { useAdminGlobalModeratorTournamentPolicy } from '~/composables/useAdminGlobalModeratorTournamentPolicy'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  /** Карточка турнира: не org read-only страница; ограничения — в {@link useAdminGlobalModeratorTournamentPolicy}. */
+  adminOrgModeratorReadOnly: false,
+})
 
 const route = useRoute()
 const router = useRouter()
@@ -43,7 +51,6 @@ const tenantStore = useTenantStore()
 const runtimeConfig = useRuntimeConfig()
 
 const tournamentId = computed(() => route.params.id as string)
-const tenantId = useTenantId()
 
 const subscriptionPlan = computed(() => {
   const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
@@ -53,14 +60,25 @@ const canTournamentAutomation = computed(() =>
   hasSubscriptionFeature(subscriptionPlan.value, 'tournament_automation'),
 )
 
+/** Глобальный MODERATOR: матрица ограничений на карточке турнира (публикация vs календарь/плей-офф). */
+const modPolicy = useAdminGlobalModeratorTournamentPolicy()
+
 /** До первого ответа API — иначе при F5 пустой заголовок и мелькание вкладок. */
 const initialLoading = ref(true)
+/** Ошибка первой загрузки карточки турнира (фильтры календаря — отдельно, через тост). */
+const tournamentPageError = ref<string | null>(null)
 /** Повторные запросы списка матчей (фильтры календаря и т.д.). */
 const calendarRefreshing = ref(false)
+/** Ошибка повторной загрузки турнира с фильтрами календаря (не первая загрузка страницы). */
+const calendarRefreshError = ref<string | null>(null)
 let isFirstTournamentFetch = true
 const tournament = ref<TournamentDetails | null>(null)
 
 const tableLoading = ref(false)
+const tableError = ref<string | null>(null)
+/** Успешно загрузили таблицу хотя бы раз (чтобы не показывать «пусто» до первого ответа). */
+const tableLoadSucceeded = ref(false)
+const tableSkeletonRows = Array.from({ length: 8 }, (_, i) => ({ id: `tbl-sk-${i}` }))
 const table = ref<TableRow[]>([])
 const groupTables = ref<Record<string, TableRow[]>>({})
 
@@ -70,8 +88,19 @@ const calendarSubmitAttempted = ref(false)
 
 const activeTab = ref(0)
 
-const teamsLoading = ref(false)
-const allTeams = ref<TeamLite[]>([])
+const { teams: allTeams, teamsLoading, teamsQueryError, refetch: refetchTeamsCatalog } =
+  useAdminTenantTeamsAllQuery()
+
+const teamsCatalogErrorMessage = computed(() =>
+  teamsQueryError.value != null
+    ? getApiErrorMessage(teamsQueryError.value, t('admin.errors.request_failed'))
+    : null,
+)
+
+const showTeamsCatalogEmpty = computed(
+  () => !teamsLoading.value && teamsQueryError.value == null && allTeams.value.length === 0,
+)
+
 const selectedTeamIds = ref<string[]>([])
 const teamCompositionSubmitAttempted = ref(false)
 const savingTeams = ref(false)
@@ -133,8 +162,6 @@ const calendarForm = reactive({
   oneDayTournament: false,
   schedulingMode: 'FLOW' as 'FLOW' | 'STRICT_ROUNDS',
   format: 'SINGLE_GROUP',
-  templateId: '' as '' | 'kids_mini_8',
-  useTemplate: false,
   intervalDays: 7,
   roundsPerDay: 1,
   roundRobinCycles: 1,
@@ -280,7 +307,8 @@ const matchNumberById = computed(() => {
     .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))
   const map: Record<string, number> = {}
   for (let i = 0; i < sorted.length; i++) {
-    map[sorted[i].id] = i + 1
+    const row = sorted[i]
+    if (row) map[row.id] = i + 1
   }
   return map
 })
@@ -316,7 +344,7 @@ const saveRoundOrder = async (r: CalendarRound) => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.reorder_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
     // откатим порядок из сервера
@@ -346,7 +374,10 @@ const fetchTournament = async () => {
   }
   const loadStartedAt = Date.now()
   const isInitial = isFirstTournamentFetch
-  if (!isInitial) calendarRefreshing.value = true
+  if (!isInitial) {
+    calendarRefreshing.value = true
+    calendarRefreshError.value = null
+  }
   try {
     const params = new URLSearchParams()
     const range = calendarFilterDateRange.value
@@ -363,6 +394,8 @@ const fetchTournament = async () => {
     const res = await authFetch<TournamentDetails>(url, {
       headers: { Authorization: `Bearer ${token.value}` },
     })
+    tournamentPageError.value = null
+    calendarRefreshError.value = null
     tournament.value = res
     calendarRounds.value = buildCalendarRoundsFromMatches(res.matches ?? [], res.groups ?? [])
 
@@ -402,12 +435,11 @@ const fetchTournament = async () => {
       groupColumns.value = []
     }
   } catch (e: any) {
-    toast.add({
-      severity: 'error',
-      summary: t('admin.tournament_page.filters_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
+    if (isInitial) {
+      tournamentPageError.value = getApiErrorMessage(e, t('admin.errors.request_failed'))
+    } else {
+      calendarRefreshError.value = getApiErrorMessage(e, t('admin.errors.request_failed'))
+    }
   } finally {
     await sleepRemainingAfter(MIN_SKELETON_DISPLAY_MS, loadStartedAt)
     if (isInitial) {
@@ -417,6 +449,22 @@ const fetchTournament = async () => {
       calendarRefreshing.value = false
     }
   }
+}
+
+async function retryTournamentPage() {
+  tournamentPageError.value = null
+  calendarRefreshError.value = null
+  isFirstTournamentFetch = true
+  initialLoading.value = true
+  await fetchTournament()
+  if (tournament.value && token.value) {
+    await fetchTable()
+  }
+}
+
+async function retryCalendarFetch() {
+  calendarRefreshError.value = null
+  await fetchTournament()
 }
 
 let filtersFetchTimer: ReturnType<typeof setTimeout> | null = null
@@ -432,10 +480,6 @@ watch(
   { deep: true },
 )
 
-const applyCalendarFilters = async () => {
-  await fetchTournament()
-}
-
 /** Таблица по группам: групповые форматы + MANUAL с несколькими группами (см. ensureManualGroupsIfNeeded на бэкенде). */
 const isGroupedFormat = computed(() => {
   const t = tournament.value
@@ -444,6 +488,25 @@ const isGroupedFormat = computed(() => {
   if (t.format === 'MANUAL' && (t.groupCount ?? 1) > 1) return true
   return false
 })
+
+const isTableDataEmpty = computed(() => {
+  const tourn = tournament.value
+  if (!tourn) return true
+  if (isGroupedFormat.value) {
+    const groups = tourn.groups ?? []
+    if (!groups.length) return true
+    return groups.every((g) => !(groupTables.value[g.id]?.length))
+  }
+  return table.value.length === 0
+})
+
+const showTableEmptyState = computed(
+  () =>
+    tableLoadSucceeded.value &&
+    !tableLoading.value &&
+    !tableError.value &&
+    isTableDataEmpty.value,
+)
 
 /** Подсветка строк таблицы: одна круговая — только пьедестал 1–3 без «черты отбора»; группы с выходом в плей-офф — зона из k мест и линия под k-й строкой. */
 const qualificationRowStyle = (row: any) => {
@@ -512,11 +575,13 @@ const publishedSaving = ref(false)
 const publishSwitchDisabled = computed(
   () =>
     publishedSaving.value ||
+    modPolicy.value.locksTournamentPublishingAndDraftStructure ||
     (tournament.value?.status === 'DRAFT' && !tournament.value?.published),
 )
 
 async function setTournamentPublished(next: boolean) {
   if (!token.value || !tournament.value) return
+  if (modPolicy.value.locksTournamentPublishingAndDraftStructure) return
   const prev = !!tournament.value.published
   if (next === prev) return
   if (next && tournament.value.status === 'DRAFT') {
@@ -601,11 +666,6 @@ function openPublicTournamentLink() {
   if (url) window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-/** Вкладка «Матчи» — ручное создание матчей при формате MANUAL. */
-function goToMatchesTab() {
-  activeTab.value = 1
-}
-
 const showTournamentTableTab = computed(() => !isPlayoffOnlyFormat.value)
 
 function tournamentTabSlugToIndex(slug: string | undefined | null, hasTable: boolean): number {
@@ -629,7 +689,11 @@ let tournamentTabSyncInProgress = false
 function syncTournamentTabFromRoute() {
   if (!tournament.value) return
   const hasTable = showTournamentTableTab.value
-  const raw = (route.query.tab as string | undefined) ?? 'calendar'
+  let raw = (route.query.tab as string | undefined) ?? 'calendar'
+  const r = raw.toString().toLowerCase()
+  if ((tournament.value.matches?.length ?? 0) === 0) {
+    if (r === 'matches' || r === 'table') raw = 'calendar'
+  }
   const next = tournamentTabSlugToIndex(raw, hasTable)
   const slug = tournamentIndexToSlug(next, hasTable)
   if (activeTab.value === next && (route.query.tab as string | undefined) === slug) return
@@ -684,6 +748,7 @@ const showGroupBuckets = computed(() =>
 
 /** Перетаскивание порядка в дне как для круговой одной группы, так и для полностью ручного расписания. */
 const canReorderCalendarDay = computed(() => {
+  if (modPolicy.value.locksCalendarAndPlayoffAutomation) return false
   const f = tournament.value?.format
   return f === 'SINGLE_GROUP' || f === 'MANUAL'
 })
@@ -692,10 +757,138 @@ const hasAnyEnteredResults = computed(() => {
   return ms.some((m) => m.homeScore !== null && m.awayScore !== null && (m.status === 'PLAYED' || m.status === 'FINISHED'))
 })
 
-/** Есть хотя бы один матч в расписании (календарь сгенерирован или добавлен вручную). */
-const hasScheduleMatches = computed(() => (tournament.value?.matches?.length ?? 0) > 0)
+/**
+ * Есть матчи в турнире в БД (расписание есть), независимо от текущих фильтров календаря.
+ * Нельзя использовать только matches.length: при dateFrom/dateTo API отдаёт пустой список,
+ * иначе UI уходит в «Расписания пока нет» и прячет фильтры — ловушка для пользователя.
+ */
+const hasScheduleMatches = computed(() => {
+  const t = tournament.value
+  if (!t) return false
+  const summaryTotal = t.summary?.matchesTotal
+  if (typeof summaryTotal === 'number') return summaryTotal > 0
+  const nMap = t.matchNumberById ? Object.keys(t.matchNumberById).length : 0
+  if (nMap > 0) return true
+  return (t.matches?.length ?? 0) > 0
+})
 
-const canEditTournament = computed(() => tournament.value?.status === 'DRAFT')
+function isPowerOfTwo(n: number): boolean {
+  return n > 0 && (n & (n - 1)) === 0
+}
+
+/** Условия для успешной POST /calendar (без MANUAL и пока нет матчей). */
+const calendarReadinessItems = computed((): { id: string; ok: boolean; label: string }[] => {
+  const tourn = tournament.value
+  if (!tourn || isManualFormat.value || hasScheduleMatches.value) return []
+
+  const items: { id: string; ok: boolean; label: string }[] = []
+  const minT = Math.max(0, tourn.minTeams ?? 0)
+  const tc = teamCount.value
+  const fmt = tourn.format
+
+  items.push({
+    id: 'min_teams',
+    ok: tc >= minT,
+    label: t('admin.tournament_page.readiness_min_teams', { current: tc, min: minT }),
+  })
+
+  if (showGroupBuckets.value) {
+    const eg = expectedGroupSize.value
+    const gc = expectedGroupCount.value
+    const divisible = eg !== null && tc > 0
+
+    items.push({
+      id: 'groups_divisible',
+      ok: divisible,
+      label: t('admin.tournament_page.readiness_groups_divisible', {
+        teams: tc,
+        groups: gc,
+      }),
+    })
+
+    let distributionOk = false
+    if (divisible && eg !== null && gc >= 1) {
+      const groupsSorted = (tourn.groups ?? [])
+        .slice()
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      const slice = groupsSorted.slice(0, gc)
+      if (slice.length >= gc && tc === gc * eg) {
+        const counts = new Map<string, number>()
+        let allHaveGroup = true
+        for (const tt of tourn.tournamentTeams ?? []) {
+          const gid = tt.group?.id
+          if (!gid) {
+            allHaveGroup = false
+            break
+          }
+          counts.set(gid, (counts.get(gid) ?? 0) + 1)
+        }
+        if (allHaveGroup) {
+          distributionOk = slice.every((g) => (counts.get(g.id) ?? 0) === eg)
+        }
+      }
+    }
+
+    items.push({
+      id: 'groups_balanced',
+      ok: distributionOk,
+      label: t('admin.tournament_page.readiness_groups_balanced', {
+        perGroup: eg ?? '—',
+      }),
+    })
+  }
+
+  if (fmt === 'PLAYOFF') {
+    items.push({
+      id: 'playoff_size',
+      ok: tc >= 4 && isPowerOfTwo(tc),
+      label: t('admin.tournament_page.readiness_playoff_bracket'),
+    })
+  }
+
+  if (isGroupsPlusPlayoffFamily(fmt)) {
+    const k = tourn.playoffQualifiersPerGroup ?? 2
+    const gc = expectedGroupCount.value
+    const q = gc * k
+    items.push({
+      id: 'playoff_grid',
+      ok: isPowerOfTwo(q),
+      label: t('admin.tournament_page.readiness_playoff_grid', { total: q }),
+    })
+  }
+
+  return items
+})
+
+const calendarReadinessAllOk = computed(
+  () =>
+    calendarReadinessItems.value.length > 0 &&
+    calendarReadinessItems.value.every((i) => i.ok),
+)
+
+const showCalendarReadinessPanel = computed(
+  () => !isManualFormat.value && !hasScheduleMatches.value && !!tournament.value,
+)
+
+watch(hasScheduleMatches, (has) => {
+  if (has || !tournament.value) return
+  const hasTable = showTournamentTableTab.value
+  const onLockedTab =
+    activeTab.value === 1 || (hasTable && activeTab.value === 2)
+  if (!onLockedTab) return
+  tournamentTabSyncInProgress = true
+  activeTab.value = 0
+  void router.replace({ query: { ...route.query, tab: 'calendar' } })
+  nextTick(() => {
+    tournamentTabSyncInProgress = false
+  })
+})
+
+const canEditTournament = computed(
+  () =>
+    tournament.value?.status === 'DRAFT' &&
+    !modPolicy.value.locksTournamentPublishingAndDraftStructure,
+)
 
 // Группы — только до появления матчей (как и состав команд).
 const canEditGroups = computed(
@@ -724,6 +917,13 @@ const shouldRegenerateCalendar = computed(
 
 const teamCount = computed(() => tournament.value?.tournamentTeams?.length ?? 0)
 
+const tournamentAdminMembers = computed(() =>
+  (tournament.value?.members ?? []).filter((m) => m.role === 'TOURNAMENT_ADMIN'),
+)
+const tournamentModeratorMembers = computed(() =>
+  (tournament.value?.members ?? []).filter((m) => m.role === 'MODERATOR'),
+)
+
 const canRegenerateCalendar = computed(() => {
   const minTeams = tournament.value?.minTeams ?? 0
   return (
@@ -747,6 +947,15 @@ const canSaveTeamComposition = computed(() => !teamCompositionErrors.value.minTe
 
 const ratingSaving = ref(false)
 const ratingOptions = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }))
+
+/** Иначе у .p-select-label срабатывает ellipsis и цифра 1–5 превращается в «1..». */
+const seedStrengthSelectPt = {
+  root: { class: 'w-[5.25rem] min-w-[5.25rem] shrink-0' },
+  label: {
+    class:
+      '!flex-none overflow-visible [text-overflow:clip] text-center tabular-nums',
+  },
+}
 
 const updateTeamRating = async (teamId: string, rating: number) => {
   if (!token.value) return
@@ -773,7 +982,7 @@ const updateTeamRating = async (teamId: string, rating: number) => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.rating_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
     // Синхронизируем состояние с сервером после ошибки.
@@ -802,157 +1011,7 @@ const expectedGroupSize = computed(() => {
   return total / gc
 })
 
-// Восстановление "первой/второй" группы по фактическим assignment'ам команд.
-// Иногда `tournament.groups` может быть неполным, а `tournamentTeams[].group` приходит корректно.
-const teamGroupIdsOrdered = computed(() => {
-  const ids: string[] = []
-  const tts = tournament.value?.tournamentTeams ?? []
-  for (const tt of tts) {
-    const gid = tt.group?.id
-    if (!gid) continue
-    if (!ids.includes(gid)) ids.push(gid)
-  }
-  return ids
-})
-
-const groupIdA = computed(() => {
-  const gs = tournament.value?.groups ?? []
-  return gs.find((g) => g.name === 'Группа A')?.id ?? teamGroupIdsOrdered.value[0] ?? gs[0]?.id ?? null
-})
-const groupIdB = computed(() => {
-  const gs = tournament.value?.groups ?? []
-  return gs.find((g) => g.name === 'Группа B')?.id ?? teamGroupIdsOrdered.value[1] ?? gs[1]?.id ?? null
-})
-
-const groupIdC = computed(() => {
-  const gs = tournament.value?.groups ?? []
-  return gs.find((g) => g.name === 'Группа C')?.id ?? gs[2]?.id ?? null
-})
-
-const groupIdD = computed(() => {
-  const gs = tournament.value?.groups ?? []
-  return gs.find((g) => g.name === 'Группа D')?.id ?? gs[3]?.id ?? null
-})
-
-const groupTeamIdsA = computed(() =>
-  (tournament.value?.tournamentTeams ?? [])
-    .filter((tt) => tt.group?.id === groupIdA.value)
-    .map((tt) => tt.teamId)
-    .slice(0, 2),
-)
-const groupTeamIdsB = computed(() =>
-  (tournament.value?.tournamentTeams ?? [])
-    .filter((tt) => tt.group?.id === groupIdB.value)
-    .map((tt) => tt.teamId)
-    .slice(0, 2),
-)
-
-const groupTeamIdsC = computed(() =>
-  (tournament.value?.tournamentTeams ?? [])
-    .filter((tt) => tt.group?.id === groupIdC.value)
-    .map((tt) => tt.teamId)
-    .slice(0, 2),
-)
-
-const groupTeamIdsD = computed(() =>
-  (tournament.value?.tournamentTeams ?? [])
-    .filter((tt) => tt.group?.id === groupIdD.value)
-    .map((tt) => tt.teamId)
-    .slice(0, 2),
-)
-
-const groupStageFinished = computed(() => {
-  const ms = tournament.value?.matches ?? []
-  const groupMatches = ms.filter((m) => m.stage === 'GROUP')
-  if (!groupMatches.length) return false
-  return groupMatches.every(
-    (m) =>
-      m.homeScore !== null &&
-      m.awayScore !== null &&
-      (m.status === 'PLAYED' || m.status === 'FINISHED'),
-  )
-})
-
-const playoffSupportedFormats = [
-  'GROUPS_PLUS_PLAYOFF',
-  'GROUPS_2',
-  'GROUPS_3',
-  'GROUPS_4',
-  'MANUAL',
-]
-
 const playoffQualifiersPerGroup = computed(() => tournament.value?.playoffQualifiersPerGroup ?? 2)
-
-const seedLabelByTeamId = computed(() => {
-  const map = new Map<string, string>()
-  const groups = (tournament.value?.groups ?? []).slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-  const teams = tournament.value?.tournamentTeams ?? []
-  const k = playoffQualifiersPerGroup.value
-
-  for (let gi = 0; gi < groups.length; gi++) {
-    const groupId = groups[gi].id
-    const letter = String.fromCharCode(65 + gi)
-    const groupTeams = teams.filter((tt) => tt.group?.id === groupId).map((tt) => tt.teamId)
-    for (let rank = 0; rank < k; rank++) {
-      const teamId = groupTeams[rank]
-      if (teamId) map.set(teamId, `${letter}${rank + 1}`)
-    }
-  }
-
-  return map
-})
-
-const playoffFirstRoundNumber = computed<number | null>(() => {
-  const ms = (tournament.value?.matches ?? []).filter(
-    (m) => m.stage === 'PLAYOFF' && typeof m.roundNumber === 'number',
-  )
-  if (!ms.length) return null
-  return Math.min(...ms.map((m) => m.roundNumber as number))
-})
-
-const playoffMatchesByRoundNumber = computed(() => {
-  const map = new Map<number, MatchRow[]>()
-  for (const m of tournament.value?.matches ?? []) {
-    if (m.stage !== 'PLAYOFF') continue
-    if (typeof m.roundNumber !== 'number') continue
-    const rn = m.roundNumber as number
-    const arr = map.get(rn) ?? []
-    arr.push(m)
-    map.set(rn, arr)
-  }
-
-  // Stable ordering is required to map (idx*2 .. idx*2+1) between rounds.
-  for (const [rn, arr] of map.entries()) {
-    arr.sort((a, b) => {
-      const at = new Date(a.startTime).getTime()
-      const bt = new Date(b.startTime).getTime()
-      return at - bt || a.id.localeCompare(b.id)
-    })
-    map.set(rn, arr)
-  }
-  return map
-})
-
-const matchHasResult = (m: MatchRow) =>
-  m.homeScore !== null &&
-  m.awayScore !== null &&
-  (m.status === 'PLAYED' || m.status === 'FINISHED')
-
-const winnerName = (m: MatchRow) => {
-  if (!matchHasResult(m)) return null
-  const hs = m.homeScore as number
-  const as = m.awayScore as number
-  if (hs === as) return null
-  return hs > as ? m.homeTeam.name : m.awayTeam.name
-}
-
-const loserName = (m: MatchRow) => {
-  if (!matchHasResult(m)) return null
-  const hs = m.homeScore as number
-  const as = m.awayScore as number
-  if (hs === as) return null
-  return hs > as ? m.awayTeam.name : m.homeTeam.name
-}
 
 const playoffSlotLabels = (m: MatchRow) => {
   return playoffSlotLabelsByMatchId.value[m.id] ?? null
@@ -1014,7 +1073,16 @@ const snapshotPreDrag = () => {
   )
 }
 
-const onGroupChange = async (evt: any, targetGroupId: string | null) => {
+type GroupDragChangeEvt = {
+  added?: { element?: TournamentTeamRow; newIndex?: number }
+  moved?: { element?: TournamentTeamRow; newIndex?: number }
+}
+
+function handleGroupDragChange(evt: unknown, targetGroupId: string | null) {
+  void onGroupChange(evt as GroupDragChangeEvt, targetGroupId)
+}
+
+const onGroupChange = async (evt: GroupDragChangeEvt, targetGroupId: string | null) => {
   if (!canEditGroups.value || !tournament.value) return
   if (!targetGroupId) return
   const moved = (evt?.added?.element ?? evt?.moved?.element) as TournamentTeamRow | undefined
@@ -1024,9 +1092,9 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
   const cols = groupColumns.value
   let swapped: TournamentTeamRow | null = null
 
-  if (size && cols.length === 2 && (cols[0].teams.length > size || cols[1].teams.length > size)) {
-    const c0 = cols[0]
-    const c1 = cols[1]
+  if (size && cols.length === 2 && (cols[0]!.teams.length > size || cols[1]!.teams.length > size)) {
+    const c0 = cols[0]!
+    const c1 = cols[1]!
     const isTargetA = targetGroupId === c0.id
     const targetList = isTargetA ? c0.teams : c1.teams
     const sourceList = isTargetA ? c1.teams : c0.teams
@@ -1044,25 +1112,27 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
         if (found) return found
       }
       for (let i = targetList.length - 1; i >= 0; i--) {
-        if (targetList[i].teamId !== moved.teamId) return targetList[i]
+        const cand = targetList[i]
+        if (cand && cand.teamId !== moved.teamId) return cand
       }
       return null
     }
 
-    swapped = pickSwapOut()
-    if (swapped) {
-      const idx = targetList.findIndex((x) => x.teamId === swapped.teamId)
+    const picked = pickSwapOut()
+    swapped = picked
+    if (picked) {
+      const idx = targetList.findIndex((x) => x.teamId === picked.teamId)
       if (idx >= 0) targetList.splice(idx, 1)
 
       const desiredIndex = preSource.indexOf(moved.teamId)
       const insertAt = desiredIndex >= 0 ? Math.min(desiredIndex, sourceList.length) : sourceList.length
-      sourceList.splice(insertAt, 0, swapped)
+      sourceList.splice(insertAt, 0, picked)
     }
   }
 
   if (size && cols.length === 2) {
-    const a = cols[0].teams.length
-    const b = cols[1].teams.length
+    const a = cols[0]!.teams.length
+    const b = cols[1]!.teams.length
     if (a !== size || b !== size) {
       await fetchTournament()
       toast.add({
@@ -1113,27 +1183,10 @@ const onGroupChange = async (evt: any, targetGroupId: string | null) => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.groups_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
     await fetchTournament()
-  }
-}
-
-const fetchAllTeams = async () => {
-  if (!token.value) return
-  teamsLoading.value = true
-  try {
-    const res = await authFetch<{ items: TeamLite[]; total: number }>(
-      apiUrl(`/tenants/${tenantId.value}/teams`),
-      {
-        headers: { Authorization: `Bearer ${token.value}` },
-        params: { page: 1, pageSize: 200 },
-      },
-    )
-    allTeams.value = res.items
-  } finally {
-    teamsLoading.value = false
   }
 }
 
@@ -1203,7 +1256,7 @@ const saveTeams = async () => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.composition_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -1213,11 +1266,14 @@ const saveTeams = async () => {
 
 const fetchTable = async () => {
   if (!token.value) return
+  const tourn = tournament.value
+  if (!tourn) return
+  tableError.value = null
   tableLoading.value = true
   try {
-    if (isGroupedFormat.value && Array.isArray(tournament.value.groups)) {
+    if (isGroupedFormat.value && Array.isArray(tourn.groups)) {
       const next: Record<string, TableRow[]> = {}
-      for (const g of tournament.value.groups.slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
+      for (const g of tourn.groups.slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
         const res = await authFetch<TableRow[]>(
           apiUrl(`/tournaments/${tournamentId.value}/table`),
           {
@@ -1236,12 +1292,16 @@ const fetchTable = async () => {
       table.value = res
       groupTables.value = {}
     }
+    tableLoadSucceeded.value = true
+  } catch (e: unknown) {
+    tableError.value = getApiErrorMessage(e, t('admin.errors.request_failed'))
+    table.value = []
+    groupTables.value = {}
+    tableLoadSucceeded.value = false
   } finally {
     tableLoading.value = false
   }
 }
-
-const toDateString = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : undefined)
 
 const normalizeDateInput = (v: unknown) => {
   if (!v) return undefined
@@ -1272,14 +1332,18 @@ const sanitizeDayStartOverrides = (overrides: Record<number, string>) => {
 
 const parseTimeToDate = (time: string | undefined | null): Date | null => {
   if (!time || !isValidTimeHHmm(time)) return null
-  const [h, m] = time.split(':').map(Number)
+  const parts = time.split(':').map(Number)
+  const h = parts[0] ?? 0
+  const m = parts[1] ?? 0
   const d = new Date()
   d.setHours(h, m, 0, 0)
   return d
 }
 
-const toTimeHHmm = (value: Date | Date[] | null | undefined): string => {
-  const d = Array.isArray(value) ? value[0] : value
+const toTimeHHmm = (value: Date | Date[] | (Date | null)[] | null | undefined): string => {
+  const d = Array.isArray(value)
+    ? value.find((x): x is Date => x instanceof Date) ?? value[0]
+    : value
   if (!(d instanceof Date) || Number.isNaN(d.getTime())) return ''
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
@@ -1294,7 +1358,10 @@ const defaultDayStartTimeModel = computed<Date | null>({
 })
 
 const getDayOverrideTimeModel = (day: number) => parseTimeToDate(calendarForm.dayStartTimeOverrides[day] || '')
-const setDayOverrideTimeModel = (day: number, value: Date | Date[] | null | undefined) => {
+const setDayOverrideTimeModel = (
+  day: number,
+  value: Date | Date[] | (Date | null)[] | null | undefined,
+) => {
   const next = toTimeHHmm(value)
   if (next) calendarForm.dayStartTimeOverrides[day] = next
   else delete calendarForm.dayStartTimeOverrides[day]
@@ -1308,9 +1375,15 @@ type CalendarNumericField =
   | 'matchBreakMinutes'
   | 'simultaneousMatches'
 
-const setCalendarNumberLive = (field: CalendarNumericField, rawValue: number | null | undefined) => {
-  if (typeof rawValue !== 'number' || Number.isNaN(rawValue)) return
-  const n = Math.trunc(rawValue)
+const setCalendarNumberLive = (field: CalendarNumericField, rawValue: unknown) => {
+  const num =
+    typeof rawValue === 'number'
+      ? rawValue
+      : typeof rawValue === 'string'
+        ? Number(rawValue)
+        : NaN
+  if (typeof num !== 'number' || Number.isNaN(num)) return
+  const n = Math.trunc(num)
   const clamp = (v: number, min: number, max?: number) =>
     max !== undefined ? Math.min(max, Math.max(min, v)) : Math.max(min, v)
   const next =
@@ -1335,7 +1408,9 @@ const schedulingModeHintText =
 
 const minutesUntilMidnightFromHhmm = (hhmm: string) => {
   if (!isValidTimeHHmm(hhmm)) return 24 * 60
-  const [h, m] = hhmm.split(':').map(Number)
+  const parts = hhmm.split(':').map(Number)
+  const h = parts[0] ?? 0
+  const m = parts[1] ?? 0
   return 24 * 60 - h * 60 - m
 }
 
@@ -1364,7 +1439,7 @@ const calendarPreview = computed(() => {
 
   const slotMinutes =
     Math.max(1, Number(calendarForm.matchDurationMinutes) || 50) +
-    Math.max(0, Number(calendarForm.matchBreakMinutes) ?? 0)
+    Math.max(0, Number(calendarForm.matchBreakMinutes) || 0)
   const parallel = Math.max(1, Number(calendarForm.simultaneousMatches) || 1)
 
   const roundsPerCycleForGroupSize = (n: number) => (n > 1 ? (n % 2 === 0 ? n - 1 : n) : 0)
@@ -1543,9 +1618,8 @@ const calendarFormErrors = computed(() => {
       ? ''
       : t('admin.validation.invalid_time_hhmm'),
     schedule:
-      !calendarForm.useTemplate &&
-      (calendarPreview.value.scheduleOverflow ||
-        (calendarForm.oneDayTournament && calendarPreview.value.roundDays > 1))
+      calendarPreview.value.scheduleOverflow ||
+      (calendarForm.oneDayTournament && calendarPreview.value.roundDays > 1)
         ? calendarPreview.value.scheduleOverflow
           ? t('admin.validation.schedule_overflow')
           : t('admin.validation.one_day_conflict')
@@ -1554,6 +1628,7 @@ const calendarFormErrors = computed(() => {
 })
 const canGenerateCalendar = computed(
   () =>
+    !modPolicy.value.locksCalendarAndPlayoffAutomation &&
     canTournamentAutomation.value &&
     !calendarFormErrors.value.startDate &&
     !calendarFormErrors.value.endDate &&
@@ -1567,6 +1642,7 @@ watch(calendarDialog, (open) => {
 
 const generateCalendar = async () => {
   if (!token.value) return
+  if (modPolicy.value.locksCalendarAndPlayoffAutomation) return
   if (!canTournamentAutomation.value) {
     toast.add({
       severity: 'warn',
@@ -1591,9 +1667,6 @@ const generateCalendar = async () => {
   }
   calendarSaving.value = true
   try {
-    const templateEnabled =
-      calendarForm.useTemplate && calendarForm.templateId === 'kids_mini_8'
-
     if (calendarForm.startDate && calendarForm.endDate && calendarForm.startDate >= calendarForm.endDate) {
       throw new Error(t('admin.validation.end_after_start'))
     }
@@ -1602,10 +1675,7 @@ const generateCalendar = async () => {
     }
     const cleanedDayStartTimeOverrides = sanitizeDayStartOverrides(effectiveDayStartOverrides.value)
 
-    if (
-      !templateEnabled &&
-      calendarPreview.value.scheduleOverflow
-    ) {
+    if (calendarPreview.value.scheduleOverflow) {
       throw new Error(
         t('admin.tournament_page.schedule_overflow_detailed', {
           needed: calendarPreview.value.minutesNeededOnBusiestDay,
@@ -1629,15 +1699,11 @@ const generateCalendar = async () => {
         endsAt: calendarForm.oneDayTournament
           ? null
           : normalizeDateInput(calendarForm.endDate) ?? null,
-        ...(templateEnabled
-          ? {}
-          : {
-              intervalDays: effectiveIntervalDays.value,
-              allowedDays: Array.isArray(effectiveAllowedDays.value)
-                ? effectiveAllowedDays.value
-                : [],
-              roundRobinCycles: calendarForm.roundRobinCycles || undefined,
-            }),
+        intervalDays: effectiveIntervalDays.value,
+        allowedDays: Array.isArray(effectiveAllowedDays.value)
+          ? effectiveAllowedDays.value
+          : [],
+        roundRobinCycles: calendarForm.roundRobinCycles || undefined,
         roundsPerDay: calendarForm.roundsPerDay || undefined,
         matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
         matchBreakMinutes: calendarForm.matchBreakMinutes ?? 0,
@@ -1647,63 +1713,40 @@ const generateCalendar = async () => {
       },
     })
 
-    if (templateEnabled) {
-      const res = await authFetch<any>(apiUrl(`/tournaments/${tournamentId.value}/calendar/from-template`), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token.value}` },
-        body: {
-          templateId: calendarForm.templateId,
-          startDate: normalizeDateInput(calendarForm.startDate),
-          parallelMatches: calendarForm.simultaneousMatches || undefined,
-          replaceExisting: calendarForm.replaceExisting,
-        },
-      })
-      if (res?.playoff?.skipped) {
-        toast.add({
-          severity: 'info',
-          summary: t('admin.tournament_page.groups_created_summary'),
-          detail: t('admin.tournament_page.groups_created_playoff_detail'),
-          life: 4500,
-        })
-      }
-    } else {
-      await authFetch(apiUrl(`/tournaments/${tournamentId.value}/calendar`), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token.value}` },
-        body: {
-          // можно не передавать параметры — backend возьмёт startsAt/intervalDays/allowedDays из турнира
-          startDate: normalizeDateInput(calendarForm.startDate),
-          intervalDays: effectiveIntervalDays.value,
-          roundsPerDay: calendarForm.roundsPerDay || undefined,
-          roundRobinCycles: calendarForm.roundRobinCycles || undefined,
-          schedulingMode: calendarForm.schedulingMode,
-          allowedDays: effectiveAllowedDays.value?.length
-            ? effectiveAllowedDays.value
-            : undefined,
-          replaceExisting: calendarForm.replaceExisting,
-          matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
-          matchBreakMinutes: calendarForm.matchBreakMinutes ?? undefined,
-          simultaneousMatches: calendarForm.simultaneousMatches || undefined,
-          dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
-          dayStartTimeOverrides: cleanedDayStartTimeOverrides,
-        },
-      })
-    }
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}/calendar`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: {
+        // можно не передавать параметры — backend возьмёт startsAt/intervalDays/allowedDays из турнира
+        startDate: normalizeDateInput(calendarForm.startDate),
+        intervalDays: effectiveIntervalDays.value,
+        roundsPerDay: calendarForm.roundsPerDay || undefined,
+        roundRobinCycles: calendarForm.roundRobinCycles || undefined,
+        schedulingMode: calendarForm.schedulingMode,
+        allowedDays: effectiveAllowedDays.value?.length
+          ? effectiveAllowedDays.value
+          : undefined,
+        replaceExisting: calendarForm.replaceExisting,
+        matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
+        matchBreakMinutes: calendarForm.matchBreakMinutes ?? undefined,
+        simultaneousMatches: calendarForm.simultaneousMatches || undefined,
+        dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
+        dayStartTimeOverrides: cleanedDayStartTimeOverrides,
+      },
+    })
     calendarDialog.value = false
     await fetchTournament()
     toast.add({
       severity: 'success',
       summary: t('admin.tournament_page.calendar_created_summary'),
-      detail: templateEnabled
-        ? t('admin.tournament_page.calendar_created_template_detail')
-        : t('admin.tournament_page.calendar_created_default_detail'),
+      detail: t('admin.tournament_page.calendar_created_default_detail'),
       life: 3000,
     })
   } catch (e: any) {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.calendar_generate_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -1713,6 +1756,7 @@ const generateCalendar = async () => {
 
 const clearCalendar = async () => {
   if (!token.value) return
+  if (modPolicy.value.locksCalendarAndPlayoffAutomation) return
   calendarSaving.value = true
   try {
     await authFetch(apiUrl(`/tournaments/${tournamentId.value}/calendar`), {
@@ -1731,7 +1775,7 @@ const clearCalendar = async () => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.calendar_clear_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -1739,17 +1783,23 @@ const clearCalendar = async () => {
   }
 }
 
-/** MANUAL с несколькими группами: сетка плей-офф строится по таблицам групп (тот же API, что и для GROUPS_*). */
-const canGenerateManualPlayoff = computed(
+/**
+ * Панель на вкладке «Матчи»: POST /playoff после закрытия групп подставляет в 1-й раунд плей-оффа
+ * реальные команды по таблицам (для автоформатов сетка уже есть как заглушки с посевом из рейтинга).
+ */
+const canShowPlayoffFromGroupsPanel = computed(
   () =>
+    !modPolicy.value.locksCalendarAndPlayoffAutomation &&
     canTournamentAutomation.value &&
-    isManualFormat.value &&
     isGroupedFormat.value &&
-    (tournament.value?.groups?.length ?? 0) >= 2,
+    (tournament.value?.groups?.length ?? 0) >= 2 &&
+    (isManualFormat.value ||
+      isGroupsPlusPlayoffFamily(tournament.value?.format ?? '')),
 )
 
 const generatePlayoff = async () => {
   if (!token.value) return
+  if (modPolicy.value.locksCalendarAndPlayoffAutomation) return
   if (!canTournamentAutomation.value) {
     toast.add({
       severity: 'warn',
@@ -1776,7 +1826,7 @@ const generatePlayoff = async () => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.playoff_create_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -1842,7 +1892,7 @@ async function confirmDeleteManualMatch() {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.match_delete_error_summary'),
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -1856,23 +1906,31 @@ onMounted(async () => {
     syncWithStorage()
     if (!loggedIn.value) {
       initialLoading.value = false
+      tournamentPageError.value = null
       router.push('/admin/login')
       return
     }
   }
   await fetchTournament()
   teamCompositionSubmitAttempted.value = false
-  await fetchAllTeams()
   await fetchTable()
 })
 </script>
 
 <template>
-  <section
-    v-if="initialLoading"
-    class="p-6 space-y-6 min-h-[28rem]"
-    aria-busy="true"
+  <AdminDataState
+    :loading="initialLoading"
+    :error="tournamentPageError"
+    :empty="false"
+    :content-card="false"
+    :error-title="t('admin.tournament_page.load_error_title')"
+    @retry="retryTournamentPage"
   >
+    <template #loading>
+      <section
+        class="admin-page min-h-[28rem] space-y-4 sm:space-y-6"
+        aria-busy="true"
+      >
     <div class="flex items-start justify-between gap-4">
       <div class="space-y-3 min-w-0 flex-1">
         <Skeleton width="5rem" height="2.25rem" class="rounded-md" />
@@ -1945,45 +2003,47 @@ onMounted(async () => {
         </div>
       </div>
     </div>
-  </section>
+      </section>
+    </template>
 
-  <section v-else class="p-6 space-y-6">
-    <div class="flex items-start justify-between gap-4">
-      <div>
+    <section class="admin-page space-y-4 sm:space-y-6">
+    <div class="flex flex-col gap-3 min-w-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <div class="min-w-0">
+        <div class="admin-toolbar-responsive mb-2">
         <Button
           :label="t('admin.tournament_page.back')"
           icon="pi pi-arrow-left"
           text
-          class="mb-2"
           @click="router.push('/admin/tournaments')"
         />
+        </div>
         <div class="flex flex-wrap items-center gap-2">
-          <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+          <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">
             {{ tournament?.name ?? t('admin.tournament_page.tournament_fallback_name') }}
           </h1>
           <span
             v-if="tournament"
-            v-tooltip.top="t('admin.tournament_form.status_auto_hint')"
+            v-tooltip.top="adminTooltip(t('admin.tournament_form.status_auto_hint'))"
             class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
             :class="tournamentStatusBadgeClass(tournament.status)"
           >
             {{ tournamentLifecycleStatusLabel(tournament.status) }}
           </span>
         </div>
-        <p class="mt-1 text-sm text-muted-color">/{{ tournament?.slug }}</p>
-        <p v-if="tournament?.season" class="mt-2 text-sm text-surface-600 dark:text-surface-300">
+        <p class="mt-1 text-xs text-muted-color sm:text-sm">/{{ tournament?.slug }}</p>
+        <p v-if="tournament?.season" class="mt-2 text-xs text-surface-600 dark:text-surface-300 sm:text-sm">
           {{ t('admin.tournament_page.season_label') }}:
           <span class="font-medium text-surface-800 dark:text-surface-100">{{
             tournament.season.name
           }}</span>
         </p>
-        <p v-if="tournament?.competition" class="mt-1 text-sm text-surface-600 dark:text-surface-300">
+        <p v-if="tournament?.competition" class="mt-1 text-xs text-surface-600 dark:text-surface-300 sm:text-sm">
           {{ t('admin.tournament_page.competition_type_label') }}:
           <span class="font-medium text-surface-800 dark:text-surface-100">{{
             tournament.competition.name
           }}</span>
         </p>
-        <p v-if="tournament?.ageGroup" class="mt-1 text-sm text-surface-600 dark:text-surface-300">
+        <p v-if="tournament?.ageGroup" class="mt-1 text-xs text-surface-600 dark:text-surface-300 sm:text-sm">
           {{ t('admin.tournament_page.age_group_label') }}:
           <span class="font-medium text-surface-800 dark:text-surface-100">{{
             tournament.ageGroup.shortLabel || tournament.ageGroup.name
@@ -1991,7 +2051,7 @@ onMounted(async () => {
         </p>
       </div>
 
-      <div class="flex gap-2">
+      <div class="admin-toolbar-responsive flex flex-wrap gap-2">
         <Button
           v-if="!isPlayoffOnlyFormat"
           :label="t('admin.tournament_page.refresh_table')"
@@ -2004,7 +2064,7 @@ onMounted(async () => {
     </div>
 
     <div
-      v-if="tournament"
+      v-if="tournament && !modPolicy.locksTournamentPublishingAndDraftStructure"
       class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
     >
       <p class="text-sm font-semibold text-surface-900 dark:text-surface-0">
@@ -2053,7 +2113,7 @@ onMounted(async () => {
             readonly
             class="w-full flex-1 font-mono text-sm"
           />
-          <div class="flex shrink-0 flex-wrap gap-2">
+          <div class="admin-toolbar-responsive flex shrink-0 flex-wrap gap-2">
             <Button
               type="button"
               :label="t('admin.tournament_page.copy_public_link')"
@@ -2078,11 +2138,11 @@ onMounted(async () => {
     </div>
 
     <TabView :activeIndex="activeTab" @update:activeIndex="(v) => (activeTab = v)">
-      <TabPanel :header="t('admin.tournament_page.tab_calendar')">
+      <TabPanel value="calendar" :header="t('admin.tournament_page.tab_calendar')">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
           <div
             v-if="isManualFormat"
-            class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 px-3 py-2"
+            class="admin-toolbar-responsive mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 px-3 py-2"
           >
             <p class="text-sm text-muted-color">
               {{ t('admin.tournament_page.manual_schedule_hint') }}
@@ -2129,9 +2189,21 @@ onMounted(async () => {
               >
                 {{ t('admin.tournament_page.calendar_empty_legacy_format_hint') }}
               </p>
+              <div
+                v-if="showCalendarReadinessPanel && calendarReadinessItems.length"
+                class="mt-6 w-full max-w-md"
+              >
+                <AdminTournamentCalendarReadiness
+                  :items="calendarReadinessItems"
+                  :all-ok="calendarReadinessAllOk"
+                  :title="t('admin.tournament_page.readiness_title')"
+                  :summary-ok="t('admin.tournament_page.readiness_summary_ok')"
+                  :summary-warn="t('admin.tournament_page.readiness_summary_warn')"
+                />
+              </div>
               <div class="mt-6 flex flex-wrap justify-center gap-2">
                 <Button
-                  v-if="!isManualFormat && canTournamentAutomation"
+                  v-if="!isManualFormat && canTournamentAutomation && !modPolicy.locksCalendarAndPlayoffAutomation"
                   :label="t('admin.tournament_page.generate')"
                   icon="pi pi-calendar-plus"
                   :disabled="!tournament"
@@ -2142,14 +2214,6 @@ onMounted(async () => {
                   :label="t('admin.tournament_page.add_match')"
                   icon="pi pi-plus"
                   @click="() => matchesWorkspaceRef?.openManualMatchDialog()"
-                />
-                <Button
-                  v-if="isManualFormat && canManageManualMatches"
-                  :label="t('admin.tournament_page.calendar_empty_go_matches')"
-                  icon="pi pi-list"
-                  severity="secondary"
-                  outlined
-                  @click="goToMatchesTab"
                 />
               </div>
             </div>
@@ -2164,7 +2228,7 @@ onMounted(async () => {
               </p>
             </div>
             <Button
-              v-if="!isManualFormat && canTournamentAutomation"
+              v-if="!isManualFormat && canTournamentAutomation && !modPolicy.locksCalendarAndPlayoffAutomation"
               :label="t('admin.tournament_page.generate')"
               icon="pi pi-calendar-plus"
               severity="secondary"
@@ -2196,18 +2260,11 @@ onMounted(async () => {
                   :disabled="!calendarFiltersActive"
                   @click="resetCalendarFilters"
                 />
-                <Button
-                  :label="t('admin.tournament_page.apply_filters')"
-                  icon="pi pi-filter"
-                  severity="secondary"
-                  :disabled="!calendarFiltersActive || !tournament"
-                  @click="applyCalendarFilters"
-                />
               </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
-              <div class="md:col-span-6">
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div class="min-w-0">
                 <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.date_range') }}</label>
                 <DatePicker
                   v-model="calendarFilterDateRange"
@@ -2217,7 +2274,7 @@ onMounted(async () => {
                   selectionMode="range"
                 />
               </div>
-              <div class="md:col-span-3">
+              <div class="min-w-0">
                 <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.status') }}</label>
                 <MultiSelect
                   v-model="calendarFilterStatuses"
@@ -2232,7 +2289,7 @@ onMounted(async () => {
                   filter
                 />
               </div>
-              <div class="md:col-span-3">
+              <div class="min-w-0">
                 <label class="text-sm block mb-1 text-surface-900 dark:text-surface-100">{{ t('admin.tournament_page.team') }}</label>
                 <MultiSelect
                   v-model="calendarFilterTeamIds"
@@ -2250,35 +2307,65 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div v-if="calendarRefreshing" class="space-y-4" aria-busy="true">
-              <div
-                v-for="sk in [1, 2, 3]"
-                :key="`cal-refresh-sk-${sk}`"
-                class="rounded-lg border border-surface-200 dark:border-surface-700 overflow-hidden"
-              >
-                <div class="px-3 py-2 bg-surface-50 dark:bg-surface-800/80">
-                  <Skeleton width="55%" height="1rem" class="rounded-md" />
-                </div>
-                <div class="divide-y divide-surface-200 dark:divide-surface-700">
+            <AdminDataState
+              :loading="calendarRefreshing"
+              :error="calendarRefreshError"
+              :empty="false"
+              :content-card="false"
+              :error-title="t('admin.tournament_page.filters_error_summary')"
+              @retry="retryCalendarFetch"
+            >
+              <template #loading>
+                <div class="space-y-4" aria-busy="true">
                   <div
-                    v-for="j in [1, 2]"
-                    :key="`cal-refresh-sk-${sk}-${j}`"
-                    class="flex gap-2 px-3 py-3"
+                    v-for="sk in [1, 2, 3]"
+                    :key="`cal-refresh-sk-${sk}`"
+                    class="rounded-lg border border-surface-200 dark:border-surface-700 overflow-hidden"
                   >
-                    <Skeleton shape="circle" width="2.5rem" height="2.5rem" />
-                    <div class="flex-1 space-y-2 min-w-0">
-                      <Skeleton width="75%" height="1rem" class="rounded-md" />
-                      <Skeleton width="40%" height="0.75rem" class="rounded-md" />
+                    <div class="px-3 py-2 bg-surface-50 dark:bg-surface-800/80">
+                      <Skeleton width="55%" height="1rem" class="rounded-md" />
+                    </div>
+                    <div class="divide-y divide-surface-200 dark:divide-surface-700">
+                      <div
+                        v-for="j in [1, 2]"
+                        :key="`cal-refresh-sk-${sk}-${j}`"
+                        class="flex gap-2 px-3 py-3"
+                      >
+                        <Skeleton shape="circle" width="2.5rem" height="2.5rem" />
+                        <div class="flex-1 space-y-2 min-w-0">
+                          <Skeleton width="75%" height="1rem" class="rounded-md" />
+                          <Skeleton width="40%" height="0.75rem" class="rounded-md" />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </template>
 
-            <template v-else>
             <div v-if="calendarViewMode === 'grouped'">
-              <div v-if="!visibleCalendarRounds.length" class="text-sm text-muted-color">
-                {{ t('admin.tournament_page.no_matches_with_filters') }}
+              <div
+                v-if="!visibleCalendarRounds.length"
+                class="mt-1 flex flex-col items-center justify-center rounded-2xl border border-dashed border-surface-200 bg-gradient-to-b from-surface-50 to-transparent px-6 py-12 text-center dark:border-surface-600 dark:from-surface-900/60 dark:to-transparent"
+              >
+                <div
+                  class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-primary"
+                >
+                  <i class="pi pi-filter-slash text-2xl" aria-hidden="true" />
+                </div>
+                <h3 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                  {{ t('admin.tournament_page.calendar_filters_empty_title') }}
+                </h3>
+                <p class="mt-2 max-w-md text-sm leading-relaxed text-muted-color">
+                  {{ t('admin.tournament_page.calendar_filters_empty_lead') }}
+                </p>
+                <Button
+                  v-if="calendarFiltersActive"
+                  class="mt-6"
+                  :label="t('admin.tournament_page.reset_filters')"
+                  icon="pi pi-filter-slash"
+                  size="small"
+                  @click="resetCalendarFilters"
+                />
               </div>
 
               <div v-else class="space-y-4">
@@ -2397,35 +2484,56 @@ onMounted(async () => {
             </div>
 
             <div v-else>
-              <div v-if="!visibleTourSections.length" class="text-sm text-muted-color">
-                {{ t('admin.tournament_page.no_matches_with_filters') }}
+              <div
+                v-if="!visibleTourSections.length"
+                class="mt-1 flex flex-col items-center justify-center rounded-2xl border border-dashed border-surface-200 bg-gradient-to-b from-surface-50 to-transparent px-6 py-12 text-center dark:border-surface-600 dark:from-surface-900/60 dark:to-transparent"
+              >
+                <div
+                  class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-primary"
+                >
+                  <i class="pi pi-filter-slash text-2xl" aria-hidden="true" />
+                </div>
+                <h3 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                  {{ t('admin.tournament_page.calendar_filters_empty_title') }}
+                </h3>
+                <p class="mt-2 max-w-md text-sm leading-relaxed text-muted-color">
+                  {{ t('admin.tournament_page.calendar_filters_empty_lead') }}
+                </p>
+                <Button
+                  v-if="calendarFiltersActive"
+                  class="mt-6"
+                  :label="t('admin.tournament_page.reset_filters')"
+                  icon="pi pi-filter-slash"
+                  size="small"
+                  @click="resetCalendarFilters"
+                />
               </div>
 
               <div v-else class="space-y-4">
                 <div
-                  v-for="t in visibleTourSections"
-                  :key="t.key"
+                  v-for="tourSection in visibleTourSections"
+                  :key="tourSection.key"
                   class="rounded-lg border border-surface-200 dark:border-surface-700"
                 >
                   <div class="flex items-center justify-between px-3 py-2 bg-surface-50 dark:bg-surface-800/80">
                     <div class="text-sm font-medium text-surface-900 dark:text-surface-100">
-                      {{ t.title }} <span class="text-muted-color">({{ t.dateLabel }})</span>
+                      {{ tourSection.title }} <span class="text-muted-color">({{ tourSection.dateLabel }})</span>
                     </div>
                     <div class="text-xs text-muted-color flex items-center gap-2">
                       <Button
-                        :icon="expandedTourKeys[t.key] ? 'pi pi-angle-up' : 'pi pi-angle-down'"
+                        :icon="expandedTourKeys[tourSection.key] ? 'pi pi-angle-up' : 'pi pi-angle-down'"
                         text
                         severity="secondary"
                         size="small"
-                        @click="toggleTour(t.key)"
+                        @click="toggleTour(tourSection.key)"
                       />
-                      <span>{{ t.matches.length }} {{ localizedMatchCountLabel(t.matches.length) }}</span>
+                      <span>{{ tourSection.matches.length }} {{ localizedMatchCountLabel(tourSection.matches.length) }}</span>
                     </div>
                   </div>
 
-                  <div v-if="expandedTourKeys[t.key]" class="divide-y divide-surface-200 dark:divide-surface-700">
+                  <div v-if="expandedTourKeys[tourSection.key]" class="divide-y divide-surface-200 dark:divide-surface-700">
                     <div
-                      v-for="m in t.matches"
+                      v-for="m in tourSection.matches"
                       :key="m.id"
                       class="flex items-stretch gap-2 px-3 py-2 hover:bg-surface-50 dark:hover:bg-surface-800/50 transition-colors"
                     >
@@ -2490,15 +2598,24 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
-            </template>
+            </AdminDataState>
           </div>
           </template>
         </div>
       </TabPanel>
 
-      <TabPanel :header="t('admin.tournament_page.tab_matches')">
+      <TabPanel
+        value="matches"
+        :header="t('admin.tournament_page.tab_matches')"
+        :disabled="!hasScheduleMatches"
+        :headerActionProps="
+          !hasScheduleMatches
+            ? { title: t('admin.tournament_page.tab_need_schedule_title') }
+            : undefined
+        "
+      >
         <div
-          v-if="canGenerateManualPlayoff"
+          v-if="canShowPlayoffFromGroupsPanel"
           class="mb-4 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50 p-4"
         >
           <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2528,10 +2645,20 @@ onMounted(async () => {
         />
       </TabPanel>
 
-      <TabPanel v-if="!isPlayoffOnlyFormat" :header="t('admin.tournament_page.tab_table')">
+      <TabPanel
+        value="table"
+        v-if="!isPlayoffOnlyFormat"
+        :header="t('admin.tournament_page.tab_table')"
+        :disabled="!hasScheduleMatches"
+        :headerActionProps="
+          !hasScheduleMatches
+            ? { title: t('admin.tournament_page.tab_need_schedule_title') }
+            : undefined
+        "
+      >
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
-          <div class="flex items-center justify-between">
-            <div>
+          <div class="admin-toolbar-responsive flex flex-col gap-2 min-w-0 sm:flex-row sm:items-center sm:justify-between">
+            <div class="min-w-0">
               <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.table_title') }}</h2>
               <p class="mt-1 text-xs text-muted-color">{{ t('admin.tournament_page.table_autorefresh_hint') }}</p>
             </div>
@@ -2544,17 +2671,130 @@ onMounted(async () => {
             />
           </div>
 
-          <div v-if="isGroupedFormat" class="mt-3 space-y-6">
-            <div
-              v-for="g in (tournament?.groups ?? []).slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))"
-              :key="g.id"
-            >
-              <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ g.name }}</div>
+          <AdminDataState
+            class="mt-3"
+            :loading="tableLoading"
+            :error="tableError"
+            :empty="showTableEmptyState"
+            :empty-title="t('admin.tournament_page.table_empty_title')"
+            :empty-description="t('admin.tournament_page.table_empty_description')"
+            empty-icon="pi pi-table"
+            :error-title="t('admin.tournament_page.table_load_error_title')"
+            :content-card="false"
+            @retry="fetchTable"
+          >
+            <template #loading>
+              <div class="admin-datatable-scroll min-w-0 rounded-lg border border-surface-200 dark:border-surface-700">
+                <DataTable
+                  :value="tableSkeletonRows"
+                  data-key="id"
+                  striped-rows
+                  class="mt-0 min-h-[14rem]"
+                  aria-busy="true"
+                >
+                  <Column header="#" style="width: 4rem">
+                    <template #body>
+                      <Skeleton width="1.25rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column :header="t('admin.tournament_page.team')">
+                    <template #body>
+                      <Skeleton width="70%" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 4rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_played') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="1rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 4rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_wins') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="1rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 4rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_draws') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="1rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 4rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_losses') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="1rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 6rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_goals') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="2.5rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Δ" style="width: 4rem">
+                    <template #body>
+                      <Skeleton width="1.25rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column style="width: 5rem">
+                    <template #header>
+                      <span class="text-xs">{{ t('admin.tournament_page.table_col_points') }}</span>
+                    </template>
+                    <template #body>
+                      <Skeleton width="1.25rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                </DataTable>
+              </div>
+            </template>
+
+            <div v-if="isGroupedFormat" class="space-y-6">
+              <div
+                v-for="g in (tournament?.groups ?? []).slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))"
+                :key="g.id"
+              >
+                <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ g.name }}</div>
+                <div class="admin-datatable-scroll mt-2 min-w-0">
+                  <DataTable
+                    :value="groupTables[g.id] ?? []"
+                    :rowStyle="qualificationRowStyle"
+                    class="mt-0"
+                    stripedRows
+                  >
+                    <Column field="position" header="#" style="width: 4rem" />
+                    <Column field="teamName" :header="t('admin.tournament_page.team')" />
+                    <Column field="played" :header="t('admin.tournament_page.table_col_played')" style="width: 4rem" />
+                    <Column field="wins" :header="t('admin.tournament_page.table_col_wins')" style="width: 4rem" />
+                    <Column field="draws" :header="t('admin.tournament_page.table_col_draws')" style="width: 4rem" />
+                    <Column field="losses" :header="t('admin.tournament_page.table_col_losses')" style="width: 4rem" />
+                    <Column :header="t('admin.tournament_page.table_col_goals')" style="width: 6rem">
+                      <template #body="{ data }">
+                        {{ data.goalsFor }}:{{ data.goalsAgainst }}
+                      </template>
+                    </Column>
+                    <Column field="goalDiff" header="Δ" style="width: 4rem" />
+                    <Column field="points" :header="t('admin.tournament_page.table_col_points')" style="width: 5rem" />
+                  </DataTable>
+                </div>
+              </div>
+            </div>
+
+            <div v-else class="admin-datatable-scroll min-w-0">
               <DataTable
-                :value="groupTables[g.id] ?? []"
-                :loading="tableLoading"
+                :value="table"
+                class="mt-0"
                 :rowStyle="qualificationRowStyle"
-                class="mt-2"
                 stripedRows
               >
                 <Column field="position" header="#" style="width: 4rem" />
@@ -2572,192 +2812,265 @@ onMounted(async () => {
                 <Column field="points" :header="t('admin.tournament_page.table_col_points')" style="width: 5rem" />
               </DataTable>
             </div>
-          </div>
-
-          <DataTable
-            v-else
-            :value="table"
-            :loading="tableLoading"
-            class="mt-3"
-            :rowStyle="qualificationRowStyle"
-            stripedRows
-          >
-            <Column field="position" header="#" style="width: 4rem" />
-            <Column field="teamName" :header="t('admin.tournament_page.team')" />
-            <Column field="played" :header="t('admin.tournament_page.table_col_played')" style="width: 4rem" />
-            <Column field="wins" :header="t('admin.tournament_page.table_col_wins')" style="width: 4rem" />
-            <Column field="draws" :header="t('admin.tournament_page.table_col_draws')" style="width: 4rem" />
-            <Column field="losses" :header="t('admin.tournament_page.table_col_losses')" style="width: 4rem" />
-            <Column :header="t('admin.tournament_page.table_col_goals')" style="width: 6rem">
-              <template #body="{ data }">
-                {{ data.goalsFor }}:{{ data.goalsAgainst }}
-              </template>
-            </Column>
-            <Column field="goalDiff" header="Δ" style="width: 4rem" />
-            <Column field="points" :header="t('admin.tournament_page.table_col_points')" style="width: 5rem" />
-          </DataTable>
+          </AdminDataState>
         </div>
       </TabPanel>
 
-      <TabPanel :header="t('admin.tournament_page.tab_compositions')">
+      <TabPanel value="compositions" :header="t('admin.tournament_page.tab_compositions')">
         <div class="grid gap-4 lg:grid-cols-3">
-          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 lg:col-span-2">
-            <div class="flex items-center justify-between">
-              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_teams_title') }}</h2>
-              <div class="text-xs text-muted-color">
-                {{ tournament?.tournamentTeams?.length ?? 0 }} / {{ tournament?.minTeams ?? 0 }}
+          <div class="flex flex-col gap-4 lg:col-span-2">
+            <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
+              <div class="flex items-center justify-between gap-3">
+                <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+                  {{ t('admin.tournament_page.tournament_teams_title') }}
+                </h2>
+                <div class="text-xs text-muted-color shrink-0 tabular-nums">
+                  {{ tournament?.tournamentTeams?.length ?? 0 }} / {{ tournament?.minTeams ?? 0 }}
+                </div>
               </div>
-            </div>
+              <p class="mt-1.5 text-xs leading-relaxed text-muted-color">
+                {{ t('admin.tournament_page.teams_tab_participants_lead') }}
+              </p>
 
-            <div class="mt-3 grid gap-2 md:grid-cols-[1fr_auto]">
-              <MultiSelect
-                v-model="selectedTeamIds"
+              <AdminDataState
+                class="mt-3"
                 :loading="teamsLoading"
-                :options="allTeams"
-                option-label="name"
-                option-value="id"
-                :maxSelectedLabels="0"
-                :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
-                class="w-full"
-                :placeholder="t('admin.tournament_page.select_teams')"
-                filter
-                :disabled="!canEditTeamComposition"
-              />
-              <Button
-                :label="t('admin.tournament_page.save')"
-                icon="pi pi-check"
-                :loading="savingTeams"
-                @click="saveTeams"
-                :disabled="!canEditTeamComposition || (teamCompositionSubmitAttempted && !canSaveTeamComposition)"
-              />
-            </div>
-            <p
-              v-if="teamCompositionSubmitAttempted && teamCompositionErrors.minTeams"
-              class="mt-0 text-[11px] leading-3 text-red-500"
-            >
-              {{ teamCompositionErrors.minTeams }}
-            </p>
-
-            <p
-              v-if="canEditTournament && hasScheduleMatches && !hasAnyEnteredResults"
-              class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
-            >
-              {{ t('admin.tournament_page.schedule_generated_lock_hint') }}
-            </p>
-
-            <div v-if="showGroupBuckets" class="mt-4">
-              <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.groups_title') }}</div>
-              <div class="mt-1 text-xs text-muted-color space-y-1">
-                <p v-if="isManualFormat">
-                  {{ t('admin.tournament_page.groups_manual_hint') }}
-                </p>
-                <p v-else>
-                  {{ t('admin.tournament_page.groups_drag_hint') }}
-                </p>
-              </div>
-              <div
-                v-if="expectedGroupSize"
-                class="mt-2 text-xs font-medium text-surface-700 dark:text-surface-200"
+                :error="teamsCatalogErrorMessage"
+                :empty="showTeamsCatalogEmpty"
+                :empty-title="t('admin.tournament_page.teams_catalog_empty_title')"
+                :empty-description="t('admin.tournament_page.teams_catalog_empty_description')"
+                empty-icon="pi pi-users"
+                :error-title="t('admin.tournament_page.teams_catalog_load_error_title')"
+                :content-card="false"
+                @retry="() => refetchTeamsCatalog()"
               >
-                {{
-                  t('admin.tournament_page.groups_expected_size', {
-                    size: expectedGroupSize,
-                    teams: tournament?.tournamentTeams?.length ?? 0,
-                    groups: tournament?.groupCount ?? 1,
-                  })
-                }}
-              </div>
-
-              <div class="mt-3 grid gap-3 md:grid-cols-2">
-                <div
-                  v-for="col in groupColumns"
-                  :key="col.id"
-                  class="rounded-lg border border-surface-200 dark:border-surface-700 p-3 min-w-0"
-                >
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="text-sm font-medium truncate">{{ col.name }}</div>
-                    <div class="text-xs text-muted-color shrink-0">{{ col.teams.length }}</div>
+                <template #loading>
+                  <div class="grid gap-2 md:grid-cols-[1fr_auto]">
+                    <Skeleton height="2.75rem" class="w-full rounded-md" />
+                    <Skeleton height="2.75rem" width="5.5rem" class="rounded-md shrink-0 justify-self-start md:justify-self-auto" />
                   </div>
-                  <draggable
-                    :list="col.teams"
-                    item-key="teamId"
-                    group="teams-groups"
-                    handle=".drag-handle"
-                    :disabled="!canEditGroups || groupingSaving"
-                    :move="checkGroupMove"
-                    class="mt-2 space-y-2"
-                    @start="snapshotPreDrag"
-                    @change="(e) => onGroupChange(e, col.id)"
+                </template>
+                <div class="grid gap-2 md:grid-cols-[1fr_auto]">
+                  <MultiSelect
+                    v-model="selectedTeamIds"
+                    :options="allTeams"
+                    option-label="name"
+                    option-value="id"
+                    :maxSelectedLabels="0"
+                    :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
+                    class="w-full"
+                    :placeholder="t('admin.tournament_page.select_teams')"
+                    filter
+                    :disabled="!canEditTeamComposition"
                   >
-                    <template #item="{ element: tt }">
-                      <div class="flex items-center justify-between rounded-md border border-surface-200 dark:border-surface-700 px-3 py-2">
-                        <div class="flex items-center gap-2 min-w-0">
-                          <span
-                            class="drag-handle pi pi-bars text-muted-color shrink-0"
-                            :class="canEditGroups ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-50'"
-                            :title="canEditGroups ? t('admin.tournament_page.drag') : t('admin.tournament_page.unavailable_after_generation')"
-                          />
-                          <div class="text-sm truncate">{{ tt.team.name }}</div>
+                    <template #option="{ option }">
+                      <span>{{ displayTeamNameForUi(option.name) }}</span>
+                    </template>
+                  </MultiSelect>
+                  <Button
+                    :label="t('admin.tournament_page.save')"
+                    icon="pi pi-check"
+                    :loading="savingTeams"
+                    @click="saveTeams"
+                    :disabled="!canEditTeamComposition || (teamCompositionSubmitAttempted && !canSaveTeamComposition)"
+                  />
+                </div>
+                <p
+                  v-if="teamCompositionSubmitAttempted && teamCompositionErrors.minTeams"
+                  class="mt-2 text-[11px] leading-3 text-red-500"
+                >
+                  {{ teamCompositionErrors.minTeams }}
+                </p>
+
+                <p
+                  v-if="canEditTournament && hasScheduleMatches && !hasAnyEnteredResults"
+                  class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+                >
+                  {{ t('admin.tournament_page.schedule_generated_lock_hint') }}
+                </p>
+                <div
+                  v-if="showCalendarReadinessPanel && calendarReadinessItems.length"
+                  class="mt-4"
+                >
+                  <AdminTournamentCalendarReadiness
+                    :items="calendarReadinessItems"
+                    :all-ok="calendarReadinessAllOk"
+                    :title="t('admin.tournament_page.readiness_title')"
+                    :summary-ok="t('admin.tournament_page.readiness_summary_ok')"
+                    :summary-warn="t('admin.tournament_page.readiness_summary_warn')"
+                  />
+                </div>
+              </AdminDataState>
+            </div>
+
+            <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
+              <template v-if="showGroupBuckets">
+                <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+                  {{ t('admin.tournament_page.groups_title') }}
+                </div>
+                <div class="mt-1 text-xs text-muted-color space-y-1">
+                  <p v-if="isManualFormat">
+                    {{ t('admin.tournament_page.groups_manual_hint') }}
+                  </p>
+                  <p v-else>
+                    {{ t('admin.tournament_page.groups_drag_hint') }}
+                  </p>
+                </div>
+                <div
+                  v-if="expectedGroupSize"
+                  class="mt-2 text-xs font-medium text-surface-700 dark:text-surface-200"
+                >
+                  {{
+                    t('admin.tournament_page.groups_expected_size', {
+                      size: expectedGroupSize,
+                      teams: tournament?.tournamentTeams?.length ?? 0,
+                      groups: tournament?.groupCount ?? 1,
+                    })
+                  }}
+                </div>
+                <p class="mt-2 text-xs leading-relaxed text-muted-color">
+                  {{ t('admin.tournament_page.teams_tab_groups_rating_hint') }}
+                </p>
+
+                <div class="mt-3 grid gap-3 md:grid-cols-2">
+                  <div
+                    v-for="col in groupColumns"
+                    :key="col.id"
+                    class="rounded-lg border border-surface-200 dark:border-surface-700 p-3 min-w-0"
+                  >
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="text-sm font-medium truncate">{{ col.name }}</div>
+                      <div class="text-xs text-muted-color shrink-0">{{ col.teams.length }}</div>
+                    </div>
+                    <draggable
+                      :list="col.teams"
+                      item-key="teamId"
+                      group="teams-groups"
+                      handle=".drag-handle"
+                      :disabled="!canEditGroups || groupingSaving"
+                      :move="checkGroupMove"
+                      class="mt-2 space-y-2"
+                      @start="snapshotPreDrag"
+                      @change="handleGroupDragChange($event, col.id)"
+                    >
+                      <template #item="{ element: tt }">
+                        <div class="flex items-center justify-between gap-2 rounded-md border border-surface-200 dark:border-surface-700 px-3 py-2">
+                          <div class="flex items-center gap-2 min-w-0">
+                            <span
+                              class="drag-handle pi pi-bars text-muted-color shrink-0"
+                              :class="canEditGroups ? 'cursor-grab active:cursor-grabbing' : 'cursor-not-allowed opacity-50'"
+                              :title="canEditGroups ? t('admin.tournament_page.drag') : t('admin.tournament_page.unavailable_after_generation')"
+                            />
+                            <div class="text-sm truncate">{{ displayTeamNameForUi(tt.team.name) }}</div>
+                          </div>
+                          <div class="flex shrink-0 items-center gap-1.5">
+                            <span class="hidden sm:inline text-[10px] uppercase tracking-wide text-muted-color whitespace-nowrap">
+                              {{ t('admin.tournament_page.teams_tab_seed_label') }}
+                            </span>
+                            <Select
+                              :modelValue="tt.rating ?? 3"
+                              :options="ratingOptions"
+                              optionLabel="label"
+                              optionValue="value"
+                              :pt="seedStrengthSelectPt"
+                              :disabled="!canEditTeamRatings || ratingSaving || groupingSaving"
+                              @update:modelValue="(v) => { tt.rating = v; updateTeamRating(tt.teamId, v) }"
+                            />
+                          </div>
                         </div>
+                      </template>
+                    </draggable>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+                  {{ t('admin.tournament_page.teams_tab_list_title') }}
+                </div>
+                <p class="mt-1 text-xs leading-relaxed text-muted-color">
+                  {{ t('admin.tournament_page.teams_tab_list_lead') }}
+                </p>
+                <ul class="mt-3 space-y-2">
+                  <li
+                    v-for="tt in tournament?.tournamentTeams ?? []"
+                    :key="tt.teamId"
+                    class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-2"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
+                      <div class="text-sm truncate">{{ displayTeamNameForUi(tt.team.name) }}</div>
+                    </div>
+                    <div class="flex items-center gap-2 sm:gap-3">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[10px] uppercase tracking-wide text-muted-color whitespace-nowrap">
+                          {{ t('admin.tournament_page.teams_tab_seed_label') }}
+                        </span>
                         <Select
                           :modelValue="tt.rating ?? 3"
                           :options="ratingOptions"
                           optionLabel="label"
                           optionValue="value"
-                          class="w-20 shrink-0"
+                          :pt="seedStrengthSelectPt"
                           :disabled="!canEditTeamRatings || ratingSaving || groupingSaving"
                           @update:modelValue="(v) => { tt.rating = v; updateTeamRating(tt.teamId, v) }"
                         />
                       </div>
-                    </template>
-                  </draggable>
-                </div>
-              </div>
+                      <div class="text-xs text-muted-color w-24 text-right shrink-0">
+                        <span v-if="tt.group">{{ tt.group.name }}</span>
+                        <span v-else>—</span>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+              </template>
             </div>
-
-            <ul v-else class="mt-3 space-y-2">
-              <li
-                v-for="tt in tournament?.tournamentTeams ?? []"
-                :key="tt.teamId"
-                class="flex items-center justify-between rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-2"
-              >
-                <div class="flex items-center gap-2">
-                  <div class="text-sm">{{ tt.team.name }}</div>
-                </div>
-                <div class="flex items-center gap-3">
-                  <Select
-                    :modelValue="tt.rating ?? 3"
-                    :options="ratingOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    class="w-20"
-                    :disabled="!canEditTeamRatings || ratingSaving || groupingSaving"
-                    @update:modelValue="(v) => { tt.rating = v; updateTeamRating(tt.teamId, v) }"
-                  />
-                  <div class="text-xs text-muted-color">
-                    <span v-if="tt.group">{{ tt.group.name }}</span>
-                    <span v-else>—</span>
-                  </div>
-                </div>
-              </li>
-            </ul>
           </div>
 
-          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
-            <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.tournament_admins_title') }}</h2>
-            <ul class="mt-3 space-y-2">
-              <li
-                v-for="m in tournament?.members ?? []"
-                :key="m.id"
-                class="rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-2"
-              >
-                <div class="text-sm">
-                  {{ m.user.name }}
-                  <span v-if="m.user.email" class="text-muted-color">({{ m.user.email }})</span>
-                </div>
-                <div class="text-xs text-muted-color">{{ m.role }}</div>
-              </li>
-            </ul>
+          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 h-fit space-y-5">
+            <div>
+              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.tournament_admins_title') }}
+              </h2>
+              <p class="mt-1 text-xs text-muted-color leading-relaxed">
+                {{ t('admin.tournament_page.tournament_admins_lead') }}
+              </p>
+              <ul v-if="tournamentAdminMembers.length" class="mt-3 space-y-2">
+                <li
+                  v-for="m in tournamentAdminMembers"
+                  :key="m.id"
+                  class="rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-2"
+                >
+                  <div class="text-sm">
+                    {{ formatUserListLabel(m.user) }}
+                  </div>
+                </li>
+              </ul>
+              <p v-else class="mt-3 text-xs text-muted-color leading-relaxed">
+                {{ t('admin.tournament_page.tournament_admins_empty') }}
+              </p>
+            </div>
+            <div class="border-t border-surface-200 pt-4 dark:border-surface-700">
+              <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.tournament_moderators_title') }}
+              </h2>
+              <p class="mt-1 text-xs text-muted-color leading-relaxed">
+                {{ t('admin.tournament_page.tournament_moderators_lead') }}
+              </p>
+              <ul v-if="tournamentModeratorMembers.length" class="mt-3 space-y-2">
+                <li
+                  v-for="m in tournamentModeratorMembers"
+                  :key="m.id"
+                  class="rounded-lg border border-surface-200 dark:border-surface-700 px-3 py-2"
+                >
+                  <div class="text-sm">
+                    {{ formatUserListLabel(m.user) }}
+                  </div>
+                </li>
+              </ul>
+              <p v-else class="mt-3 text-xs text-muted-color leading-relaxed">
+                {{ t('admin.tournament_page.tournament_moderators_empty') }}
+              </p>
+            </div>
           </div>
         </div>
       </TabPanel>
@@ -2798,21 +3111,6 @@ onMounted(async () => {
               {{ t('admin.tournament_page.changed_in_edit_tournament') }}
             </div>
           </div>
-            <div
-              v-if="isGroupsPlusPlayoffFamily(calendarForm.format)"
-              class="mt-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3"
-            >
-            <div class="flex items-center justify-between gap-3">
-                <div class="text-sm font-medium">{{ t('admin.tournament_page.generation_mode') }}</div>
-              <ToggleSwitch v-model="calendarForm.useTemplate" />
-            </div>
-            <div class="mt-1 text-xs text-muted-color">
-                {{ t('admin.tournament_page.kids_mini_preset_hint') }}
-            </div>
-            <div v-if="calendarForm.useTemplate" class="mt-3 text-sm">
-              {{ t('admin.tournament_page.kids_mini_preset_used') }}
-            </div>
-          </div>
         </div>
         <div
           class="rounded-lg border p-3"
@@ -2829,7 +3127,7 @@ onMounted(async () => {
               type="button"
               class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
               :aria-label="t('admin.tournament_page.hint_preview_aria')"
-              v-tooltip.top="previewHintText"
+              v-tooltip.top="adminTooltip(previewHintText)"
               @click.prevent
             >
               <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -2875,19 +3173,17 @@ onMounted(async () => {
                   : '—'
               }}
             </div>
-            <template v-if="!calendarForm.useTemplate">
-              <div class="text-muted-color">{{ t('admin.tournament_page.preview_min_minutes_to_midnight') }}</div>
-              <div class="text-right font-medium">{{ calendarPreview.minAvailableMinutesPerDay }}</div>
-              <div class="text-muted-color">{{ t('admin.tournament_page.preview_minutes_needed_busiest_day') }}</div>
-              <div
-                class="text-right font-medium"
-                :class="calendarPreview.scheduleOverflow ? 'text-red-600 dark:text-red-400' : ''"
-              >
-                {{ calendarPreview.minutesNeededOnBusiestDay }}
-              </div>
-            </template>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_min_minutes_to_midnight') }}</div>
+            <div class="text-right font-medium">{{ calendarPreview.minAvailableMinutesPerDay }}</div>
+            <div class="text-muted-color">{{ t('admin.tournament_page.preview_minutes_needed_busiest_day') }}</div>
+            <div
+              class="text-right font-medium"
+              :class="calendarPreview.scheduleOverflow ? 'text-red-600 dark:text-red-400' : ''"
+            >
+              {{ calendarPreview.minutesNeededOnBusiestDay }}
+            </div>
           </div>
-          <div v-if="!calendarForm.useTemplate" class="mt-2 text-xs">
+          <div class="mt-2 text-xs">
             <div
               v-if="calendarPreview.scheduleOverflow"
               class="text-red-700 dark:text-red-300"
@@ -2910,9 +3206,6 @@ onMounted(async () => {
               {{ calendarFormErrors.schedule }}
             </p>
           </div>
-          <div v-else class="mt-2 text-xs text-muted-color">
-            {{ t('admin.tournament_page.preview_estimate_hint') }}
-          </div>
         </div>
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div class="md:col-span-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3">
@@ -2923,7 +3216,7 @@ onMounted(async () => {
                   type="button"
                   class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                   :aria-label="t('admin.tournament_page.hint_one_day_aria')"
-                  v-tooltip.top="oneDayHintText"
+                  v-tooltip.top="adminTooltip(oneDayHintText)"
                   @click.prevent
                 >
                   <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -2932,14 +3225,14 @@ onMounted(async () => {
               <ToggleSwitch v-model="calendarForm.oneDayTournament" />
             </div>
           </div>
-          <div v-if="!calendarForm.useTemplate" class="md:col-span-2">
+          <div class="md:col-span-2">
             <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
               <span>{{ t('admin.tournament_page.scheduling_mode') }}</span>
               <button
                 type="button"
                 class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                 :aria-label="t('admin.tournament_page.hint_scheduling_mode_aria')"
-                v-tooltip.top="schedulingModeHintText"
+                v-tooltip.top="adminTooltip(schedulingModeHintText)"
                 @click.prevent
               >
                 <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -2986,7 +3279,7 @@ onMounted(async () => {
               {{ calendarFormErrors.endDate }}
             </p>
           </div>
-          <div v-if="!calendarForm.useTemplate">
+          <div>
             <label class="text-sm block mb-1">{{ t('admin.tournament_page.interval_days') }}</label>
             <InputNumber
               v-model="calendarForm.intervalDays"
@@ -2996,14 +3289,14 @@ onMounted(async () => {
               @input="(e) => setCalendarNumberLive('intervalDays', e.value)"
             />
           </div>
-          <div v-if="!calendarForm.useTemplate">
+          <div>
             <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
               <span>{{ t('admin.tournament_page.rounds_per_day') }}</span>
               <button
                 type="button"
                 class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                 :aria-label="t('admin.tournament_page.hint_rounds_per_day_aria')"
-                v-tooltip.top="roundsPerDayHintText"
+                v-tooltip.top="adminTooltip(roundsPerDayHintText)"
                 @click.prevent
               >
                 <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -3017,14 +3310,14 @@ onMounted(async () => {
               @input="(e) => setCalendarNumberLive('roundsPerDay', e.value)"
             />
           </div>
-          <div v-if="!calendarForm.useTemplate">
+          <div>
             <label class="text-sm block mb-1 has-tooltip flex items-center gap-1.5">
               <span>{{ t('admin.tournament_page.round_robin_cycles') }}</span>
               <button
                 type="button"
                 class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
                 :aria-label="t('admin.tournament_page.hint_cycles_aria')"
-                v-tooltip.top="roundRobinCyclesHintText"
+                v-tooltip.top="adminTooltip(roundRobinCyclesHintText)"
                 @click.prevent
               >
                 <i class="pi pi-info-circle text-sm" aria-hidden="true" />
@@ -3038,7 +3331,7 @@ onMounted(async () => {
               @input="(e) => setCalendarNumberLive('roundRobinCycles', e.value)"
             />
           </div>
-          <div v-if="!calendarForm.useTemplate">
+          <div>
             <label class="text-sm block mb-1">{{ t('admin.tournament_page.allowed_days') }}</label>
             <MultiSelect
               v-model="calendarForm.allowedDays"
@@ -3149,7 +3442,7 @@ onMounted(async () => {
         >
           <div class="flex flex-wrap gap-2">
             <Button
-              v-if="tournament?.matches?.length"
+              v-if="tournament?.matches?.length && !modPolicy.locksCalendarAndPlayoffAutomation"
               :label="t('admin.tournament_page.clear_calendar')"
               icon="pi pi-trash"
               severity="danger"
@@ -3157,20 +3450,11 @@ onMounted(async () => {
               :loading="calendarSaving"
               @click="clearCalendar"
             />
-            <Button
-              v-if="isGroupsPlusPlayoffFamily(tournament?.format)"
-              :label="t('admin.tournament_page.generate_playoff')"
-              icon="pi pi-sitemap"
-              severity="secondary"
-              text
-              :loading="calendarSaving"
-              :disabled="!canTournamentAutomation"
-              @click="generatePlayoff"
-            />
           </div>
           <div class="flex justify-end gap-2 sm:shrink-0">
             <Button :label="t('admin.tournament_page.cancel')" text @click="calendarDialog = false" />
             <Button
+              v-if="!modPolicy.locksCalendarAndPlayoffAutomation"
               :label="t('admin.tournament_page.generate')"
               icon="pi pi-check"
               class="min-w-40"
@@ -3196,6 +3480,7 @@ onMounted(async () => {
       @saved="onProtocolSaved"
     />
   </section>
+  </AdminDataState>
 </template>
 
 

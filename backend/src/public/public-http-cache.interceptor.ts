@@ -18,7 +18,9 @@ type PublicPerfMetric = {
 @Injectable()
 export class PublicHttpCacheInterceptor implements NestInterceptor {
   private readonly perfLogEnabled: boolean = (() => {
-    const raw = String(process.env.PUBLIC_PERF_LOG ?? '').trim().toLowerCase();
+    const raw = String(process.env.PUBLIC_PERF_LOG ?? '')
+      .trim()
+      .toLowerCase();
     if (raw) return ['1', 'true', 'yes', 'on'].includes(raw);
     return process.env.NODE_ENV !== 'production';
   })();
@@ -104,11 +106,13 @@ export class PublicHttpCacheInterceptor implements NestInterceptor {
       const p95Ms = sorted.length
         ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
         : 0;
-      const ratio304 = metric.count ? (metric.count304 / metric.count) * 100 : 0;
+      const ratio304 = metric.count
+        ? (metric.count304 / metric.count) * 100
+        : 0;
 
       // Single concise line per endpoint once per minute.
       // Example: [public-perf] /public/tenants/:tenantSlug/tournaments p95=42ms avg=18ms max=101ms 304=33.3% n=120
-      // eslint-disable-next-line no-console
+
       console.info(
         `[public-perf] ${endpoint} p95=${Math.round(p95Ms)}ms avg=${Math.round(
           avgMs,
@@ -145,7 +149,11 @@ export class PublicHttpCacheInterceptor implements NestInterceptor {
         res.setHeader('Vary', 'Accept-Encoding');
 
         const payload =
-          typeof body === 'string' ? body : body == null ? '' : JSON.stringify(body);
+          typeof body === 'string'
+            ? body
+            : body == null
+              ? ''
+              : JSON.stringify(body);
         const etag = createHash('sha1').update(payload).digest('hex');
         const weakEtag = `W/"${etag}"`;
         res.setHeader('ETag', weakEtag);
@@ -176,4 +184,3 @@ export class PublicHttpCacheInterceptor implements NestInterceptor {
     );
   }
 }
-

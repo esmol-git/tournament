@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { TournamentDetails, TableRow } from '~/types/tournament-admin'
+import type { MatchRow, TableRow } from '~/types/tournament-admin'
+
+type MatchEventRow = NonNullable<MatchRow['events']>[number]
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
 import { usePublicTournamentSidebarPreviewStore } from '~/composables/usePublicTournamentSidebarPreviewStore'
@@ -46,7 +48,6 @@ const { ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const {
   tenant,
   selectedTournamentId,
-  selectedTournament,
   loading,
   syncTidToQuery,
   workspaceReady,
@@ -108,14 +109,7 @@ function resolveImageUrl(url: string | null | undefined, fallback: string) {
   return normalized.length ? normalized : fallback
 }
 
-function handleImageError(event: Event, fallback: string) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(fallback)) return
-  target.src = fallback
-}
-
-function parseCardColor(event: TournamentDetails['matches'][number]['events'][number]): 'yellow' | 'red' | null {
+function parseCardColor(event: MatchEventRow): 'yellow' | 'red' | null {
   const payload = (event.payload ?? {}) as Record<string, unknown>
   const direct = String(payload.cardType ?? payload.color ?? payload.cardColor ?? '')
     .trim()
@@ -134,7 +128,7 @@ function parseCardColor(event: TournamentDetails['matches'][number]['events'][nu
   return null
 }
 
-function parseAssistPlayerId(event: TournamentDetails['matches'][number]['events'][number]): string {
+function parseAssistPlayerId(event: MatchEventRow): string {
   const payload = (event.payload ?? {}) as Record<string, unknown>
   return String(
     payload.assistId ??
@@ -636,14 +630,41 @@ onMounted(() => {
                     <thead>
                       <tr>
                         <th style="width: 3.5rem"></th>
-                        <th class="players-table-col-player" :aria-sort="ariaSortFor('lastName')">
-                          <button :class="sortButtonClass('lastName')" :aria-label="sortButtonAriaLabel('lastName', 'игрок')" @click="toggleSort('lastName')">Игрок{{ sortIndicator('lastName') }}</button>
+                        <th class="text-left players-table-col-player" :aria-sort="ariaSortFor('lastName')">
+                          <button
+                            type="button"
+                            :class="sortButtonClass('lastName')"
+                            :aria-label="sortButtonAriaLabel('lastName', 'игрок')"
+                            @click="toggleSort('lastName')"
+                          >
+                            Игрок{{ sortIndicator('lastName') }}
+                          </button>
                         </th>
                         <th class="players-table-col-team" :aria-sort="ariaSortFor('teamName')">
                           <button :class="sortButtonClass('teamName')" :aria-label="sortButtonAriaLabel('teamName', 'команда')" @click="toggleSort('teamName')">Команда{{ sortIndicator('teamName') }}</button>
                         </th>
-                        <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('goals')"><button :class="sortButtonClass('goals')" :aria-label="sortButtonAriaLabel('goals', 'голы')" @click="toggleSort('goals')">Голы{{ sortIndicator('goals') }}</button></th>
-                        <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('assists')"><button :class="sortButtonClass('assists')" :aria-label="sortButtonAriaLabel('assists', 'ассисты')" @click="toggleSort('assists')">Ассисты{{ sortIndicator('assists') }}</button></th>
+                        <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('goals')">
+                          <button
+                            type="button"
+                            :class="sortButtonClass('goals')"
+                            title="Голы"
+                            :aria-label="sortButtonAriaLabel('goals', 'голы')"
+                            @click="toggleSort('goals')"
+                          >
+                            Г{{ sortIndicator('goals') }}
+                          </button>
+                        </th>
+                        <th class="text-center players-table-col-num" :aria-sort="ariaSortFor('assists')">
+                          <button
+                            type="button"
+                            :class="sortButtonClass('assists')"
+                            title="Ассисты"
+                            :aria-label="sortButtonAriaLabel('assists', 'ассисты')"
+                            @click="toggleSort('assists')"
+                          >
+                            А{{ sortIndicator('assists') }}
+                          </button>
+                        </th>
                         <th class="text-center players-table-col-card" :aria-sort="ariaSortFor('yellowCards')">
                           <button :class="`${sortButtonClass('yellowCards')} inline-flex items-center justify-center gap-1`" :aria-label="sortButtonAriaLabel('yellowCards', 'желтые карточки')" @click="toggleSort('yellowCards')">
                             <span class="card-mini card-mini-yellow" />
@@ -661,15 +682,12 @@ onMounted(() => {
                     <tbody>
                       <tr v-for="row in pagedRows" :key="row.playerId">
                         <td>
-                          <div class="h-9 w-9 overflow-hidden rounded-full">
-                            <img
-                              :src="resolveImageUrl(row.playerPhotoUrl, PLAYER_PLACEHOLDER_SRC)"
-                              :alt="`${row.lastName} ${row.firstName}`"
-                              class="h-full w-full object-cover"
-                              loading="lazy"
-                              @error="(e) => handleImageError(e, PLAYER_PLACEHOLDER_SRC)"
-                            />
-                          </div>
+                          <RemoteImage
+                            :src="resolveImageUrl(row.playerPhotoUrl, PLAYER_PLACEHOLDER_SRC)"
+                            :alt="`${row.lastName} ${row.firstName}`"
+                            placeholder-icon="user"
+                            class="h-9 w-9 shrink-0 rounded-full"
+                          />
                         </td>
                         <td class="players-table-cell-player font-medium">
                           <span
@@ -681,12 +699,12 @@ onMounted(() => {
                         </td>
                         <td class="players-table-cell-team">
                           <div class="flex items-center gap-2">
-                            <img
+                            <RemoteImage
                               :src="resolveImageUrl(row.teamLogoUrl, TEAM_PLACEHOLDER_SRC)"
                               :alt="row.teamName ?? 'Команда'"
-                              class="h-5 w-5 rounded-full object-cover"
-                              loading="lazy"
-                              @error="(e) => handleImageError(e, TEAM_PLACEHOLDER_SRC)"
+                              placeholder-icon="users"
+                              icon-class="text-[0.55rem]"
+                              class="h-5 w-5 shrink-0 rounded-full"
                             />
                             <span class="team-name-clamp" :title="row.teamName || '—'">{{ row.teamName || '—' }}</span>
                           </div>
@@ -744,6 +762,14 @@ onMounted(() => {
 .players-table-col-player,
 .players-table-cell-player {
   min-width: 12rem;
+}
+
+.players-table-wrap :deep(.players-table-col-player .players-sort-btn) {
+  display: inline-flex;
+  width: 100%;
+  justify-content: flex-start;
+  align-items: center;
+  text-align: left;
 }
 
 .players-table-col-team,

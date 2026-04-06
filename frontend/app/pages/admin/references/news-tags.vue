@@ -7,8 +7,12 @@ import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import type { NewsTagRow } from '~/types/admin/news-tag'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const { token, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
@@ -16,9 +20,11 @@ const router = useRouter()
 const tenantId = useTenantId()
 const toast = useToast()
 
-const loading = ref(true)
+const { items, loading, error, isEmpty, run, retry } = useAdminAsyncListState<NewsTagRow>({
+  initialLoading: true,
+  clearItemsOnError: true,
+})
 const saving = ref(false)
-const items = ref<NewsTagRow[]>([])
 const showForm = ref(false)
 const editing = ref<NewsTagRow | null>(null)
 const isEdit = computed(() => !!editing.value)
@@ -38,23 +44,15 @@ const v$ = useVuelidate(rules, form, { $autoDirty: true })
 const canSave = computed(() => !v$.value.$invalid)
 
 const fetchItems = async () => {
-  if (!token.value) return
-  loading.value = true
-  try {
+  if (!token.value) {
+    loading.value = false
+    return
+  }
+  await run(async () => {
     items.value = await authFetch<NewsTagRow[]>(apiUrl(`/tenants/${tenantId.value}/news-tags`), {
       headers: { Authorization: `Bearer ${token.value}` },
     })
-  } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось загрузить теги новостей',
-      detail: getApiErrorMessage(e),
-      life: 6000,
-    })
-    items.value = []
-  } finally {
-    loading.value = false
-  }
+  })
 }
 
 const openCreate = () => {
@@ -120,14 +118,26 @@ const save = async () => {
   }
 }
 
-const remove = async (row: NewsTagRow) => {
-  if (!token.value) return
-  if (!confirm(`Удалить тег «${row.name}»?`)) return
+const deleteDialogVisible = ref(false)
+const deleteTarget = ref<NewsTagRow | null>(null)
+const deleteSaving = ref(false)
+
+const openDeleteDialog = (row: NewsTagRow) => {
+  deleteTarget.value = row
+  deleteDialogVisible.value = true
+}
+
+const confirmDelete = async () => {
+  if (!token.value || !deleteTarget.value) return
+  const row = deleteTarget.value
+  deleteSaving.value = true
   try {
     await authFetch(apiUrl(`/tenants/${tenantId.value}/news-tags/${row.id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token.value}` },
     })
+    deleteDialogVisible.value = false
+    deleteTarget.value = null
     await fetchItems()
     toast.add({ severity: 'success', summary: 'Удалено', life: 2500 })
   } catch (e: unknown) {
@@ -137,13 +147,20 @@ const remove = async (row: NewsTagRow) => {
       detail: getApiErrorMessage(e),
       life: 6000,
     })
+  } finally {
+    deleteSaving.value = false
   }
+}
+
+const onDeleteDialogHide = () => {
+  deleteTarget.value = null
 }
 
 onMounted(() => {
   if (process.client) {
     syncWithStorage()
     if (!loggedIn.value) {
+      loading.value = false
       router.push('/admin/login')
       return
     }
@@ -153,11 +170,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="p-6 space-y-4">
-    <header class="flex flex-wrap items-center justify-between gap-3">
+  <section class="admin-page">
+    <header class="admin-toolbar-responsive flex flex-wrap items-center justify-between gap-2 sm:gap-3">
       <div>
-        <h1 class="text-xl font-semibold text-surface-900 dark:text-surface-0">Теги новостей</h1>
-        <p class="mt-1 max-w-2xl text-sm text-muted-color">
+        <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-xl">Теги новостей</h1>
+        <p class="mt-1 max-w-2xl text-xs leading-relaxed text-muted-color sm:text-sm">
           Каталог тематических меток для новостей: используется в фильтрах и для навигации на
           публичных страницах.
         </p>
@@ -165,8 +182,19 @@ onMounted(() => {
       <Button label="Добавить" icon="pi pi-plus" @click="openCreate" />
     </header>
 
-    <div class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900">
-      <DataTable :value="items" data-key="id" :loading="loading" striped-rows>
+    <AdminDataState
+      :loading="loading"
+      :error="error"
+      :empty="isEmpty"
+      empty-title="Пока нет тегов"
+      empty-description="Создайте теги для фильтров новостей и навигации на публичных страницах."
+      error-title="Не удалось загрузить теги новостей"
+      @retry="retry"
+    >
+      <template #empty-actions>
+        <Button label="Добавить" icon="pi pi-plus" @click="openCreate" />
+      </template>
+      <DataTable :value="items" data-key="id" striped-rows>
         <Column field="name" header="Название" />
         <Column field="slug" header="Slug" />
         <Column field="sortOrder" header="Порядок" style="width: 6rem" />
@@ -178,19 +206,16 @@ onMounted(() => {
         <Column header="" style="width: 8rem" body-class="!text-end">
           <template #body="{ data }">
             <Button icon="pi pi-pencil" text rounded severity="secondary" @click="openEdit(data)" />
-            <Button icon="pi pi-trash" text rounded severity="danger" @click="remove(data)" />
+            <Button icon="pi pi-trash" text rounded severity="danger" @click="openDeleteDialog(data)" />
           </template>
         </Column>
-        <template #empty>
-          <div class="py-10 text-center text-muted-color">Пока нет тегов</div>
-        </template>
       </DataTable>
-    </div>
+    </AdminDataState>
 
     <Dialog
-      :visible="showForm"
-      @update:visible="showForm = $event"
+      v-model:visible="showForm"
       modal
+      block-scroll
       :header="isEdit ? 'Редактировать тег' : 'Новый тег'"
       :style="{ width: '28rem' }"
     >
@@ -214,8 +239,38 @@ onMounted(() => {
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <Button label="Отмена" text @click="showForm = false" />
-          <Button label="Сохранить" icon="pi pi-check" :loading="saving" :disabled="saving || (submitAttempted && !canSave)" @click="save" />
+          <Button type="button" label="Отмена" text @click="showForm = false" />
+          <Button type="button" label="Сохранить" icon="pi pi-check" :loading="saving" :disabled="saving || (submitAttempted && !canSave)" @click="save" />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      :visible="deleteDialogVisible"
+      modal
+      block-scroll
+      header="Удалить тег новостей?"
+      :style="{ width: 'min(24rem, 100vw - 2rem)' }"
+      :closable="!deleteSaving"
+      @update:visible="(v) => (deleteDialogVisible = v)"
+      @hide="onDeleteDialogHide"
+    >
+      <p v-if="deleteTarget" class="text-sm text-surface-700 dark:text-surface-200">
+        Тег
+        <span class="font-semibold text-surface-900 dark:text-surface-0">«{{ deleteTarget.name }}»</span>
+        будет удалён. Если он уже привязан к новостям, операция может быть отклонена сервером.
+      </p>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button type="button" label="Отмена" text :disabled="deleteSaving" @click="deleteDialogVisible = false" />
+          <Button
+            type="button"
+            label="Удалить"
+            icon="pi pi-trash"
+            severity="danger"
+            :loading="deleteSaving"
+            @click="confirmDelete"
+          />
         </div>
       </template>
     </Dialog>

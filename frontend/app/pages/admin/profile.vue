@@ -3,19 +3,22 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { helpers, minLength, required } from '@vuelidate/validators'
 import Card from 'primevue/card'
-import Message from 'primevue/message'
 import Select from 'primevue/select'
+import InputSwitch from 'primevue/inputswitch'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { userRoleLabelRu } from '~/constants/userRoles'
 import type { UserRow } from '~/types/admin/user'
 import { getApiErrorMessage } from '~/utils/apiError'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { formatSubscriptionPlanLabel } from '~/utils/subscriptionPlanLabels'
 import { SUBSCRIPTION_PLANS } from '~/utils/subscriptionFeatures'
 import { useSubscriptionFeatureMatrix } from '~/composables/useSubscriptionFeatures'
+import { readTenantStaffRole } from '~/utils/tenantStaffRole'
 
 definePageMeta({
   layout: 'admin',
+  adminOrgModeratorReadOnly: false,
 })
 
 const { t } = useI18n()
@@ -25,14 +28,33 @@ const { token, loggedIn, syncWithStorage, authFetch, fetchMe, user } = useAuth()
 const { apiUrl } = useApiUrl()
 
 const loading = ref(true)
+const profileLoadError = ref<string | null>(null)
 const saving = ref(false)
+
+/** В БД уже сохранён email — смена запрещена (как на бэкенде). */
+const emailLocked = ref(false)
+
+/** Логин в профиле меняют только админ тенанта и супер-админ; остальные — через раздел «Пользователи». */
+const usernameLocked = computed(() => {
+  const r = String(form.role || '').trim().toUpperCase()
+  return r !== 'TENANT_ADMIN' && r !== 'SUPER_ADMIN'
+})
+
+/** Смена пароля в профиле — только у админа организации и суперадмина; остальным пароль задаёт админ. */
+const passwordLocked = computed(() => {
+  const r = String(form.role || '').trim().toUpperCase()
+  return r !== 'TENANT_ADMIN' && r !== 'SUPER_ADMIN'
+})
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const subscriptionPlanDraft = ref<string>('FREE')
 const subscriptionSaving = ref(false)
-const subscriptionLoadError = ref('')
+const subscriptionLoading = ref(false)
+const subscriptionLoadError = ref<string | null>(null)
 
 const canManageSubscription = computed(() => {
-  const r = String((user.value as { role?: string } | null)?.role ?? '')
+  const r = readTenantStaffRole(user.value)
   return r === 'TENANT_ADMIN' || r === 'SUPER_ADMIN'
 })
 
@@ -45,23 +67,75 @@ const subscriptionPlanOptions = computed(() =>
 
 const { featureMatrix } = useSubscriptionFeatureMatrix(subscriptionPlanDraft)
 
+const allowUserDeletionDraft = ref(false)
+const allowUserDeletionSaving = ref(false)
+
 function syncSubscriptionDraftFromUser() {
   const p = (user.value as { tenantSubscription?: { plan?: string | null } | null } | null)
     ?.tenantSubscription?.plan
   subscriptionPlanDraft.value = typeof p === 'string' && p ? p : 'FREE'
 }
 
+function syncAllowDeletionFromUser() {
+  const v = (user.value as { tenantSubscription?: { allowUserDeletion?: boolean } | null } | null)
+    ?.tenantSubscription?.allowUserDeletion
+  allowUserDeletionDraft.value = v === true
+}
+
+async function onAllowUserDeletionChange(next: boolean) {
+  if (!token.value || !canManageSubscription.value) return
+  const prev = allowUserDeletionDraft.value
+  allowUserDeletionSaving.value = true
+  allowUserDeletionDraft.value = next
+  try {
+    await authFetch(apiUrl('/users/me/tenant-allow-user-deletion'), {
+      method: 'PATCH',
+      body: { allowUserDeletion: next },
+    })
+    await fetchMe()
+    syncAllowDeletionFromUser()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.profile.user_deletion_saved'),
+      life: 3000,
+    })
+  } catch (e: unknown) {
+    allowUserDeletionDraft.value = prev
+    toast.add({
+      severity: 'error',
+      summary: getApiErrorMessage(e, t('admin.profile.save_error')),
+      life: 5000,
+    })
+  } finally {
+    allowUserDeletionSaving.value = false
+  }
+}
+
+watch(
+  () => user.value,
+  () => {
+    syncAllowDeletionFromUser()
+  },
+  { deep: true },
+)
+
 async function loadSubscriptionContext() {
-  subscriptionLoadError.value = ''
+  subscriptionLoadError.value = null
   if (!token.value || !canManageSubscription.value) {
     syncSubscriptionDraftFromUser()
+    syncAllowDeletionFromUser()
     return
   }
+  subscriptionLoading.value = true
   try {
     await fetchMe()
     syncSubscriptionDraftFromUser()
+    syncAllowDeletionFromUser()
   } catch (e: unknown) {
-    subscriptionLoadError.value = getApiErrorMessage(e)
+    subscriptionLoadError.value =
+      getApiErrorMessage(e) || t('admin.settings.subscription.load_error_title')
+  } finally {
+    subscriptionLoading.value = false
   }
 }
 
@@ -75,6 +149,7 @@ async function saveSubscriptionPlan() {
     })
     await fetchMe()
     syncSubscriptionDraftFromUser()
+    syncAllowDeletionFromUser()
     toast.add({
       severity: 'success',
       summary: t('admin.settings.subscription.saved'),
@@ -121,25 +196,40 @@ const form = reactive({
 })
 const submitAttempted = ref(false)
 const rules = computed(() => ({
-  username: { required, minLength: minLength(3) },
+  username: usernameLocked.value
+    ? {}
+    : { required, minLength: minLength(3) },
   name: { required, minLength: minLength(3) },
-  password: {
-    minLengthWhenFilled: helpers.withMessage(
-      'password min',
-      (v: unknown) => !String(v ?? '') || String(v ?? '').trim().length >= 6,
-    ),
-  },
-  currentPassword: {
-    requiredWhenPassword: helpers.withMessage(
-      'current password required',
-      (v: unknown) => !form.password.trim() || String(v ?? '').trim().length > 0,
-    ),
-  },
+  password: passwordLocked.value
+    ? {}
+    : {
+        minLengthWhenFilled: helpers.withMessage(
+          'password min',
+          (v: unknown) => !String(v ?? '') || String(v ?? '').trim().length >= 6,
+        ),
+      },
+  currentPassword: passwordLocked.value
+    ? {}
+    : {
+        requiredWhenPassword: helpers.withMessage(
+          'current password required',
+          (v: unknown) => !form.password.trim() || String(v ?? '').trim().length > 0,
+        ),
+      },
 }))
 const v$ = useVuelidate(rules, form, { $autoDirty: true })
 const formErrors = computed(() => ({
-  username: form.username.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
+  username:
+    usernameLocked.value || form.username.trim().length >= 3
+      ? ''
+      : t('admin.validation.min_chars', { min: 3 }),
   name: form.name.trim().length >= 3 ? '' : t('admin.validation.min_chars', { min: 3 }),
+  email:
+    emailLocked.value || !form.email.trim()
+      ? ''
+      : EMAIL_RE.test(form.email.trim())
+        ? ''
+        : t('admin.validation.invalid_email'),
   currentPassword:
     !form.password.trim() || form.currentPassword.trim()
       ? ''
@@ -154,46 +244,62 @@ const canSave = computed(
     !v$.value.$invalid &&
     !formErrors.value.username &&
     !formErrors.value.name &&
+    !formErrors.value.email &&
     !formErrors.value.currentPassword &&
     !formErrors.value.password,
 )
 const showUsernameError = computed(
-  () => (submitAttempted.value || v$.value.username.$dirty) && !!formErrors.value.username,
+  () =>
+    !usernameLocked.value &&
+    (submitAttempted.value || v$.value.username.$dirty) &&
+    !!formErrors.value.username,
 )
 const showNameError = computed(
   () => (submitAttempted.value || v$.value.name.$dirty) && !!formErrors.value.name,
 )
 const showCurrentPasswordError = computed(
   () =>
+    !passwordLocked.value &&
     (submitAttempted.value || v$.value.currentPassword.$dirty) &&
     !!formErrors.value.currentPassword,
 )
 const showPasswordError = computed(
-  () => (submitAttempted.value || v$.value.password.$dirty) && !!formErrors.value.password,
+  () =>
+    !passwordLocked.value &&
+    (submitAttempted.value || v$.value.password.$dirty) &&
+    !!formErrors.value.password,
+)
+const showEmailError = computed(
+  () => !emailLocked.value && (submitAttempted.value || !!form.email.trim()) && !!formErrors.value.email,
 )
 
-async function loadProfile() {
+async function loadProfile(opts?: { quiet?: boolean }) {
   if (!token.value) return
-  loading.value = true
+  if (!opts?.quiet) {
+    loading.value = true
+    profileLoadError.value = null
+  }
   try {
     const u = await authFetch<UserRow>(apiUrl('/users/me'))
     form.username = u.username
     form.email = u.email ?? ''
+    emailLocked.value = !!(u.email && String(u.email).trim())
     form.name = u.name
     form.lastName = (u.lastName ?? '').trim()
     form.role = u.role
     form.currentPassword = ''
     form.password = ''
     submitAttempted.value = false
+    syncAllowDeletionFromUser()
     v$.value.$reset()
-  } catch {
-    toast.add({
-      severity: 'error',
-      summary: t('admin.profile.load_error'),
-      life: 5000,
-    })
+  } catch (e: unknown) {
+    if (!opts?.quiet) {
+      profileLoadError.value = getApiErrorMessage(e, t('admin.profile.load_error'))
+    }
   } finally {
-    loading.value = false
+    if (!opts?.quiet) {
+      loading.value = false
+    }
   }
 }
 
@@ -208,11 +314,19 @@ async function save() {
   saving.value = true
   try {
     const body: Record<string, string> = {
-      username: form.username.trim(),
       name: form.name.trim(),
       lastName: form.lastName.trim(),
     }
-    if (newPw) {
+    if (!usernameLocked.value) {
+      body.username = form.username.trim()
+    }
+    if (!emailLocked.value) {
+      const em = form.email.trim()
+      if (em) {
+        body.email = em
+      }
+    }
+    if (!passwordLocked.value && newPw) {
       body.password = newPw
       body.currentPassword = form.currentPassword.trim()
     }
@@ -223,6 +337,7 @@ async function save() {
     form.currentPassword = ''
     form.password = ''
     await fetchMe()
+    await loadProfile({ quiet: true })
     toast.add({
       severity: 'success',
       summary: t('admin.profile.saved'),
@@ -257,12 +372,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="p-6 space-y-6 max-w-3xl">
-    <div>
-      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+  <section class="admin-page mx-auto max-w-3xl space-y-4 sm:space-y-6">
+    <div class="min-w-0">
+      <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">
         {{ t('admin.profile.title') }}
       </h1>
-      <p class="mt-1 text-sm text-muted-color">
+      <p class="mt-1 text-xs text-muted-color sm:text-sm">
         {{ t('admin.profile.intro') }}
       </p>
     </div>
@@ -278,10 +393,22 @@ onMounted(() => {
         <p class="text-sm text-muted-color mb-4">
           {{ t('admin.settings.subscription.hint') }}
         </p>
-        <Message v-if="subscriptionLoadError" severity="error" :closable="false" class="mb-4 w-full">
-          {{ subscriptionLoadError }}
-        </Message>
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-end">
+        <AdminDataState
+          :loading="subscriptionLoading"
+          :error="subscriptionLoadError"
+          :empty="false"
+          :content-card="false"
+          :error-title="t('admin.settings.subscription.load_error_title')"
+          @retry="loadSubscriptionContext"
+        >
+          <template #loading>
+            <div class="mb-4 space-y-3">
+              <Skeleton height="2.5rem" class="max-w-md rounded-lg" />
+              <Skeleton height="5rem" class="rounded-lg" />
+              <Skeleton height="8rem" class="rounded-lg" />
+            </div>
+          </template>
+        <div class="admin-toolbar-responsive flex flex-col gap-4 sm:flex-row sm:items-end">
           <div class="flex-1 min-w-0">
             <label class="mb-1 block text-sm font-medium text-surface-700 dark:text-surface-200">
               {{ t('admin.settings.subscription.select_label') }}
@@ -303,6 +430,32 @@ onMounted(() => {
             @click="saveSubscriptionPlan"
           />
         </div>
+        <div
+          class="mt-6 border-t border-surface-200 pt-4 dark:border-surface-700"
+        >
+          <p class="mb-1 text-sm font-medium text-surface-900 dark:text-surface-0">
+            {{ t('admin.profile.user_deletion_policy_title') }}
+          </p>
+          <p class="mb-3 text-sm text-muted-color">
+            {{ t('admin.profile.user_deletion_policy_hint') }}
+          </p>
+          <div class="flex flex-wrap items-center gap-3">
+            <InputSwitch
+              :model-value="allowUserDeletionDraft"
+              :disabled="allowUserDeletionSaving"
+              :aria-label="t('admin.profile.user_deletion_policy_title')"
+              @update:model-value="onAllowUserDeletionChange"
+            />
+            <span class="text-sm text-surface-800 dark:text-surface-100">
+              {{
+                allowUserDeletionDraft
+                  ? t('admin.profile.user_deletion_on')
+                  : t('admin.profile.user_deletion_off')
+              }}
+            </span>
+          </div>
+        </div>
+
         <div class="mt-6 border-t border-surface-200 pt-4 dark:border-surface-700">
           <p class="text-sm font-medium text-surface-900 dark:text-surface-0 mb-3">
             {{ t('admin.settings.subscription.features_title') }}
@@ -324,31 +477,51 @@ onMounted(() => {
             </li>
           </ul>
         </div>
+        </AdminDataState>
       </template>
     </Card>
 
-    <div
-      v-if="loading"
-      class="rounded-xl border border-surface-200 bg-surface-0 p-6 dark:border-surface-700 dark:bg-surface-900"
-      role="status"
-      :aria-label="t('admin.profile.loading')"
+    <AdminDataState
+      :loading="loading"
+      :error="profileLoadError"
+      :empty="false"
+      :content-card="false"
+      :error-title="t('admin.profile.load_error')"
+      @retry="loadProfile"
     >
-      <div class="flex items-center gap-3 text-muted-color">
-        <i class="pi pi-spin pi-spinner text-xl" aria-hidden="true" />
-        <span>{{ t('admin.profile.loading') }}</span>
-      </div>
-    </div>
-
+      <template #loading>
+        <div
+          class="rounded-xl border border-surface-200 bg-surface-0 p-6 dark:border-surface-700 dark:bg-surface-900"
+          role="status"
+          :aria-label="t('admin.profile.loading')"
+        >
+          <div class="flex items-center gap-3 text-muted-color">
+            <i class="pi pi-spin pi-spinner text-xl" aria-hidden="true" />
+            <span>{{ t('admin.profile.loading') }}</span>
+          </div>
+        </div>
+      </template>
     <div
-      v-else
       class="rounded-xl border border-surface-200 bg-surface-0 p-6 shadow-sm dark:border-surface-700 dark:bg-surface-900 space-y-4"
     >
       <div>
         <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">Email</label>
-        <InputText :model-value="form.email" class="w-full" disabled />
+        <InputText
+          v-model="form.email"
+          class="w-full"
+          type="email"
+          autocomplete="email"
+          :disabled="emailLocked"
+          :invalid="showEmailError"
+        />
         <p class="mt-1 text-xs text-muted-color">
-          {{ t('admin.profile.email_readonly') }}
+          {{
+            emailLocked
+              ? t('admin.profile.email_readonly')
+              : t('admin.profile.email_optional_hint')
+          }}
         </p>
+        <p v-if="showEmailError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.email }}</p>
       </div>
 
       <div>
@@ -369,7 +542,19 @@ onMounted(() => {
         <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">
           {{ t('admin.profile.username') }}
         </label>
-        <InputText v-model="form.username" class="w-full" autocomplete="username" />
+        <InputText
+          v-model="form.username"
+          class="w-full"
+          autocomplete="username"
+          :disabled="usernameLocked"
+        />
+        <p class="mt-1 text-xs text-muted-color">
+          {{
+            usernameLocked
+              ? t('admin.profile.username_readonly')
+              : t('admin.profile.username_editable_hint')
+          }}
+        </p>
         <p v-if="showUsernameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.username }}</p>
       </div>
 
@@ -388,44 +573,51 @@ onMounted(() => {
         <InputText v-model="form.lastName" class="w-full" autocomplete="family-name" />
       </div>
 
-      <div>
-        <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">
-          {{ t('admin.profile.current_password') }}
-        </label>
-        <Password
-          v-model="form.currentPassword"
-          :invalid="showCurrentPasswordError"
-          class="block w-full"
-          input-class="w-full"
-          toggle-mask
-          :feedback="false"
-          :placeholder="t('admin.profile.current_password_placeholder')"
-          autocomplete="current-password"
-        />
-        <p class="mt-1 text-xs text-muted-color">
-          {{ t('admin.profile.current_password_hint') }}
+      <template v-if="passwordLocked">
+        <p class="text-sm text-muted-color -mt-1">
+          {{ t('admin.profile.password_readonly') }}
         </p>
-        <p v-if="showCurrentPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.currentPassword }}</p>
-      </div>
+      </template>
+      <template v-else>
+        <div>
+          <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">
+            {{ t('admin.profile.current_password') }}
+          </label>
+          <Password
+            v-model="form.currentPassword"
+            :invalid="showCurrentPasswordError"
+            class="block w-full"
+            input-class="w-full"
+            toggle-mask
+            :feedback="false"
+            :placeholder="t('admin.profile.current_password_placeholder')"
+            autocomplete="current-password"
+          />
+          <p class="mt-1 text-xs text-muted-color">
+            {{ t('admin.profile.current_password_hint') }}
+          </p>
+          <p v-if="showCurrentPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.currentPassword }}</p>
+        </div>
 
-      <div>
-        <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">
-          {{ t('admin.profile.new_password') }}
-        </label>
-        <Password
-          v-model="form.password"
-          :invalid="showPasswordError"
-          class="block w-full"
-          input-class="w-full"
-          toggle-mask
-          :feedback="false"
-          :placeholder="t('admin.profile.password_placeholder')"
-          autocomplete="new-password"
-        />
-        <p v-if="showPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.password }}</p>
-      </div>
+        <div>
+          <label class="text-sm block mb-1 text-surface-700 dark:text-surface-200">
+            {{ t('admin.profile.new_password') }}
+          </label>
+          <Password
+            v-model="form.password"
+            :invalid="showPasswordError"
+            class="block w-full"
+            input-class="w-full"
+            toggle-mask
+            :feedback="false"
+            :placeholder="t('admin.profile.password_placeholder')"
+            autocomplete="new-password"
+          />
+          <p v-if="showPasswordError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.password }}</p>
+        </div>
+      </template>
 
-      <div class="flex justify-end pt-2">
+      <div class="admin-toolbar-responsive flex justify-end pt-2">
         <Button
           :label="t('admin.profile.save')"
           icon="pi pi-check"
@@ -435,5 +627,6 @@ onMounted(() => {
         />
       </div>
     </div>
+    </AdminDataState>
   </section>
 </template>

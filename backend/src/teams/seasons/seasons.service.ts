@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateSeasonDto } from './dto/create-season.dto';
 import { UpdateSeasonDto } from './dto/update-season.dto';
 
 @Injectable()
 export class SeasonsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
+  ) {}
 
   list(tenantId: string) {
     return this.prisma.season.findMany({
@@ -49,6 +53,7 @@ export class SeasonsService {
       where: { id, tenantId },
     });
     if (!row) throw new NotFoundException('Season not found');
+    await this.tournamentTemplates.assertCanDeleteSeason(tenantId, id);
     await this.prisma.season.delete({ where: { id } });
     return { success: true };
   }

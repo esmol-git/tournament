@@ -171,7 +171,9 @@ async function ensureTeamRosters(
               create: {
                 tenantId,
                 firstName: `RRP${String(idx + 1).padStart(2, '0')}`,
-                lastName: team.name.replace(/\s+/g, '').slice(0, 20) + String(createdAtStamp + idx),
+                lastName:
+                  team.name.replace(/\s+/g, '').slice(0, 20) +
+                  String(createdAtStamp + idx),
               },
             },
           })),
@@ -184,17 +186,23 @@ async function ensureTeamRosters(
 }
 
 async function main() {
-  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    logger: false,
+  });
   try {
     const prisma = app.get(PrismaService);
     const tournamentsService = app.get(TournamentsService);
     const matchesService = app.get(MatchesService);
 
     const tenantSlug =
-      process.env.ROUND_ROBIN_ACTIVE_TENANT_SLUG?.trim() || 'load-test-1775032507811';
+      process.env.ROUND_ROBIN_ACTIVE_TENANT_SLUG?.trim() ||
+      'load-test-1775032507811';
     const teamsCount = toPositiveInt(process.env.ROUND_ROBIN_ACTIVE_TEAMS, 20);
     const cycles = toPositiveInt(process.env.ROUND_ROBIN_ACTIVE_CYCLES, 2);
-    const playedRatio = toRatio(process.env.ROUND_ROBIN_ACTIVE_PLAYED_RATIO, 0.5);
+    const playedRatio = toRatio(
+      process.env.ROUND_ROBIN_ACTIVE_PLAYED_RATIO,
+      0.5,
+    );
     const seed = toPositiveInt(process.env.ROUND_ROBIN_ACTIVE_SEED, 20260401);
     const rng = makeRng(seed);
     const stamp = Date.now();
@@ -206,7 +214,12 @@ async function main() {
     if (!tenant) throw new Error(`Tenant not found: ${tenantSlug}`);
 
     const teams = await ensureTeams(prisma, tenant.id, teamsCount);
-    const rosterStats = await ensureTeamRosters(prisma, tenant.id, teams, MIN_PLAYERS_PER_TEAM);
+    const rosterStats = await ensureTeamRosters(
+      prisma,
+      tenant.id,
+      teams,
+      MIN_PLAYERS_PER_TEAM,
+    );
 
     const tournament = await prisma.tournament.create({
       data: {
@@ -257,7 +270,9 @@ async function main() {
     const totalMatches = matches.length;
     const playedTarget = Math.floor(totalMatches * playedRatio);
 
-    const teamIds = Array.from(new Set(matches.flatMap((m) => [m.homeTeamId, m.awayTeamId])));
+    const teamIds = Array.from(
+      new Set(matches.flatMap((m) => [m.homeTeamId, m.awayTeamId])),
+    );
     const rosterRows = await prisma.teamPlayer.findMany({
       where: { teamId: { in: teamIds }, isActive: true },
       select: { teamId: true, playerId: true },
@@ -281,23 +296,34 @@ async function main() {
 
       const score = buildGroupScore(rng);
       const events: ProtocolEventInput[] = [];
-      events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers));
-      events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers));
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers),
+      );
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers),
+      );
       events.push(...buildCardEvents(rng, MatchTeamSide.HOME, homePlayers));
       events.push(...buildCardEvents(rng, MatchTeamSide.AWAY, awayPlayers));
       events.sort((a, b) => (a.minute ?? 999) - (b.minute ?? 999));
 
-      await matchesService.updateProtocol(tournament.id, match.id, UserRole.TENANT_ADMIN, {
-        homeScore: score.home,
-        awayScore: score.away,
-        status: MatchStatus.PLAYED,
-        events,
-      });
+      await matchesService.updateProtocol(
+        tournament.id,
+        match.id,
+        UserRole.TENANT_ADMIN,
+        {
+          homeScore: score.home,
+          awayScore: score.away,
+          status: MatchStatus.PLAYED,
+          events,
+        },
+      );
 
       played += 1;
       goals += events.filter((e) => e.type === MatchEventType.GOAL).length;
       cards += events.filter((e) => e.type === MatchEventType.CARD).length;
-      assists += events.filter((e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId).length;
+      assists += events.filter(
+        (e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId,
+      ).length;
     }
 
     await prisma.tournament.update({
@@ -311,7 +337,9 @@ async function main() {
     console.log(`TOURNAMENT name=${tournament.name}`);
     console.log(`FORMAT single_group cycles=${cycles} teams=${teamsCount}`);
     console.log(`MATCHES total=${totalMatches} played=${played}`);
-    console.log(`SIMULATION_EVENTS goals=${goals} assists=${assists} cards=${cards}`);
+    console.log(
+      `SIMULATION_EVENTS goals=${goals} assists=${assists} cards=${cards}`,
+    );
     console.log(`ROSTER playersCreated=${rosterStats.createdPlayers}`);
   } finally {
     await app.close();

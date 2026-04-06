@@ -7,6 +7,8 @@ export interface TeamRow {
   category: string | null
   ageGroupId?: string | null
   ageGroup?: { id: string; name: string; shortLabel?: string | null } | null
+  teamCategoryId?: string | null
+  teamCategory?: { id: string; name: string } | null
   regionId?: string | null
   region?: { id: string; name: string } | null
   logoUrl: string | null

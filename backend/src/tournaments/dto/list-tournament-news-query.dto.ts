@@ -13,7 +13,10 @@ export class ListTournamentNewsQueryDto {
   @IsBoolean()
   publishedOnly?: boolean;
 
-  @ApiPropertyOptional({ enum: NewsSection, description: 'Фильтр по разделу новости' })
+  @ApiPropertyOptional({
+    enum: NewsSection,
+    description: 'Фильтр по разделу новости',
+  })
   @IsOptional()
   @IsEnum(NewsSection)
   section?: NewsSection;

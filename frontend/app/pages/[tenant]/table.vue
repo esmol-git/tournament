@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { useAutoAnimate } from '@formkit/auto-animate/vue'
+import { useQueryClient } from '@tanstack/vue-query'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { publicTenantQueryKeys } from '~/composables/public/publicTenantQueryKeys'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import type { MatchRow, TableRow, TournamentDetails } from '~/types/tournament-admin'
 
@@ -12,7 +13,6 @@ import PublicTournamentTabs from '~/app/components/public/PublicTournamentTabs.v
 import { getTournamentCapabilities } from '~/utils/tournamentFormatCapabilities'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
 import { usePublicTournamentWorkspace } from '~/composables/usePublicTournamentWorkspace'
-import { PUBLIC_AUTO_ANIMATE } from '~/constants/publicMotion'
 import { usePublicTournamentSidebarTopStatsStore } from '~/composables/usePublicTournamentSidebarTopStatsStore'
 
 definePageMeta({
@@ -23,7 +23,21 @@ definePageMeta({
 
 const route = useRoute()
 const router = useRouter()
+const queryClient = useQueryClient()
 const { fetchTournamentDetail, fetchTable: fetchTablePublic, fetchTablePage, fetchRoster } = usePublicTournamentFetch()
+
+/** Полный список строк таблицы на первой странице — дублируем в ключ `tournamentTable`, чтобы шахматка/календарь не делали лишний запрос. */
+function primePublicTournamentTableFromPage(
+  tenantSlug: string,
+  tournamentId: string,
+  rows: TableRow[],
+  groupId?: string,
+) {
+  queryClient.setQueryData(publicTenantQueryKeys.tournamentTable(tenantSlug, tournamentId, ''), rows)
+  if (groupId) {
+    queryClient.setQueryData(publicTenantQueryKeys.tournamentTable(tenantSlug, tournamentId, groupId), rows)
+  }
+}
 
 const { ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const {
@@ -42,7 +56,6 @@ const errorText = ref('')
 const pageReady = ref(false)
 
 const viewType = ref<'table' | 'chessboard' | 'progress' | 'playoff'>('table')
-const tableDataLoadedForTid = ref<string | null>(null)
 const teamLogosLoadedForTid = ref<string | null>(null)
 const teamLogoById = ref<Record<string, string>>({})
 const playerById = ref<Record<string, { fullName: string; teamName: string | null; photoUrl: string | null }>>({})
@@ -103,7 +116,8 @@ const visibleGroupTableSections = computed(() => {
   if (!groupTableSections.value.length) return []
   if (groupTableViewMode.value === 'list') return groupTableSections.value
   const active = groupTableSections.value.find((sec) => sec.id === activeGroupSectionId.value)
-  return active ? [active] : [groupTableSections.value[0]]
+  const first = groupTableSections.value[0]
+  return active ? [active] : first ? [first] : []
 })
 
 const leader = computed(() => {
@@ -116,12 +130,27 @@ const isPlayoffTournament = computed(
 )
 
 const matchesCountDisplay = computed(() => {
+  const s = tournamentDetails.value?.summary
+  if (
+    s &&
+    typeof s.matchesPlayedTotal === 'number' &&
+    typeof s.matchesTotal === 'number' &&
+    s.matchesTotal >= 0
+  ) {
+    const played = s.matchesPlayedTotal
+    const total = s.matchesTotal
+    if (total === 0) return '0'
+    /** Таблица/шахматка учитывают только матчи со счётом; в календаре может быть больше записей. */
+    if (played < total) return `${played} из ${total}`
+    return String(total)
+  }
+
   const fromSummary = tournamentDetails.value?.summary?.matchesTotal
-  if (typeof fromSummary === 'number' && fromSummary >= 0) return fromSummary
+  if (typeof fromSummary === 'number' && fromSummary >= 0) return String(fromSummary)
   const fromTotal = tournamentDetails.value?.matchesTotal
-  if (typeof fromTotal === 'number' && fromTotal >= 0) return fromTotal
+  if (typeof fromTotal === 'number' && fromTotal >= 0) return String(fromTotal)
   const fromDetails = tournamentDetails.value?.matches?.length
-  if (typeof fromDetails === 'number' && fromDetails > 0) return fromDetails
+  if (typeof fromDetails === 'number' && fromDetails > 0) return String(fromDetails)
 
   // Fallback for partial data: table stores team appearances, so divide by 2.
   const teamAppearances = groupTableSections.value.length
@@ -130,7 +159,7 @@ const matchesCountDisplay = computed(() => {
         0,
       )
     : singleTableRows.value.reduce((acc, row) => acc + Number(row.played ?? 0), 0)
-  return Math.floor(teamAppearances / 2)
+  return String(Math.floor(teamAppearances / 2))
 })
 
 const teamsCountDisplay = computed(() => {
@@ -158,15 +187,6 @@ const factsThirdValue = computed(() => {
     return tournamentDetails.value?.summary?.championTeamName ?? 'Определится после финала'
   }
   return hasSplitGroups.value ? 'Отдельно по группам' : (leader.value?.teamName ?? '—')
-})
-
-const groupsCountLabel = computed(() => {
-  const count = groupTableSections.value.length
-  const mod10 = count % 10
-  const mod100 = count % 100
-  if (mod10 === 1 && mod100 !== 11) return `${count} группа`
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${count} группы`
-  return `${count} групп`
 })
 
 const hasSelectedTournament = computed(
@@ -238,13 +258,6 @@ function resolveTeamLogo(teamId: string | null | undefined) {
   const logo = teamLogoById.value[teamId]
   if (typeof logo === 'string' && logo.trim().length > 0) return logo
   return TEAM_PLACEHOLDER_SRC
-}
-
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
 }
 
 function readAssistPlayerId(payload: Record<string, unknown> | null | undefined): string | null {
@@ -337,20 +350,20 @@ const podium = computed(() => {
     const thirdResult = third ? resolveWinnerLoser(third) : null
 
     if (finalResult) {
-      slots[0].team = finalResult.winner
-      slots[1].team = finalResult.loser
+      slots[0]!.team = finalResult.winner
+      slots[1]!.team = finalResult.loser
     }
     if (thirdResult) {
-      slots[2].team = thirdResult.winner
+      slots[2]!.team = thirdResult.winner
     }
     return slots
   }
 
   if (!hasSplitGroups.value && singleTableRows.value.length) {
     const sorted = singleTableRows.value.slice().sort((a, b) => a.position - b.position)
-    slots[0].team = sorted[0]?.teamName ?? null
-    slots[1].team = sorted[1]?.teamName ?? null
-    slots[2].team = sorted[2]?.teamName ?? null
+    slots[0]!.team = sorted[0]?.teamName ?? null
+    slots[1]!.team = sorted[1]?.teamName ?? null
+    slots[2]!.team = sorted[2]?.teamName ?? null
   }
   return slots
 })
@@ -498,7 +511,7 @@ function parseQueryView(
 
 function debugLog(event: string, meta?: Record<string, unknown>) {
   if (!import.meta.dev) return
-  // eslint-disable-next-line no-console
+   
   console.debug('[public-table]', event, { ...debugRequestCounts.value, ...(meta ?? {}) })
 }
 
@@ -532,7 +545,6 @@ async function fetchTournamentDetails() {
     groupTableSections.value = []
     factsLeaderRow.value = null
     factsLeaderLoadedForTid.value = null
-    tableDataLoadedForTid.value = null
     teamLogosLoadedForTid.value = null
     teamLogoById.value = {}
     playerById.value = {}
@@ -541,9 +553,7 @@ async function fetchTournamentDetails() {
 
   errorText.value = ''
   const tid = selectedTournamentId.value
-  if (tournamentDetails.value?.id === tid) return
   const reqId = ++detailsRequestId.value
-  tableDataLoadedForTid.value = null
   factsLeaderRow.value = null
   factsLeaderLoadedForTid.value = null
   try {
@@ -601,12 +611,12 @@ async function ensureFactsLeaderLoaded() {
     return
   }
   if (singleTableRows.value.length > 0) {
-    factsLeaderRow.value = singleTableRows.value[0]
+    factsLeaderRow.value = singleTableRows.value[0] ?? null
     factsLeaderLoadedForTid.value = tid
     return
   }
   try {
-    const groupId = details.groups?.length === 1 ? details.groups[0].id : undefined
+    const groupId = details.groups?.length === 1 ? details.groups[0]?.id : undefined
     const page = await fetchTablePage(tenant.value, tid, {
       groupId,
       offset: 0,
@@ -625,7 +635,6 @@ async function fetchTable() {
     singleTableRows.value = []
     groupTableSections.value = []
     tournamentDetails.value = null
-    tableDataLoadedForTid.value = null
     return
   }
 
@@ -633,7 +642,6 @@ async function fetchTable() {
   if (!tournamentDetails.value) return
 
   const tid = selectedTournamentId.value
-  if (tableDataLoadedForTid.value === tid) return
 
   const reqId = ++tableRequestId.value
   loadingTable.value = true
@@ -658,8 +666,9 @@ async function fetchTable() {
       factsLeaderRow.value = null
       factsLeaderLoadedForTid.value = tid
     } else if (groups.length === 1) {
+      const onlyGroup = groups[0]!
       const page = await fetchTablePage(tenant.value, tid, {
-        groupId: groups[0].id,
+        groupId: onlyGroup.id,
         offset: 0,
         limit: TABLE_PAGE_SIZE,
       })
@@ -668,6 +677,9 @@ async function fetchTable() {
       groupTableSections.value = []
       factsLeaderRow.value = page.items[0] ?? null
       factsLeaderLoadedForTid.value = tid
+      if (page.items.length >= page.total) {
+        primePublicTournamentTableFromPage(tenant.value, tid, page.items, onlyGroup.id)
+      }
     } else {
       const page = await fetchTablePage(tenant.value, tid, {
         offset: 0,
@@ -678,9 +690,11 @@ async function fetchTable() {
       groupTableSections.value = []
       factsLeaderRow.value = page.items[0] ?? null
       factsLeaderLoadedForTid.value = tid
+      if (page.items.length >= page.total) {
+        primePublicTournamentTableFromPage(tenant.value, tid, page.items)
+      }
     }
     if (reqId !== tableRequestId.value || tid !== selectedTournamentId.value) return
-    tableDataLoadedForTid.value = tid
   } catch {
     if (reqId !== tableRequestId.value || tid !== selectedTournamentId.value) return
     singleTableRows.value = []
@@ -730,7 +744,7 @@ async function loadMoreTableRows() {
     debugLog('loadMoreTableRows:start', { tid, loaded: singleTableRows.value.length })
     const groupId =
       tournamentDetails.value?.groups?.length === 1
-        ? tournamentDetails.value.groups[0].id
+        ? tournamentDetails.value.groups[0]?.id
         : undefined
     const page = await fetchTablePage(tenant.value, tid, {
       groupId,
@@ -746,6 +760,21 @@ async function loadMoreTableRows() {
       return true
     })
     singleTableTotalRows.value = page.total
+    const details = tournamentDetails.value
+    const singleGroupId = details?.groups?.[0]?.id
+    if (
+      tid === selectedTournamentId.value &&
+      details?.groups?.length === 1 &&
+      singleGroupId &&
+      singleTableRows.value.length >= singleTableTotalRows.value
+    ) {
+      primePublicTournamentTableFromPage(
+        tenant.value,
+        tid,
+        [...singleTableRows.value],
+        singleGroupId,
+      )
+    }
   } finally {
     tableLoadingMore.value = false
   }
@@ -753,7 +782,6 @@ async function loadMoreTableRows() {
 
 watch(selectedTournamentId, async () => {
   if (isInitializing.value || suppressWatchEffects.value) return
-  tableDataLoadedForTid.value = null
   factsLeaderLoadedForTid.value = null
   factsLeaderRow.value = null
   await fetchTournamentDetails()
@@ -770,7 +798,8 @@ watch(
   (views) => {
     if (!views.length) return
     if (!views.includes(viewType.value)) {
-      viewType.value = views[0]
+      const first = views[0]
+      if (first) viewType.value = first
     }
   },
   { immediate: true },
@@ -799,13 +828,14 @@ watch(groupTableSections, (sections) => {
     activeGroupSectionId.value = null
     return
   }
-  if (!sections.some((sec) => sec.id === activeGroupSectionId.value)) {
-    activeGroupSectionId.value = sections[0].id
+  const firstSec = sections[0]
+  if (firstSec && !sections.some((sec) => sec.id === activeGroupSectionId.value)) {
+    activeGroupSectionId.value = firstSec.id
   }
 }, { immediate: true })
 
 watch(debugPanelCollapsed, (next) => {
-  if (!showDebugPanel || typeof window === 'undefined') return
+  if (!showDebugPanel.value || typeof window === 'undefined') return
   window.localStorage.setItem(DEBUG_PANEL_COLLAPSE_KEY, next ? '1' : '0')
 })
 
@@ -835,7 +865,7 @@ watch(
 )
 
 onMounted(() => {
-  if (showDebugPanel && typeof window !== 'undefined') {
+  if (showDebugPanel.value && typeof window !== 'undefined') {
     debugPanelCollapsed.value = window.localStorage.getItem(DEBUG_PANEL_COLLAPSE_KEY) === '1'
   }
 })
@@ -1037,15 +1067,13 @@ onBeforeUnmount(() => {
                       <td class="text-center">{{ row.position }}</td>
                       <td>
                         <div class="flex items-center gap-2">
-                          <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                            <img
-                              :src="resolveTeamLogo(row.teamId)"
-                              :alt="row.teamName"
-                              class="h-full w-full object-cover"
-                              loading="lazy"
-                              @error="handleTeamLogoError"
-                            />
-                          </div>
+                          <RemoteImage
+                            :src="resolveTeamLogo(row.teamId)"
+                            :alt="row.teamName"
+                            placeholder-icon="users"
+                            icon-class="text-xs"
+                            class="h-7 w-7 shrink-0 rounded-full"
+                          />
                           <span class="table-team-name font-medium text-surface-900">{{ row.teamName }}</span>
                         </div>
                       </td>
@@ -1094,15 +1122,13 @@ onBeforeUnmount(() => {
                   <td class="text-center">{{ row.position }}</td>
                   <td>
                     <div class="flex items-center gap-2">
-                      <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                        <img
-                          :src="resolveTeamLogo(row.teamId)"
-                          :alt="row.teamName"
-                          class="h-full w-full object-cover"
-                          loading="lazy"
-                          @error="handleTeamLogoError"
-                        />
-                      </div>
+                      <RemoteImage
+                        :src="resolveTeamLogo(row.teamId)"
+                        :alt="row.teamName"
+                        placeholder-icon="users"
+                        icon-class="text-xs"
+                        class="h-7 w-7 shrink-0 rounded-full"
+                      />
                       <span class="table-team-name font-medium text-surface-900">{{ row.teamName }}</span>
                     </div>
                   </td>

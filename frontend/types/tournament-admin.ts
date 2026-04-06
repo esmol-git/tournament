@@ -39,8 +39,16 @@ export interface TournamentDetails {
   /** На публичном API не отдаётся. */
   members?: {
     id: string
+    userId: string
     role: string
-    user: { id: string; email: string; name: string; role: string }
+    user: {
+      id: string
+      email: string | null
+      username?: string
+      name: string
+      lastName?: string
+      role: string
+    }
   }[]
   stadiumId?: string | null
   stadium?: {
@@ -49,6 +57,16 @@ export interface TournamentDetails {
     city?: string | null
     address?: string | null
   } | null
+  tournamentStadiums?: Array<{
+    stadiumId: string
+    sortOrder: number
+    stadium: {
+      id: string
+      name: string
+      city?: string | null
+      address?: string | null
+    }
+  }>
   seasonId?: string | null
   season?: { id: string; name: string; code?: string | null } | null
   competitionId?: string | null
@@ -84,7 +102,13 @@ export interface TournamentDetails {
     stage?: 'GROUP' | 'PLAYOFF'
     roundNumber?: number
     groupId?: string | null
-    playoffRound?: 'SEMIFINAL' | 'FINAL' | 'THIRD_PLACE' | null
+    playoffRound?:
+      | 'ROUND_OF_16'
+      | 'QUARTERFINAL'
+      | 'SEMIFINAL'
+      | 'FINAL'
+      | 'THIRD_PLACE'
+      | null
     status: string
     homeTeam: { id: string; name: string }
     awayTeam: { id: string; name: string }
@@ -97,6 +121,13 @@ export interface TournamentDetails {
       name: string
       code?: string | null
       scope: string
+    } | null
+    stadiumId?: string | null
+    stadium?: {
+      id: string
+      name: string
+      city?: string | null
+      address?: string | null
     } | null
     events?: {
       id: string

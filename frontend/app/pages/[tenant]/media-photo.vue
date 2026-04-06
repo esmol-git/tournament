@@ -84,7 +84,7 @@ onMounted(async () => {
           <div v-else key="content" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <article v-for="img in images" :key="img.id" class="public-card">
               <div class="aspect-[4/3] w-full overflow-hidden rounded-lg bg-surface-100">
-                <img :src="img.imageUrl" :alt="img.caption ?? ''" class="h-full w-full object-cover" loading="lazy" />
+                <RemoteImage :src="img.imageUrl" :alt="img.caption ?? ''" class="h-full w-full rounded-lg" />
               </div>
               <p class="mt-2 text-xs text-[#4f6b8c]">{{ img.tournamentName }}</p>
               <p v-if="img.caption" class="mt-1 text-sm text-[#123c67]">{{ img.caption }}</p>

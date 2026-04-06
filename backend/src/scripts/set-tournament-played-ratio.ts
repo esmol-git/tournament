@@ -137,11 +137,7 @@ async function main() {
         roundNumber: true,
         startTime: true,
       },
-      orderBy: [
-        { roundNumber: 'asc' },
-        { startTime: 'asc' },
-        { id: 'asc' },
-      ],
+      orderBy: [{ roundNumber: 'asc' }, { startTime: 'asc' }, { id: 'asc' }],
     });
     if (!matches.length) {
       throw new Error(`Tournament has no matches: ${tournament.id}`);
@@ -149,8 +145,9 @@ async function main() {
 
     const playedStatuses = new Set<MatchStatus>([MatchStatus.PLAYED]);
     const total = matches.length;
-    const initialPlayed = matches.filter((m) => playedStatuses.has(m.status))
-      .length;
+    const initialPlayed = matches.filter((m) =>
+      playedStatuses.has(m.status),
+    ).length;
     const targetPlayed = Math.floor(total * targetRatio);
 
     if (initialPlayed >= targetPlayed) {
@@ -191,23 +188,34 @@ async function main() {
 
       const score = buildScore(rng);
       const events: ProtocolEventInput[] = [];
-      events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers));
-      events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers));
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers),
+      );
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers),
+      );
       events.push(...buildCardEvents(rng, MatchTeamSide.HOME, homePlayers));
       events.push(...buildCardEvents(rng, MatchTeamSide.AWAY, awayPlayers));
       events.sort((a, b) => (a.minute ?? 999) - (b.minute ?? 999));
 
-      await matchesService.updateProtocol(tournament.id, match.id, UserRole.TENANT_ADMIN, {
-        homeScore: score.home,
-        awayScore: score.away,
-        status: MatchStatus.PLAYED,
-        events,
-      });
+      await matchesService.updateProtocol(
+        tournament.id,
+        match.id,
+        UserRole.TENANT_ADMIN,
+        {
+          homeScore: score.home,
+          awayScore: score.away,
+          status: MatchStatus.PLAYED,
+          events,
+        },
+      );
 
       updated += 1;
       goals += events.filter((e) => e.type === MatchEventType.GOAL).length;
       cards += events.filter((e) => e.type === MatchEventType.CARD).length;
-      assists += events.filter((e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId).length;
+      assists += events.filter(
+        (e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId,
+      ).length;
     }
 
     if (tournament.status !== TournamentStatus.ACTIVE) {
@@ -218,13 +226,19 @@ async function main() {
     }
 
     const finalPlayed = initialPlayed + updated;
-    console.log(`PROGRESS_OK tournament=${tournament.id} slug=${tournament.slug}`);
+    console.log(
+      `PROGRESS_OK tournament=${tournament.id} slug=${tournament.slug}`,
+    );
     console.log(`PROGRESS_NAME ${tournament.name}`);
     console.log(
       `PROGRESS_TARGET ratio=${targetRatio.toFixed(4)} targetPlayed=${targetPlayed}/${total}`,
     );
-    console.log(`PROGRESS_RESULT played=${finalPlayed}/${total} updated=${updated}`);
-    console.log(`PROGRESS_EVENTS goals=${goals} assists=${assists} cards=${cards}`);
+    console.log(
+      `PROGRESS_RESULT played=${finalPlayed}/${total} updated=${updated}`,
+    );
+    console.log(
+      `PROGRESS_EVENTS goals=${goals} assists=${assists} cards=${cards}`,
+    );
   } finally {
     await app.close();
   }

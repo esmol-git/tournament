@@ -1,0 +1,11 @@
+{
+  "eslint.workingDirectories": ["frontend"],
+  "eslint.useFlatConfig": true,
+  "typescript.tsdk": "frontend/node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "vetur.enable": false,
+  "vetur.ignoreProjectWarning": true,
+  "vetur.validation.template": false,
+  "vetur.validation.script": false,
+  "vetur.validation.style": false
+}

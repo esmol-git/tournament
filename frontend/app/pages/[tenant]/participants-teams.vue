@@ -36,13 +36,6 @@ function resolveImageUrl(url: string | null | undefined, fallback: string) {
   return normalized.length > 0 ? normalized : fallback
 }
 
-function handleImageError(event: Event, fallback: string) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(fallback)) return
-  target.src = fallback
-}
-
 onMounted(async () => {
   loading.value = true
   errorText.value = ''
@@ -103,15 +96,12 @@ onMounted(async () => {
           >
             <article v-for="team in teams" :key="team.id" class="public-card teams-card">
               <div class="teams-card__head">
-                <div class="h-12 w-12 overflow-hidden rounded-full">
-                  <img
-                    :src="resolveImageUrl(team.logoUrl, TEAM_PLACEHOLDER_SRC)"
-                    :alt="team.name"
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                    @error="(e) => handleImageError(e, TEAM_PLACEHOLDER_SRC)"
-                  />
-                </div>
+                <RemoteImage
+                  :src="resolveImageUrl(team.logoUrl, TEAM_PLACEHOLDER_SRC)"
+                  :alt="team.name"
+                  placeholder-icon="users"
+                  class="h-12 w-12 shrink-0 rounded-full"
+                />
                 <div class="min-w-0">
                   <p class="team-name-clamp text-base font-semibold text-[#123c67]">{{ team.name }}</p>
                   <p v-if="team.category" class="team-category-clamp text-xs text-[#4f6b8c]">{{ team.category }}</p>

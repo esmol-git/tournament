@@ -16,8 +16,9 @@ import {
 
 export const SUBSCRIPTION_PLAN_FEATURE_KEY = 'subscriptionPlanFeature';
 
-export const RequireSubscriptionPlanFeature = (feature: SubscriptionPlanFeatureKey) =>
-  SetMetadata(SUBSCRIPTION_PLAN_FEATURE_KEY, feature);
+export const RequireSubscriptionPlanFeature = (
+  feature: SubscriptionPlanFeatureKey,
+) => SetMetadata(SUBSCRIPTION_PLAN_FEATURE_KEY, feature);
 
 /**
  * После JwtAuthGuard. Проверяет `Tenant.subscriptionPlan` по метаданным контроллера.
@@ -30,10 +31,12 @@ export class SubscriptionPlanFeatureGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const feature = this.reflector.getAllAndOverride<SubscriptionPlanFeatureKey | undefined>(
-      SUBSCRIPTION_PLAN_FEATURE_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    const feature = this.reflector.getAllAndOverride<
+      SubscriptionPlanFeatureKey | undefined
+    >(SUBSCRIPTION_PLAN_FEATURE_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
     if (!feature) return true;
 
     const req = context.switchToHttp().getRequest<{ user?: JwtPayload }>();

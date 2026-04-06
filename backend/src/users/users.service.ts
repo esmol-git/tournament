@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { ApiErrorCode } from '../common/api-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
 import { UserRole } from '@prisma/client';
 import { UserQueryDto } from './dto/user-query.dto';
@@ -13,7 +14,10 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { UpdateTenantSocialLinksDto } from './dto/update-tenant-social-links.dto';
-import { tenantHasSubscriptionPlanFeature } from '../auth/subscription-plan-features.util';
+import {
+  maxUsersPerTenant,
+  tenantHasSubscriptionPlanFeature,
+} from '../auth/subscription-plan-features.util';
 import { UpdateTenantPublicBrandingDto } from './dto/update-tenant-public-branding.dto';
 import { UpdateMyTenantSubscriptionPlanDto } from './dto/update-my-tenant-subscription-plan.dto';
 import { UiSettingsDto } from './dto/ui-settings.dto';
@@ -25,11 +29,30 @@ const PUBLIC_LANDING_SET = new Set<string>([
   'participants',
   'media',
 ]);
-const PUBLIC_TAB_ORDER_VALUES = ['table', 'chessboard', 'progress', 'playoff'] as const;
+const PUBLIC_TAB_ORDER_VALUES = [
+  'table',
+  'chessboard',
+  'progress',
+  'playoff',
+] as const;
 
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** Минимальные поля для JWT-валидации (актуальная роль и блокировка). */
+  async findForJwtValidation(userId: string) {
+    return this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        tenantId: true,
+        role: true,
+        blocked: true,
+      },
+    });
+  }
 
   private normalizeOptionalLink(value?: string | null) {
     if (value === undefined) return undefined;
@@ -60,7 +83,11 @@ export class UsersService {
       .filter(Boolean);
     const unique: string[] = [];
     for (const item of raw) {
-      if (!PUBLIC_TAB_ORDER_VALUES.includes(item as (typeof PUBLIC_TAB_ORDER_VALUES)[number])) {
+      if (
+        !PUBLIC_TAB_ORDER_VALUES.includes(
+          item as (typeof PUBLIC_TAB_ORDER_VALUES)[number],
+        )
+      ) {
         continue;
       }
       if (!unique.includes(item)) unique.push(item);
@@ -85,23 +112,33 @@ export class UsersService {
     userId: string,
     tenantId: string,
     dto: UpdateMyProfileDto,
+    actorRole: UserRole,
   ) {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { password: true, tenantId: true, email: true, username: true },
+    });
+    if (!row || row.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+
     const newPass =
       dto.password !== undefined && String(dto.password).trim() !== ''
         ? dto.password
         : undefined;
 
     if (newPass) {
+      if (
+        actorRole !== UserRole.TENANT_ADMIN &&
+        actorRole !== UserRole.SUPER_ADMIN
+      ) {
+        throw new BadRequestException(
+          'Пароль может изменить только администратор организации в разделе «Пользователи».',
+        );
+      }
       const cur = dto.currentPassword?.trim();
       if (!cur) {
         throw new BadRequestException('Укажите текущий пароль');
-      }
-      const row = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { password: true, tenantId: true },
-      });
-      if (!row || row.tenantId !== tenantId) {
-        throw new NotFoundException('User not found');
       }
       const match = await bcrypt.compare(cur, row.password);
       if (!match) {
@@ -109,12 +146,70 @@ export class UsersService {
       }
     }
 
+    const storedEmail = row.email != null ? String(row.email).trim() : '';
+    const hasStoredEmail = storedEmail.length > 0;
+    let emailToSet: string | undefined;
+
+    if (dto.email !== undefined) {
+      if (hasStoredEmail) {
+        if (dto.email !== storedEmail.toLowerCase()) {
+          throw new BadRequestException(
+            'Указанный email изменить нельзя. Обратитесь к администратору организации.',
+          );
+        }
+      } else if (dto.email) {
+        const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dto.email);
+        if (!emailOk) {
+          throw new BadRequestException('Укажите корректный email');
+        }
+        const taken = await this.prisma.user.findFirst({
+          where: {
+            email: dto.email,
+            id: { not: userId },
+          },
+          select: { id: true },
+        });
+        if (taken) {
+          throw new BadRequestException(
+            'Пользователь с таким email уже существует',
+          );
+        }
+        emailToSet = dto.email;
+      }
+    }
+
     const patch: UpdateUserDto = {};
-    if (dto.username !== undefined) patch.username = dto.username;
+    if (dto.username !== undefined) {
+      const next = dto.username.trim().toLowerCase();
+      const cur = row.username.trim().toLowerCase();
+      if (next !== cur) {
+        if (
+          actorRole !== UserRole.TENANT_ADMIN &&
+          actorRole !== UserRole.SUPER_ADMIN
+        ) {
+          throw new BadRequestException(
+            'Логин может изменить только администратор организации в разделе «Пользователи».',
+          );
+        }
+        patch.username = dto.username;
+      }
+    }
     if (dto.name !== undefined) patch.name = dto.name;
     if (dto.lastName !== undefined) patch.lastName = dto.lastName;
     if (newPass) patch.password = newPass;
-    return this.update(tenantId, userId, patch);
+
+    const hasPatch = Object.keys(patch).length > 0;
+    if (hasPatch) {
+      await this.update(tenantId, userId, patch);
+    }
+    if (emailToSet !== undefined) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { email: emailToSet },
+      });
+    }
+
+    return this.getProfile(userId, tenantId);
   }
 
   async getMyTenantSocialLinks(userId: string, tenantId: string) {
@@ -126,7 +221,10 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can manage social links');
+      throw new ForbiddenException({
+        message: 'Управлять ссылками может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -174,13 +272,18 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can manage social links');
+      throw new ForbiddenException({
+        message: 'Управлять ссылками может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
 
     const data: Prisma.TenantUpdateInput = {};
     const websiteUrl = this.normalizeOptionalLink(dto.websiteUrl);
     const socialYoutubeUrl = this.normalizeOptionalLink(dto.socialYoutubeUrl);
-    const socialInstagramUrl = this.normalizeOptionalLink(dto.socialInstagramUrl);
+    const socialInstagramUrl = this.normalizeOptionalLink(
+      dto.socialInstagramUrl,
+    );
     const socialTelegramUrl = this.normalizeOptionalLink(dto.socialTelegramUrl);
     const showWebsiteLink = dto.showWebsiteLink;
     const socialMaxUrl = this.normalizeOptionalLink(dto.socialMaxUrl);
@@ -190,17 +293,23 @@ export class UsersService {
     const showSocialMaxLink = dto.showSocialMaxLink;
 
     if (websiteUrl !== undefined) data.websiteUrl = websiteUrl;
-    if (socialYoutubeUrl !== undefined) data.socialYoutubeUrl = socialYoutubeUrl;
-    if (socialInstagramUrl !== undefined) data.socialInstagramUrl = socialInstagramUrl;
-    if (socialTelegramUrl !== undefined) data.socialTelegramUrl = socialTelegramUrl;
+    if (socialYoutubeUrl !== undefined)
+      data.socialYoutubeUrl = socialYoutubeUrl;
+    if (socialInstagramUrl !== undefined)
+      data.socialInstagramUrl = socialInstagramUrl;
+    if (socialTelegramUrl !== undefined)
+      data.socialTelegramUrl = socialTelegramUrl;
     if (showWebsiteLink !== undefined) data.showWebsiteLink = showWebsiteLink;
     if (socialMaxUrl !== undefined) data.socialMaxUrl = socialMaxUrl;
-    if (showSocialYoutubeLink !== undefined) data.showSocialYoutubeLink = showSocialYoutubeLink;
+    if (showSocialYoutubeLink !== undefined)
+      data.showSocialYoutubeLink = showSocialYoutubeLink;
     if (showSocialInstagramLink !== undefined) {
       data.showSocialInstagramLink = showSocialInstagramLink;
     }
-    if (showSocialTelegramLink !== undefined) data.showSocialTelegramLink = showSocialTelegramLink;
-    if (showSocialMaxLink !== undefined) data.showSocialMaxLink = showSocialMaxLink;
+    if (showSocialTelegramLink !== undefined)
+      data.showSocialTelegramLink = showSocialTelegramLink;
+    if (showSocialMaxLink !== undefined)
+      data.showSocialMaxLink = showSocialMaxLink;
 
     if (Object.keys(data).length === 0) {
       return this.getMyTenantSocialLinks(userId, tenantId);
@@ -235,7 +344,11 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can manage public branding');
+      throw new ForbiddenException({
+        message:
+          'Управлять оформлением сайта может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
     const tenantRow = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -267,7 +380,10 @@ export class UsersService {
     }
     if (
       u.role !== UserRole.SUPER_ADMIN &&
-      !tenantHasSubscriptionPlanFeature(tenantRow.subscriptionPlan, 'public_site_admin_settings')
+      !tenantHasSubscriptionPlanFeature(
+        tenantRow.subscriptionPlan,
+        'public_site_admin_settings',
+      )
     ) {
       throw new ForbiddenException({
         message: 'Публичные настройки доступны с тарифа Premier',
@@ -291,7 +407,11 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can manage public branding');
+      throw new ForbiddenException({
+        message:
+          'Управлять оформлением сайта может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
 
     const tenantForPlan = await this.prisma.tenant.findUnique({
@@ -303,7 +423,10 @@ export class UsersService {
     }
     if (
       u.role !== UserRole.SUPER_ADMIN &&
-      !tenantHasSubscriptionPlanFeature(tenantForPlan.subscriptionPlan, 'public_site_admin_settings')
+      !tenantHasSubscriptionPlanFeature(
+        tenantForPlan.subscriptionPlan,
+        'public_site_admin_settings',
+      )
     ) {
       throw new ForbiddenException({
         message: 'Публичные настройки доступны с тарифа Premier',
@@ -314,8 +437,14 @@ export class UsersService {
     const data: Prisma.TenantUpdateInput = {};
     const logoUrl = this.normalizeOptionalLink(dto.publicLogoUrl);
     const faviconUrl = this.normalizeOptionalLink(dto.publicFaviconUrl);
-    const accentPrimary = this.normalizeHexColor(dto.publicAccentPrimary, '#123c67');
-    const accentSecondary = this.normalizeHexColor(dto.publicAccentSecondary, '#c80a48');
+    const accentPrimary = this.normalizeHexColor(
+      dto.publicAccentPrimary,
+      '#123c67',
+    );
+    const accentSecondary = this.normalizeHexColor(
+      dto.publicAccentSecondary,
+      '#c80a48',
+    );
     const themeMode =
       typeof dto.publicThemeMode === 'string' &&
       PUBLIC_THEME_SET.has(dto.publicThemeMode.trim().toLowerCase())
@@ -380,7 +509,8 @@ export class UsersService {
     if (logoUrl !== undefined) data.publicLogoUrl = logoUrl;
     if (faviconUrl !== undefined) data.publicFaviconUrl = faviconUrl;
     if (accentPrimary !== undefined) data.publicAccentPrimary = accentPrimary;
-    if (accentSecondary !== undefined) data.publicAccentSecondary = accentSecondary;
+    if (accentSecondary !== undefined)
+      data.publicAccentSecondary = accentSecondary;
     if (themeMode !== undefined) data.publicThemeMode = themeMode;
     if (tagline !== undefined) data.publicTagline = tagline;
     if (organizationDisplayName !== undefined) {
@@ -388,12 +518,15 @@ export class UsersService {
     }
     if (contactPhone !== undefined) data.publicContactPhone = contactPhone;
     if (contactEmail !== undefined) data.publicContactEmail = contactEmail;
-    if (contactAddress !== undefined) data.publicContactAddress = contactAddress;
+    if (contactAddress !== undefined)
+      data.publicContactAddress = contactAddress;
     if (contactHours !== undefined) data.publicContactHours = contactHours;
     if (seoTitle !== undefined) data.publicSeoTitle = seoTitle;
-    if (seoDescription !== undefined) data.publicSeoDescription = seoDescription;
+    if (seoDescription !== undefined)
+      data.publicSeoDescription = seoDescription;
     if (ogImageUrl !== undefined) data.publicOgImageUrl = ogImageUrl;
-    if (defaultLanding !== undefined) data.publicDefaultLanding = defaultLanding;
+    if (defaultLanding !== undefined)
+      data.publicDefaultLanding = defaultLanding;
     if (tabsOrder !== undefined) data.publicTournamentTabsOrder = tabsOrder;
     if (dto.publicShowLeaderInFacts !== undefined) {
       data.publicShowLeaderInFacts = dto.publicShowLeaderInFacts;
@@ -445,7 +578,10 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can manage subscription plan');
+      throw new ForbiddenException({
+        message: 'Просматривать тариф может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -453,6 +589,7 @@ export class UsersService {
         subscriptionPlan: true,
         subscriptionStatus: true,
         subscriptionEndsAt: true,
+        allowUserDeletion: true,
       },
     });
     if (!tenant) {
@@ -474,7 +611,10 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only tenant admin can change subscription plan');
+      throw new ForbiddenException({
+        message: 'Менять тариф может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
     }
     return this.prisma.tenant.update({
       where: { id: tenantId },
@@ -483,6 +623,37 @@ export class UsersService {
         subscriptionPlan: true,
         subscriptionStatus: true,
         subscriptionEndsAt: true,
+        allowUserDeletion: true,
+      },
+    });
+  }
+
+  async updateMyTenantAllowUserDeletion(
+    userId: string,
+    tenantId: string,
+    allowUserDeletion: boolean,
+  ) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException({
+        message: 'Менять эту настройку может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
+    }
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { allowUserDeletion },
+      select: {
+        subscriptionPlan: true,
+        subscriptionStatus: true,
+        subscriptionEndsAt: true,
+        allowUserDeletion: true,
       },
     });
   }
@@ -578,6 +749,24 @@ export class UsersService {
       throw new Error('User with this username already exists in organization');
     }
 
+    const tenantRow = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { subscriptionPlan: true },
+    });
+    if (!tenantRow) {
+      throw new NotFoundException('Tenant not found');
+    }
+    const maxUsers = maxUsersPerTenant(tenantRow.subscriptionPlan);
+    if (maxUsers !== null) {
+      const usersCount = await this.prisma.user.count({ where: { tenantId } });
+      if (usersCount >= maxUsers) {
+        throw new ForbiddenException({
+          message: `Превышен лимит пользователей (${maxUsers})`,
+          code: 'TENANT_USERS_LIMIT_EXCEEDED',
+        });
+      }
+    }
+
     const hashed = await bcrypt.hash(password, 10);
 
     const user = await this.prisma.user.create({
@@ -605,7 +794,10 @@ export class UsersService {
       throw new Error('User not found');
     }
     if (current.tenantId !== tenantId) {
-      throw new ForbiddenException('Tenant mismatch');
+      throw new ForbiddenException({
+        message: 'Идентификатор организации в запросе не совпадает с сессией',
+        code: ApiErrorCode.CROSS_TENANT_ACCESS_DENIED,
+      });
     }
 
     if (dto.username !== undefined) {
@@ -618,7 +810,9 @@ export class UsersService {
         },
       });
       if (existingUsername) {
-        throw new Error('User with this username already exists in organization');
+        throw new Error(
+          'User with this username already exists in organization',
+        );
       }
     }
 
@@ -642,7 +836,20 @@ export class UsersService {
 
   async delete(tenantId: string, id: string, actorUserId?: string) {
     if (actorUserId && id === actorUserId) {
-      throw new BadRequestException('Нельзя удалить собственную учётную запись');
+      throw new BadRequestException(
+        'Нельзя удалить собственную учётную запись',
+      );
+    }
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { allowUserDeletion: true },
+    });
+    if (!tenant?.allowUserDeletion) {
+      throw new ForbiddenException({
+        message:
+          'Удаление пользователей отключено для организации. Включите опцию в профиле администратора или используйте блокировку учётной записи.',
+        code: ApiErrorCode.USER_DELETION_DISABLED,
+      });
     }
     const current = await this.prisma.user.findUnique({
       where: { id },
@@ -652,7 +859,10 @@ export class UsersService {
       throw new Error('User not found');
     }
     if (current.tenantId !== tenantId) {
-      throw new ForbiddenException('Tenant mismatch');
+      throw new ForbiddenException({
+        message: 'Идентификатор организации в запросе не совпадает с сессией',
+        code: ApiErrorCode.CROSS_TENANT_ACCESS_DENIED,
+      });
     }
     await this.prisma.user.delete({ where: { id } });
     return { success: true };
@@ -665,7 +875,9 @@ export class UsersService {
     actorUserId?: string,
   ) {
     if (actorUserId && id === actorUserId) {
-      throw new BadRequestException('Нельзя заблокировать собственную учётную запись');
+      throw new BadRequestException(
+        'Нельзя заблокировать собственную учётную запись',
+      );
     }
     const current = await this.prisma.user.findUnique({
       where: { id },
@@ -675,7 +887,10 @@ export class UsersService {
       throw new Error('User not found');
     }
     if (current.tenantId !== tenantId) {
-      throw new ForbiddenException('Tenant mismatch');
+      throw new ForbiddenException({
+        message: 'Идентификатор организации в запросе не совпадает с сессией',
+        code: ApiErrorCode.CROSS_TENANT_ACCESS_DENIED,
+      });
     }
     const user = await this.prisma.user.update({
       where: { id },

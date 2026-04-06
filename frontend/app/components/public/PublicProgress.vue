@@ -1,9 +1,15 @@
 <script setup lang="ts">
+import { useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 
-import type { MatchRow, TableRow, TournamentDetails } from '~/types/tournament-admin'
+import type { MatchRow, TableRow } from '~/types/tournament-admin'
+import {
+  arePublicTableAndDetailFresh,
+  getCachedTableAndTournamentDetail,
+} from '~/composables/public/readPublicTournamentViewCache'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
+import { isMatchCountedInPublicStandings } from '~/utils/publicTournamentStandingsMatch'
 
 const props = defineProps<{
   tournamentId: string
@@ -14,6 +20,7 @@ const props = defineProps<{
 const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const tenant = tenantSlug
 const { fetchTable, fetchTournamentDetail } = usePublicTournamentFetch()
+const queryClient = useQueryClient()
 
 const loading = ref(!!props.tournamentId)
 const errorText = ref('')
@@ -22,12 +29,16 @@ const rows = ref<TableRow[]>([])
 const matches = ref<MatchRow[]>([])
 
 const sortedRows = computed(() => rows.value.slice().sort((a, b) => a.position - b.position))
-const playedMatchesCount = computed(() =>
+const groupStageMatches = computed(() =>
   (matches.value ?? []).filter((m) => {
     if (m.stage === 'PLAYOFF') return false
     if (props.groupId) return m.groupId === props.groupId
-    return m.homeScore != null && m.awayScore != null
-  }).length,
+    return true
+  }),
+)
+
+const playedMatchesCount = computed(() =>
+  groupStageMatches.value.filter(isMatchCountedInPublicStandings).length,
 )
 
 type ResultVariant = 'wins' | 'draws' | 'losses'
@@ -57,26 +68,13 @@ function resolveTeamLogo(teamId: string | null | undefined) {
   return TEAM_PLACEHOLDER_SRC
 }
 
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
-}
-
 const resultsByTeamId = computed<Record<string, TeamResultToken[]>>(() => {
   const map: Record<string, TeamResultToken[]> = {}
 
   // Ensure stable ordering in UI even if some teams have no results.
   for (const r of sortedRows.value) map[r.teamId] = []
 
-  const played = (matches.value ?? [])
-    .filter((m) => {
-      if (m.stage === 'PLAYOFF') return false
-      if (props.groupId) return m.groupId === props.groupId
-      return true
-    })
-    .filter((m) => m.homeScore != null && m.awayScore != null)
+  const played = groupStageMatches.value.filter(isMatchCountedInPublicStandings)
   played.sort((a, b) => {
     const at = a.startTime ? new Date(a.startTime).getTime() : 0
     const bt = b.startTime ? new Date(b.startTime).getTime() : 0
@@ -116,20 +114,45 @@ const resultsByTeamId = computed<Record<string, TeamResultToken[]>>(() => {
 
 async function load() {
   errorText.value = ''
-  rows.value = []
-  matches.value = []
+
   if (!props.tournamentId) {
+    rows.value = []
+    matches.value = []
     loading.value = false
     return
   }
 
   await ensureTenantResolved()
   if (tenantNotFound.value) {
+    rows.value = []
+    matches.value = []
     errorText.value = 'Тенант не найден. Проверьте ссылку.'
+    loading.value = false
     return
   }
-  loading.value = true
+
+  const cached = getCachedTableAndTournamentDetail(
+    queryClient,
+    tenant.value,
+    props.tournamentId,
+    props.groupId,
+  )
+  if (cached) {
+    rows.value = cached.table
+    matches.value = cached.detail.matches ?? []
+    loading.value = false
+  } else {
+    rows.value = []
+    matches.value = []
+    loading.value = true
+  }
+
   try {
+    if (
+      arePublicTableAndDetailFresh(queryClient, tenant.value, props.tournamentId, props.groupId)
+    ) {
+      return
+    }
     const [table, details] = await Promise.all([
       fetchTable(tenant.value, props.tournamentId, props.groupId ?? undefined),
       fetchTournamentDetail(tenant.value, props.tournamentId),
@@ -210,15 +233,13 @@ watch(
           class="grid grid-cols-[1fr_2fr] items-start gap-3 border-b border-[#e1e8f2] px-3 py-3 odd:bg-white even:bg-[#f9fbff]"
         >
           <div class="flex min-w-0 items-center gap-2">
-            <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-              <img
-                :src="resolveTeamLogo(r.teamId)"
-                :alt="r.teamName"
-                class="h-full w-full object-cover"
-                loading="lazy"
-                @error="handleTeamLogoError"
-              />
-            </div>
+            <RemoteImage
+              :src="resolveTeamLogo(r.teamId)"
+              :alt="r.teamName"
+              placeholder-icon="users"
+              icon-class="text-xs"
+              class="h-7 w-7 shrink-0 rounded-full"
+            />
             <div class="truncate text-sm font-medium text-[#123c67]">#{{ r.position }} {{ r.teamName }}</div>
           </div>
           <div class="flex flex-wrap items-center gap-2">

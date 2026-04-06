@@ -47,7 +47,10 @@ function pickOne<T>(rng: () => number, items: T[]): T {
   return items[randInt(rng, 0, items.length - 1)];
 }
 
-function generatePenaltyScore(rng: () => number): { home: number; away: number } {
+function generatePenaltyScore(rng: () => number): {
+  home: number;
+  away: number;
+} {
   // 75%: winner in first 5 kicks; 25%: sudden death (difference always 1).
   if (rng() < 0.75) {
     const winner = randInt(rng, 3, 5);
@@ -178,7 +181,9 @@ async function ensureTeamRosters(
               create: {
                 tenantId,
                 firstName: `CupP${String(idx + 1).padStart(2, '0')}`,
-                lastName: team.name.replace(/\s+/g, '').slice(0, 20) + String(createdAtStamp + idx),
+                lastName:
+                  team.name.replace(/\s+/g, '').slice(0, 20) +
+                  String(createdAtStamp + idx),
               },
             },
           })),
@@ -263,8 +268,26 @@ async function simulateTournament(
             awayScore: pens.away,
           },
         });
-        events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, homeScore, homePlayers, 5, 90));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, awayScore, awayPlayers, 5, 90));
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.HOME,
+            homeScore,
+            homePlayers,
+            5,
+            90,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.AWAY,
+            awayScore,
+            awayPlayers,
+            5,
+            90,
+          ),
+        );
         penaltiesExamples += 1;
       } else if ((i + rn) % 7 === 0) {
         // Every ~7th match -> win in extra time.
@@ -276,10 +299,46 @@ async function simulateTournament(
         if (etHome === etAway) etAway = etAway === 0 ? 1 : 0;
         homeScore = regularDraw + etHome;
         awayScore = regularDraw + etAway;
-        events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, regularDraw, homePlayers, 5, 90));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, regularDraw, awayPlayers, 5, 90));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, etHome, homePlayers, 91, 120));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, etAway, awayPlayers, 91, 120));
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.HOME,
+            regularDraw,
+            homePlayers,
+            5,
+            90,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.AWAY,
+            regularDraw,
+            awayPlayers,
+            5,
+            90,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.HOME,
+            etHome,
+            homePlayers,
+            91,
+            120,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.AWAY,
+            etAway,
+            awayPlayers,
+            91,
+            120,
+          ),
+        );
         events.push({
           type: 'CUSTOM',
           payload: {
@@ -291,34 +350,86 @@ async function simulateTournament(
         extraTimeExamples += 1;
       } else if (homeScore === awayScore) {
         awayScore = awayScore > 0 ? awayScore - 1 : 1;
-        events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, homeScore, homePlayers, 5, 90));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, awayScore, awayPlayers, 5, 90));
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.HOME,
+            homeScore,
+            homePlayers,
+            5,
+            90,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.AWAY,
+            awayScore,
+            awayPlayers,
+            5,
+            90,
+          ),
+        );
       } else {
-        events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, homeScore, homePlayers, 5, 90));
-        events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, awayScore, awayPlayers, 5, 90));
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.HOME,
+            homeScore,
+            homePlayers,
+            5,
+            90,
+          ),
+        );
+        events.push(
+          ...buildGoalEvents(
+            rng,
+            MatchTeamSide.AWAY,
+            awayScore,
+            awayPlayers,
+            5,
+            90,
+          ),
+        );
       }
       events.push(...buildCardEvents(rng, MatchTeamSide.HOME, homePlayers));
       events.push(...buildCardEvents(rng, MatchTeamSide.AWAY, awayPlayers));
       events.sort((a, b) => (a.minute ?? 999) - (b.minute ?? 999));
 
-      await matchesService.updateProtocol(tournamentId, match.id, UserRole.TENANT_ADMIN, {
-        homeScore,
-        awayScore,
-        status: MatchStatus.PLAYED,
-        events,
-      });
+      await matchesService.updateProtocol(
+        tournamentId,
+        match.id,
+        UserRole.TENANT_ADMIN,
+        {
+          homeScore,
+          awayScore,
+          status: MatchStatus.PLAYED,
+          events,
+        },
+      );
       played += 1;
       goals += events.filter((e) => e.type === MatchEventType.GOAL).length;
       cards += events.filter((e) => e.type === MatchEventType.CARD).length;
-      assists += events.filter((e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId).length;
+      assists += events.filter(
+        (e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId,
+      ).length;
     }
   }
 
-  return { played, penaltiesExamples, extraTimeExamples, goals, assists, cards };
+  return {
+    played,
+    penaltiesExamples,
+    extraTimeExamples,
+    goals,
+    assists,
+    cards,
+  };
 }
 
 async function main() {
-  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    logger: false,
+  });
   try {
     const prisma = app.get(PrismaService);
     const tournamentsService = app.get(TournamentsService);
@@ -336,12 +447,23 @@ async function main() {
       select: { id: true, slug: true },
     });
     if (!tenant) throw new Error(`Tenant not found: ${tenantSlug}`);
-    if ((teamsCount & (teamsCount - 1)) !== 0 || teamsCount < 4 || teamsCount > 512) {
-      throw new Error('SPANISH_CUP_TEAMS must be a power of two in range 4..512');
+    if (
+      (teamsCount & (teamsCount - 1)) !== 0 ||
+      teamsCount < 4 ||
+      teamsCount > 512
+    ) {
+      throw new Error(
+        'SPANISH_CUP_TEAMS must be a power of two in range 4..512',
+      );
     }
 
     const teams = await ensureTeams(prisma, tenant.id, teamsCount);
-    const rosterStats = await ensureTeamRosters(prisma, tenant.id, teams, MIN_PLAYERS_PER_TEAM);
+    const rosterStats = await ensureTeamRosters(
+      prisma,
+      tenant.id,
+      teams,
+      MIN_PLAYERS_PER_TEAM,
+    );
     const tournament = await prisma.tournament.create({
       data: {
         tenantId: tenant.id,
@@ -385,9 +507,21 @@ async function main() {
       where: { tournamentId: tournament.id },
     });
 
-    let simStats = { played: 0, penaltiesExamples: 0, extraTimeExamples: 0, goals: 0, assists: 0, cards: 0 };
+    let simStats = {
+      played: 0,
+      penaltiesExamples: 0,
+      extraTimeExamples: 0,
+      goals: 0,
+      assists: 0,
+      cards: 0,
+    };
     if (simulate) {
-      simStats = await simulateTournament(prisma, matchesService, tournament.id, seed);
+      simStats = await simulateTournament(
+        prisma,
+        matchesService,
+        tournament.id,
+        seed,
+      );
     }
 
     console.log(`SPANISH_CUP_OK tenant=${tenant.slug}`);

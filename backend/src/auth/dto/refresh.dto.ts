@@ -1,9 +1,14 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class RefreshDto {
-  @ApiProperty({ example: 'refresh-token-string' })
+  /**
+   * Опционально, если refresh передаётся HttpOnly-кукой `tp_refresh_token`
+   * (кросс-origin запрос с credentials).
+   */
+  @ApiPropertyOptional({ example: 'refresh-token-string' })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  refreshToken: string;
+  refreshToken?: string;
 }

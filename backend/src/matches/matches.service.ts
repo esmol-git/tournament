@@ -1,6 +1,6 @@
 import {
   BadRequestException,
-  ForbiddenException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,10 +13,16 @@ import {
   MatchTeamSide,
   Prisma,
   TournamentFormat,
+  TournamentMemberRole,
   UserRole,
 } from '@prisma/client';
 import { assertTournamentStaffCanManage } from '../auth/tournament-staff-access.util';
 import { JwtPayload } from '../auth/jwt.strategy';
+import { ApiErrorCode } from '../common/api-error-codes';
+import {
+  throwInsufficientRole,
+  throwTournamentNotFound,
+} from '../common/api-exceptions';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
@@ -56,6 +62,9 @@ const MATCH_EVENTS_API = {
 const MATCH_DETAIL_INCLUDE = {
   homeTeam: { select: { id: true, name: true } },
   awayTeam: { select: { id: true, name: true } },
+  stadium: {
+    select: { id: true, name: true, city: true, address: true },
+  },
   scheduleChangeReason: {
     select: { id: true, name: true, code: true, scope: true },
   },
@@ -68,6 +77,50 @@ export class MatchesService {
     private readonly prisma: PrismaService,
     private readonly tournamentsService: TournamentsService,
   ) {}
+
+  /** Проверка площадки матча: тенант и (если задан белый список у турнира) вхождение в него. */
+  private async assertMatchStadiumAllowed(
+    client: Pick<PrismaService, 'stadium' | 'tournamentStadium' | 'tournament'>,
+    tenantId: string,
+    tournamentId: string | null,
+    stadiumId: string | null | undefined,
+  ) {
+    if (stadiumId === undefined) return;
+    const raw =
+      stadiumId === null || stadiumId === ''
+        ? null
+        : String(stadiumId).trim() || null;
+    if (!raw) return;
+
+    const st = await client.stadium.findFirst({
+      where: { id: raw, tenantId },
+      select: { id: true },
+    });
+    if (!st) {
+      throw new BadRequestException('Стадион не найден');
+    }
+    if (!tournamentId) return;
+
+    const [links, tour] = await Promise.all([
+      client.tournamentStadium.findMany({
+        where: { tournamentId },
+        select: { stadiumId: true },
+      }),
+      client.tournament.findUnique({
+        where: { id: tournamentId },
+        select: { stadiumId: true },
+      }),
+    ]);
+    const allowed = new Set<string>();
+    for (const l of links) allowed.add(l.stadiumId);
+    if (tour?.stadiumId) allowed.add(tour.stadiumId);
+    if (allowed.size === 0) return;
+    if (!allowed.has(raw)) {
+      throw new BadRequestException(
+        'Укажите стадион из площадок турнира или очистите поле',
+      );
+    }
+  }
 
   private async syncTournamentLifecycleAfterMatches(tournamentId: string) {
     try {
@@ -85,13 +138,37 @@ export class MatchesService {
     }
   }
 
-  /** Org admin, tournament admin, and super admin may correct protocol on finished matches. */
-  private canOverrideLockedProtocol(actorRole: UserRole) {
-    return (
+  /**
+   * Правка протокола у завершённого матча: админы, супер-админ; модератор — только если
+   * назначен модератором этого турнира ({@link TournamentMemberRole.MODERATOR}).
+   */
+  private async canOverrideLockedProtocol(
+    actorRole: UserRole,
+    opts: { tournamentId: string | null; actorUserId?: string },
+  ): Promise<boolean> {
+    if (
       actorRole === UserRole.TENANT_ADMIN ||
       actorRole === UserRole.TOURNAMENT_ADMIN ||
       actorRole === UserRole.SUPER_ADMIN
-    );
+    ) {
+      return true;
+    }
+    if (
+      actorRole === UserRole.MODERATOR &&
+      opts.tournamentId &&
+      opts.actorUserId
+    ) {
+      const m = await this.prisma.tournamentMember.findFirst({
+        where: {
+          tournamentId: opts.tournamentId,
+          userId: opts.actorUserId,
+          role: TournamentMemberRole.MODERATOR,
+        },
+        select: { id: true },
+      });
+      return !!m;
+    }
+    return false;
   }
 
   private async validateScheduleReason(
@@ -167,7 +244,11 @@ export class MatchesService {
         )
           .trim()
           .toLowerCase();
-        if (rawCardType && !rawCardType.includes('yellow') && !rawCardType.includes('red')) {
+        if (
+          rawCardType &&
+          !rawCardType.includes('yellow') &&
+          !rawCardType.includes('red')
+        ) {
           throw new BadRequestException(
             'Для события "Карточка" передан некорректный тип карточки',
           );
@@ -370,7 +451,9 @@ export class MatchesService {
       select: { teamId: true, groupId: true },
     });
     if (tts.length !== 2) {
-      throw new BadRequestException('Обе команды должны быть в составе турнира');
+      throw new BadRequestException(
+        'Обе команды должны быть в составе турнира',
+      );
     }
     for (const tt of tts) {
       if (tt.groupId !== params.groupId) {
@@ -388,14 +471,14 @@ export class MatchesService {
     dto: CreateMatchDto,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { id: true, tenantId: true, format: true, groupCount: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
     if (tournament.format !== TournamentFormat.MANUAL) {
       throw new BadRequestException(
         'Ручное создание матчей доступно только для турниров с форматом «только ручное расписание» (MANUAL)',
@@ -412,7 +495,9 @@ export class MatchesService {
     });
     const allowed = new Set(inTournament.map((x) => x.teamId));
     if (!allowed.has(dto.homeTeamId) || !allowed.has(dto.awayTeamId)) {
-      throw new BadRequestException('Обе команды должны быть в составе турнира');
+      throw new BadRequestException(
+        'Обе команды должны быть в составе турнира',
+      );
     }
 
     if (dto.groupId) {
@@ -421,7 +506,9 @@ export class MatchesService {
         select: { id: true },
       });
       if (!g) {
-        throw new BadRequestException('Указанная группа не относится к этому турниру');
+        throw new BadRequestException(
+          'Указанная группа не относится к этому турниру',
+        );
       }
     }
 
@@ -438,6 +525,42 @@ export class MatchesService {
       throw new BadRequestException('Некорректная дата/время начала');
     }
 
+    const stadiumIdForCreate =
+      dto.stadiumId && String(dto.stadiumId).trim()
+        ? String(dto.stadiumId).trim()
+        : null;
+    await this.assertMatchStadiumAllowed(
+      this.prisma,
+      tournament.tenantId,
+      tournamentId,
+      stadiumIdForCreate,
+    );
+
+    const roundNumber = dto.roundNumber ?? 1;
+    const groupId = dto.groupId ?? null;
+    const playoffRound = dto.playoffRound ?? null;
+
+    const duplicate = await this.prisma.match.findFirst({
+      where: {
+        tournamentId,
+        homeTeamId: dto.homeTeamId,
+        awayTeamId: dto.awayTeamId,
+        startTime: start,
+        stage,
+        roundNumber,
+        groupId,
+        playoffRound,
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new ConflictException({
+        message:
+          'Матч с такими командами, временем начала и этапом уже есть в турнире',
+        code: ApiErrorCode.MATCH_DUPLICATE,
+      });
+    }
+
     const created = await this.prisma.match.create({
       data: {
         tenantId: tournament.tenantId,
@@ -446,9 +569,10 @@ export class MatchesService {
         awayTeamId: dto.awayTeamId,
         startTime: start,
         stage,
-        roundNumber: dto.roundNumber ?? 1,
-        groupId: dto.groupId ?? null,
-        playoffRound: dto.playoffRound ?? null,
+        roundNumber,
+        groupId,
+        playoffRound,
+        stadiumId: stadiumIdForCreate,
       },
     });
 
@@ -463,14 +587,14 @@ export class MatchesService {
     actorRole: UserRole,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { format: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
     if (tournament.format !== TournamentFormat.MANUAL) {
       throw new BadRequestException(
         'Удаление отдельного матча доступно только для турниров с форматом MANUAL',
@@ -506,17 +630,18 @@ export class MatchesService {
       groupId?: string | null;
       scheduleChangeReasonId?: string;
       scheduleChangeNote?: string;
+      stadiumId?: string | null;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { format: true, groupCount: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     if (
       (data.roundNumber !== undefined || data.groupId !== undefined) &&
@@ -533,7 +658,9 @@ export class MatchesService {
         select: { id: true },
       });
       if (!g) {
-        throw new BadRequestException('Указанная группа не относится к этому турниру');
+        throw new BadRequestException(
+          'Указанная группа не относится к этому турниру',
+        );
       }
     }
 
@@ -605,7 +732,9 @@ export class MatchesService {
       });
       const allowed = new Set(inTournament.map((x) => x.teamId));
       if (!allowed.has(nextHome) || !allowed.has(nextAway)) {
-        throw new BadRequestException('Обе команды должны быть в составе турнира');
+        throw new BadRequestException(
+          'Обе команды должны быть в составе турнира',
+        );
       }
     }
 
@@ -622,15 +751,39 @@ export class MatchesService {
       awayTeamId: nextAway,
     });
 
+    if (data.stadiumId !== undefined) {
+      await this.assertMatchStadiumAllowed(
+        this.prisma,
+        match.tenantId,
+        tournamentId,
+        data.stadiumId && String(data.stadiumId).trim()
+          ? String(data.stadiumId).trim()
+          : null,
+      );
+    }
+
+    const stadiumPatch =
+      data.stadiumId !== undefined
+        ? {
+            stadiumId:
+              data.stadiumId && String(data.stadiumId).trim()
+                ? String(data.stadiumId).trim()
+                : null,
+          }
+        : {};
+
     if (!teamsChanged) {
       if (tournament.format === TournamentFormat.MANUAL) {
         const patch: Prisma.MatchUncheckedUpdateInput = {};
         if (data.startTime !== undefined) patch.startTime = data.startTime;
-        if (data.roundNumber !== undefined) patch.roundNumber = data.roundNumber;
+        if (data.roundNumber !== undefined)
+          patch.roundNumber = data.roundNumber;
         if (data.groupId !== undefined) patch.groupId = data.groupId;
-        Object.assign(patch, schedulePatch);
+        Object.assign(patch, schedulePatch, stadiumPatch);
         if (Object.keys(patch).length === 0) {
-          return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
+          return this.prisma.match.findUniqueOrThrow({
+            where: { id: matchId },
+          });
         }
         const updated = await this.prisma.match.update({
           where: { id: matchId },
@@ -640,12 +793,22 @@ export class MatchesService {
         await this.syncTournamentLifecycleAfterMatches(tournamentId);
         return updated;
       }
-      if (data.startTime === undefined) {
+      if (
+        data.startTime === undefined &&
+        Object.keys(schedulePatch).length === 0 &&
+        Object.keys(stadiumPatch).length === 0
+      ) {
         return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
       }
       return this.prisma.match.update({
         where: { id: matchId },
-        data: { startTime: data.startTime, ...schedulePatch },
+        data: {
+          ...(data.startTime !== undefined
+            ? { startTime: data.startTime }
+            : {}),
+          ...schedulePatch,
+          ...stadiumPatch,
+        },
       });
     }
 
@@ -654,10 +817,15 @@ export class MatchesService {
       await tx.match.update({
         where: { id: matchId },
         data: {
-          ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
-          ...(data.roundNumber !== undefined ? { roundNumber: data.roundNumber } : {}),
+          ...(data.startTime !== undefined
+            ? { startTime: data.startTime }
+            : {}),
+          ...(data.roundNumber !== undefined
+            ? { roundNumber: data.roundNumber }
+            : {}),
           ...(data.groupId !== undefined ? { groupId: data.groupId } : {}),
           ...schedulePatch,
+          ...stadiumPatch,
           homeTeamId: nextHome,
           awayTeamId: nextAway,
           homeScore: null,
@@ -677,9 +845,10 @@ export class MatchesService {
     matchId: string,
     actorRole: UserRole,
     dto: UpdateProtocolDto,
+    actorUserId?: string,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const match = await this.prisma.match.findFirst({
@@ -696,7 +865,12 @@ export class MatchesService {
       },
     });
     if (!match) throw new NotFoundException('Match not found');
-    if (!this.canOverrideLockedProtocol(actorRole)) {
+    if (
+      !(await this.canOverrideLockedProtocol(actorRole, {
+        tournamentId,
+        actorUserId,
+      }))
+    ) {
       this.assertMatchMutable(match.status);
     }
 
@@ -831,9 +1005,10 @@ export class MatchesService {
     matchId: string,
     actorRole: UserRole,
     dto: UpdateProtocolDto,
+    actorUserId?: string,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const match = await this.prisma.match.findFirst({
@@ -841,7 +1016,12 @@ export class MatchesService {
       select: { id: true, status: true },
     });
     if (!match) throw new NotFoundException('Match not found');
-    if (!this.canOverrideLockedProtocol(actorRole)) {
+    if (
+      !(await this.canOverrideLockedProtocol(actorRole, {
+        tournamentId: null,
+        actorUserId,
+      }))
+    ) {
       this.assertMatchMutable(match.status);
     }
     this.validateScoreVsGoalEvents(dto);
@@ -855,10 +1035,15 @@ export class MatchesService {
   async createStandaloneMatch(
     tenantId: string,
     actorRole: UserRole,
-    dto: { homeTeamId: string; awayTeamId: string; startTime: string },
+    dto: {
+      homeTeamId: string;
+      awayTeamId: string;
+      startTime: string;
+      stadiumId?: string;
+    },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     if (dto.homeTeamId === dto.awayTeamId) {
@@ -876,12 +1061,43 @@ export class MatchesService {
       }),
     ]);
     if (!home || !away) {
-      throw new BadRequestException('Обе команды должны принадлежать вашему арендатору');
+      throw new BadRequestException(
+        'Обе команды должны принадлежать вашему арендатору',
+      );
     }
 
     const start = new Date(dto.startTime);
     if (Number.isNaN(start.getTime())) {
       throw new BadRequestException('Некорректная дата/время начала');
+    }
+
+    const stadiumIdForCreate =
+      dto.stadiumId && String(dto.stadiumId).trim()
+        ? String(dto.stadiumId).trim()
+        : null;
+    await this.assertMatchStadiumAllowed(
+      this.prisma,
+      tenantId,
+      null,
+      stadiumIdForCreate,
+    );
+
+    const duplicateStandalone = await this.prisma.match.findFirst({
+      where: {
+        tenantId,
+        tournamentId: null,
+        homeTeamId: dto.homeTeamId,
+        awayTeamId: dto.awayTeamId,
+        startTime: start,
+      },
+      select: { id: true },
+    });
+    if (duplicateStandalone) {
+      throw new ConflictException({
+        message:
+          'Свободный матч с такими командами и временем начала уже существует',
+        code: ApiErrorCode.MATCH_DUPLICATE,
+      });
     }
 
     return this.prisma.match.create({
@@ -895,10 +1111,14 @@ export class MatchesService {
         roundNumber: 1,
         groupId: null,
         playoffRound: null,
+        stadiumId: stadiumIdForCreate,
       },
       include: {
         homeTeam: { select: { id: true, name: true } },
         awayTeam: { select: { id: true, name: true } },
+        stadium: {
+          select: { id: true, name: true, city: true, address: true },
+        },
       },
     });
   }
@@ -909,7 +1129,7 @@ export class MatchesService {
     query?: ListStandaloneMatchesQueryDto,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const where: Prisma.MatchWhereInput = {
@@ -922,7 +1142,9 @@ export class MatchesService {
     if (query?.status) {
       where.status = query.status;
     } else if (query?.includeLocked === false) {
-      where.status = { notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED] };
+      where.status = {
+        notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED],
+      };
     }
 
     return this.prisma.match.findMany({
@@ -931,6 +1153,9 @@ export class MatchesService {
       include: {
         homeTeam: { select: { id: true, name: true } },
         awayTeam: { select: { id: true, name: true } },
+        stadium: {
+          select: { id: true, name: true, city: true, address: true },
+        },
         scheduleChangeReason: {
           select: { id: true, name: true, code: true, scope: true },
         },
@@ -946,7 +1171,7 @@ export class MatchesService {
     query: ListTenantMatchesQueryDto,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const page = query.page ?? 1;
@@ -966,7 +1191,9 @@ export class MatchesService {
     if (query.status) {
       where.status = query.status;
     } else if (query.includeLocked === false) {
-      where.status = { notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED] };
+      where.status = {
+        notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED],
+      };
     }
 
     if (query.dateFrom || query.dateTo) {
@@ -1003,6 +1230,9 @@ export class MatchesService {
       },
       homeTeam: { select: { id: true, name: true } },
       awayTeam: { select: { id: true, name: true } },
+      stadium: {
+        select: { id: true, name: true, city: true, address: true },
+      },
       scheduleChangeReason: {
         select: { id: true, name: true, code: true, scope: true },
       },
@@ -1032,7 +1262,11 @@ export class MatchesService {
         uniqueSemiKeys.map(async (key) => {
           const [tournamentId, roundNumberRaw] = key.split(':');
           const roundNumber = Number(roundNumberRaw);
-          if (!tournamentId || !Number.isFinite(roundNumber) || roundNumber <= 0) {
+          if (
+            !tournamentId ||
+            !Number.isFinite(roundNumber) ||
+            roundNumber <= 0
+          ) {
             semiReadyMap.set(key, false);
             return;
           }
@@ -1106,10 +1340,11 @@ export class MatchesService {
       awayTeamId?: string;
       scheduleChangeReasonId?: string;
       scheduleChangeNote?: string;
+      stadiumId?: string | null;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const match = await this.prisma.match.findFirst({
@@ -1171,15 +1406,42 @@ export class MatchesService {
         select: { id: true },
       });
       if (teams.length !== 2) {
-        throw new BadRequestException('Обе команды должны принадлежать вашему арендатору');
+        throw new BadRequestException(
+          'Обе команды должны принадлежать вашему арендатору',
+        );
       }
     }
 
     const teamsChanged =
       nextHome !== match.homeTeamId || nextAway !== match.awayTeamId;
 
+    if (data.stadiumId !== undefined) {
+      await this.assertMatchStadiumAllowed(
+        this.prisma,
+        tenantId,
+        null,
+        data.stadiumId && String(data.stadiumId).trim()
+          ? String(data.stadiumId).trim()
+          : null,
+      );
+    }
+
+    const stadiumPatch =
+      data.stadiumId !== undefined
+        ? {
+            stadiumId:
+              data.stadiumId && String(data.stadiumId).trim()
+                ? String(data.stadiumId).trim()
+                : null,
+          }
+        : {};
+
     if (!teamsChanged) {
-      if (data.startTime === undefined && Object.keys(schedulePatch).length === 0) {
+      if (
+        data.startTime === undefined &&
+        Object.keys(schedulePatch).length === 0 &&
+        Object.keys(stadiumPatch).length === 0
+      ) {
         return this.prisma.match.findUniqueOrThrow({
           where: { id: matchId },
           include: MATCH_DETAIL_INCLUDE,
@@ -1188,8 +1450,11 @@ export class MatchesService {
       return this.prisma.match.update({
         where: { id: matchId },
         data: {
-          ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
+          ...(data.startTime !== undefined
+            ? { startTime: data.startTime }
+            : {}),
           ...schedulePatch,
+          ...stadiumPatch,
         },
         include: MATCH_DETAIL_INCLUDE,
       });
@@ -1200,8 +1465,11 @@ export class MatchesService {
       await tx.match.update({
         where: { id: matchId },
         data: {
-          ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
+          ...(data.startTime !== undefined
+            ? { startTime: data.startTime }
+            : {}),
           ...schedulePatch,
+          ...stadiumPatch,
           homeTeamId: nextHome,
           awayTeamId: nextAway,
           homeScore: null,
@@ -1223,7 +1491,7 @@ export class MatchesService {
     actorRole: UserRole,
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const existing = await this.prisma.match.findFirst({
@@ -1248,7 +1516,7 @@ export class MatchesService {
     tournamentId: string,
   ) {
     if (!PROTOCOL_ROLES.includes(user.role)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const match = await this.prisma.match.findFirst({
@@ -1260,6 +1528,7 @@ export class MatchesService {
         status: true,
         stage: true,
         groupId: true,
+        stadiumId: true,
       },
     });
     if (!match) throw new NotFoundException('Match not found');
@@ -1269,7 +1538,7 @@ export class MatchesService {
       where: { id: tournamentId, tenantId },
       select: { id: true, format: true, groupCount: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
 
@@ -1297,12 +1566,16 @@ export class MatchesService {
     const gc = tournament.groupCount ?? 1;
     if (gc > 1 && match.stage === MatchStage.GROUP) {
       if (match.groupId) {
-        await this.assertManualGroupStageTeamsMatchGroup(tournamentId, tournament, {
-          stage: MatchStage.GROUP,
-          groupId: match.groupId,
-          homeTeamId: match.homeTeamId,
-          awayTeamId: match.awayTeamId,
-        });
+        await this.assertManualGroupStageTeamsMatchGroup(
+          tournamentId,
+          tournament,
+          {
+            stage: MatchStage.GROUP,
+            groupId: match.groupId,
+            homeTeamId: match.homeTeamId,
+            awayTeamId: match.awayTeamId,
+          },
+        );
       } else {
         const tts = await this.prisma.tournamentTeam.findMany({
           where: {
@@ -1327,12 +1600,24 @@ export class MatchesService {
       }
     }
 
+    if (match.stadiumId) {
+      await this.assertMatchStadiumAllowed(
+        this.prisma,
+        tenantId,
+        tournamentId,
+        match.stadiumId,
+      );
+    }
+
     const updated = await this.prisma.match.update({
       where: { id: matchId },
       data: attachData,
       include: {
         homeTeam: { select: { id: true, name: true } },
         awayTeam: { select: { id: true, name: true } },
+        stadium: {
+          select: { id: true, name: true, city: true, address: true },
+        },
         events: {
           select: {
             id: true,
@@ -1357,7 +1642,7 @@ export class MatchesService {
     user: JwtPayload,
   ) {
     if (!PROTOCOL_ROLES.includes(user.role)) {
-      throw new ForbiddenException('Insufficient role');
+      throwInsufficientRole();
     }
 
     const match = await this.prisma.match.findFirst({
@@ -1374,7 +1659,7 @@ export class MatchesService {
       where: { id: match.tournamentId, tenantId },
       select: { id: true, format: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     await assertTournamentStaffCanManage(this.prisma, tournament.id, user);
 

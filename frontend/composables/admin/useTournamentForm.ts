@@ -18,13 +18,15 @@ export type TournamentFormModel = {
   pointsWin: number
   pointsDraw: number
   pointsLoss: number
-  adminIds: string[]
   teamIds: string[]
-  stadiumId: string
+  /** Площадки турнира по порядку; первый совпадает с основным стадионом в API. */
+  stadiumIds: string[]
   seasonId: string
   competitionId: string
   ageGroupId: string
   refereeIds: string[]
+  /** Пользователи с ролью MODERATOR в тенанте, назначенные модераторами турнира. */
+  moderatorIds: string[]
 }
 
 export function buildDefaultTournamentForm(): TournamentFormModel {
@@ -45,13 +47,13 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     pointsWin: 3,
     pointsDraw: 1,
     pointsLoss: 0,
-    adminIds: [],
     teamIds: [],
-    stadiumId: '',
+    stadiumIds: [],
     seasonId: '',
     competitionId: '',
     ageGroupId: '',
     refereeIds: [],
+    moderatorIds: [],
   }
 }
 
@@ -92,8 +94,24 @@ export function patchFormFromTournament(
   form.pointsWin = res.pointsWin ?? 3
   form.pointsDraw = res.pointsDraw ?? 1
   form.pointsLoss = res.pointsLoss ?? 0
-  form.adminIds = Array.isArray(res.members) ? res.members.map((m) => m.userId) : []
-  form.stadiumId = (res as TournamentDetails).stadiumId ?? ''
+  const memberRows = Array.isArray(res.members) ? res.members : []
+  form.moderatorIds = memberRows
+    .filter((m) => m.role === 'MODERATOR')
+    .map((m) => m.userId)
+  const anyRes = res as TournamentDetails & {
+    tournamentStadiums?: Array<{ stadiumId: string; sortOrder: number }>
+    tournamentTeams?: Array<{ teamId: string }>
+    matches?: unknown[]
+  }
+  if (Array.isArray(anyRes.tournamentStadiums) && anyRes.tournamentStadiums.length) {
+    form.stadiumIds = [...anyRes.tournamentStadiums]
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map((x) => x.stadiumId)
+  } else if (anyRes.stadiumId) {
+    form.stadiumIds = [anyRes.stadiumId]
+  } else {
+    form.stadiumIds = []
+  }
   form.seasonId = (res as TournamentDetails).seasonId ?? ''
   form.competitionId = (res as TournamentDetails).competitionId ?? ''
   form.ageGroupId = (res as TournamentDetails).ageGroupId ?? ''
@@ -101,7 +119,6 @@ export function patchFormFromTournament(
     ? (res as TournamentDetails).tournamentReferees!.map((x) => x.refereeId)
     : []
 
-  const anyRes: any = res as any
   const ids = Array.isArray(anyRes.tournamentTeams)
     ? anyRes.tournamentTeams.map((x: any) => x.teamId).filter(Boolean)
     : []
@@ -109,8 +126,8 @@ export function patchFormFromTournament(
 
   const manualPlayoffEnabled =
     normalized.format === 'MANUAL'
-      ? Array.isArray((res as any).matches) &&
-        (res as any).matches.some((m: any) => m?.stage === 'PLAYOFF')
+      ? Array.isArray(anyRes.matches) &&
+        anyRes.matches.some((m: unknown) => (m as { stage?: string })?.stage === 'PLAYOFF')
       : false
 
   return { initialTeamIds: [...ids], manualPlayoffEnabled }

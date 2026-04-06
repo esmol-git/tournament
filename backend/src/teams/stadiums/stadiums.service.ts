@@ -1,15 +1,20 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateStadiumDto } from './dto/create-stadium.dto';
 import { UpdateStadiumDto } from './dto/update-stadium.dto';
 
 @Injectable()
 export class StadiumsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
+  ) {}
 
   list(tenantId: string) {
     return this.prisma.stadium.findMany({
@@ -42,6 +47,15 @@ export class StadiumsService {
         address: dto.address?.trim() || null,
         city: dto.city?.trim() || null,
         regionId: regionIdToSet,
+        surface: dto.surface?.trim() || null,
+        pitchCount:
+          dto.pitchCount !== undefined && dto.pitchCount !== null
+            ? dto.pitchCount
+            : null,
+        capacity:
+          dto.capacity !== undefined && dto.capacity !== null
+            ? dto.capacity
+            : null,
         note: dto.note?.trim() || null,
       },
     });
@@ -78,10 +92,13 @@ export class StadiumsService {
           ? { address: dto.address?.trim() || null }
           : {}),
         ...(dto.city !== undefined ? { city: dto.city?.trim() || null } : {}),
-        ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
-        ...(regionForUpdate !== undefined
-          ? { regionId: regionForUpdate }
+        ...(dto.surface !== undefined
+          ? { surface: dto.surface?.trim() || null }
           : {}),
+        ...(dto.pitchCount !== undefined ? { pitchCount: dto.pitchCount } : {}),
+        ...(dto.capacity !== undefined ? { capacity: dto.capacity } : {}),
+        ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
+        ...(regionForUpdate !== undefined ? { regionId: regionForUpdate } : {}),
       },
     });
   }
@@ -91,6 +108,25 @@ export class StadiumsService {
       where: { id, tenantId },
     });
     if (!row) throw new NotFoundException('Stadium not found');
+    await this.tournamentTemplates.assertCanDeleteStadium(tenantId, id);
+    const [venueLinks, matchUses] = await Promise.all([
+      this.prisma.tournamentStadium.count({ where: { stadiumId: id } }),
+      this.prisma.match.count({ where: { stadiumId: id } }),
+    ]);
+    if (venueLinks > 0) {
+      throw new ConflictException({
+        message:
+          'Нельзя удалить стадион: он указан в площадках турнира. Уберите его из турниров.',
+        code: 'STADIUM_USED_BY_TOURNAMENT_VENUES',
+      });
+    }
+    if (matchUses > 0) {
+      throw new ConflictException({
+        message:
+          'Нельзя удалить стадион: он указан в матчах. Снимите привязку в расписании.',
+        code: 'STADIUM_USED_BY_MATCHES',
+      });
+    }
     await this.prisma.stadium.delete({ where: { id } });
     return { success: true };
   }

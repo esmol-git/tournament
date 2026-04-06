@@ -5,6 +5,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
+import { ApiErrorCode } from '../common/api-error-codes';
 import { JwtPayload } from './jwt.strategy';
 
 const RESTRICTED_ROLES: ReadonlySet<UserRole> = new Set([
@@ -41,7 +42,7 @@ export class TenantAdminStaffGuard implements CanActivate {
 
     throw new ForbiddenException({
       message: 'Недостаточно прав для панели организатора',
-      code: 'ADMIN_STAFF_ROLE_REQUIRED',
+      code: ApiErrorCode.ADMIN_STAFF_ROLE_REQUIRED,
     });
   }
 

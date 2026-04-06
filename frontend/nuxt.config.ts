@@ -1,17 +1,35 @@
-// @ts-ignore
 import { fileURLToPath } from 'node:url'
 import Aura from '@primeuix/themes/aura'
 import { ru as primeVueRu } from 'primelocale/js/ru.js'
 import { ADMIN_THEME_BOOT_INLINE_SCRIPT } from './constants/adminThemeBoot'
 
+/** Корень `frontend/` (рядом с `nuxt.config.ts`): импорты `~/composables`, `~/app/...`. */
+const projectRoot = fileURLToPath(new URL('.', import.meta.url))
+
 export default defineNuxtConfig({
   compatibilityDate: '2026-03-17',
+  /** Расширения `vue-router` (`types/vue-router-meta.d.ts`) подхватываются typecheck. */
+  typescript: {
+    tsConfig: {
+      /** Пути относительно `.nuxt/` — как в сгенерированном tsconfig, иначе IDE не видит `~/stores/*` из `composables/`. */
+      include: [
+        '../types/**/*.d.ts',
+        '../composables/**/*.ts',
+        '../stores/**/*.ts',
+      ],
+    },
+  },
+  alias: {
+    '~': projectRoot,
+    '@': projectRoot,
+  },
   devtools: { enabled: true },
   devServer: {
     host: '0.0.0.0',
     port: 3000,
   },
   modules: [
+    '@nuxt/eslint',
     '@pinia/nuxt',
     '@nuxtjs/i18n',
     '@primevue/nuxt-module',
@@ -76,19 +94,14 @@ export default defineNuxtConfig({
     server: {
       // Для локального multi-tenant через поддомены (lvh.me / localtest.me)
       // отключаем строгую whitelist-валидацию Host заголовка.
-      allowedHosts: 'all' as any,
+      // Vite 6+: allow any Host (local multi-tenant subdomains).
+      allowedHosts: true,
     },
     // Vite ругается, когда зависимости подхватываются в рантайме (CJS).
     // Пред-бандлим, чтобы не было лишних перезагрузок.
     optimizeDeps: {
       include: ['vuedraggable'],
     },
-    resolve: {
-      alias: {
-        '~': fileURLToPath(new URL('./', import.meta.url)),
-        '@': fileURLToPath(new URL('./', import.meta.url))
-      }
-    }
   },
   app: {
     /** Мягкая смена страницы в SPA; админка отключает через middleware. */

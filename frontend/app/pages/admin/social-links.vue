@@ -3,14 +3,19 @@ import { computed, onMounted, ref } from 'vue'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { getApiErrorMessage } from '~/utils/apiError'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const { token, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
 
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 const saving = ref(false)
 const socialLinks = ref({
   websiteUrl: '',
@@ -64,6 +69,7 @@ async function loadTenantSocialLinks() {
     loading.value = false
     return
   }
+  loadError.value = null
   loading.value = true
   try {
     const res = await authFetch<{
@@ -90,6 +96,8 @@ async function loadTenantSocialLinks() {
       socialMaxUrl: res.socialMaxUrl ?? '',
       showSocialMaxLink: res.showSocialMaxLink ?? true,
     }
+  } catch (e: unknown) {
+    loadError.value = getApiErrorMessage(e) || 'Не удалось загрузить ссылки'
   } finally {
     loading.value = false
   }
@@ -138,20 +146,29 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="max-w-3xl space-y-6 p-6">
-    <div>
-      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">Соцсети</h1>
-      <p class="mt-1 text-sm text-muted-color">
+  <section class="admin-page mx-auto max-w-3xl space-y-4 sm:space-y-6">
+    <div class="min-w-0">
+      <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">Соцсети</h1>
+      <p class="mt-1 text-xs text-muted-color sm:text-sm">
         Для каждой ссылки можно отдельно включить/выключить показ на публичных страницах.
       </p>
     </div>
 
     <Card class="!shadow-none border border-surface-200 dark:border-surface-700">
       <template #content>
-        <div v-if="loading" class="space-y-3">
-          <Skeleton v-for="i in 4" :key="`social-sk-${i}`" height="2.5rem" width="100%" />
-        </div>
-        <div v-else class="space-y-4">
+        <AdminDataState
+          :loading="loading"
+          :error="loadError"
+          :empty="false"
+          :content-card="false"
+          @retry="loadTenantSocialLinks"
+        >
+          <template #loading>
+            <div class="space-y-3">
+              <Skeleton v-for="i in 4" :key="`social-sk-${i}`" height="2.5rem" width="100%" />
+            </div>
+          </template>
+        <div class="space-y-4">
           <div>
             <div class="mb-1 flex items-center justify-between gap-3">
               <label class="block text-sm">Сайт</label>
@@ -237,7 +254,7 @@ onMounted(() => {
             <p class="mt-1 text-xs text-muted-color">Можно без https:// — добавим автоматически.</p>
             <p v-if="socialErrors.socialMaxUrl" class="mt-1 text-xs text-red-500">{{ socialErrors.socialMaxUrl }}</p>
           </div>
-          <div class="flex justify-end">
+          <div class="admin-toolbar-responsive flex justify-end">
             <Button
               label="Сохранить"
               icon="pi pi-save"
@@ -247,6 +264,7 @@ onMounted(() => {
             />
           </div>
         </div>
+        </AdminDataState>
       </template>
     </Card>
   </section>

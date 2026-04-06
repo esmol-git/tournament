@@ -1,5 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
 import { PatchTenantDto } from './dto/patch-tenant.dto';
 import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
@@ -7,7 +12,10 @@ import { Prisma, UserRole } from '@prisma/client';
 
 @Injectable()
 export class PlatformService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   async listTenants(query: ListTenantsQueryDto) {
     const page = query.page ?? 1;
@@ -40,7 +48,10 @@ export class PlatformService {
     ]);
     const superAdminCountMap = new Map<string, number>();
     for (const u of superAdminUsers) {
-      superAdminCountMap.set(u.tenantId, (superAdminCountMap.get(u.tenantId) ?? 0) + 1);
+      superAdminCountMap.set(
+        u.tenantId,
+        (superAdminCountMap.get(u.tenantId) ?? 0) + 1,
+      );
     }
 
     return {
@@ -257,6 +268,8 @@ export class PlatformService {
 
       await tx.tenant.delete({ where: { id } });
     });
+
+    await this.storage.deleteAllForTenant(id);
 
     return { success: true };
   }

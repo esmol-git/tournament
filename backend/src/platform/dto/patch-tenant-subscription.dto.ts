@@ -14,7 +14,8 @@ export class PatchTenantSubscriptionDto {
   subscriptionStatus?: SubscriptionStatus;
 
   @ApiPropertyOptional({
-    description: 'Дата окончания доступа (ISO 8601). Передайте null, чтобы убрать срок.',
+    description:
+      'Дата окончания доступа (ISO 8601). Передайте null, чтобы убрать срок.',
     nullable: true,
   })
   @IsOptional()

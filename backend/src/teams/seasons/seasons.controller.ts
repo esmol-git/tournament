@@ -16,6 +16,7 @@ import { TenantParamConsistencyGuard } from '../../auth/tenant-param-consistency
 import { TenantSubscriptionGuard } from '../../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../../auth/tenant-zone.guard';
 import { TenantAdminStaffGuard } from '../../auth/tenant-admin-staff.guard';
+import { ModeratorForbiddenStaffGuard } from '../../auth/moderator-staff-scope.guard';
 import {
   RequireSubscriptionPlanFeature,
   SubscriptionPlanFeatureGuard,
@@ -32,6 +33,7 @@ import { SeasonsService } from './seasons.service';
   TenantParamConsistencyGuard,
   TenantZoneGuard,
   TenantAdminStaffGuard,
+  ModeratorForbiddenStaffGuard,
   SubscriptionPlanFeatureGuard,
 )
 @Controller()

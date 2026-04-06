@@ -1,0 +1,234 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: tournament_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tournament_e2e"
+          --health-interval 4s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 4s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm ci --include=dev
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Prisma migrate (e2e DB)
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tournament_e2e?schema=public
+
+      - name: E2E tests
+        run: npm run test:e2e
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tournament_e2e?schema=public
+          JWT_SECRET: ci-quality-workflow-jwt-secret-32chars-min
+          USE_REDIS_THROTTLE: "1"
+          REDIS_URL: redis://127.0.0.1:6379
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci --include=dev
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Admin pages moderator meta
+        run: npm run check:admin-moderator-meta
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tournament_e2e?schema=public
+      JWT_SECRET: ci-quality-workflow-jwt-secret-32chars-min
+      PORT: "4000"
+      E2E_TENANT_SLUG: default
+      PLAYWRIGHT_SEED_ADMIN_USER: e2e_admin
+      PLAYWRIGHT_SEED_ADMIN_PASSWORD: ci-playwright-admin-pass-min-8chars
+      PLAYWRIGHT_SEED_MOD_USER: e2e_moderator
+      PLAYWRIGHT_SEED_MOD_PASSWORD: ci-playwright-moderator-pass-min-8chars
+      E2E_ADMIN_USER: e2e_admin
+      E2E_ADMIN_PASSWORD: ci-playwright-admin-pass-min-8chars
+      E2E_MODERATOR_USER: e2e_moderator
+      E2E_MODERATOR_PASSWORD: ci-playwright-moderator-pass-min-8chars
+      E2E_BASE_URL: http://localhost:3000
+      NUXT_PUBLIC_API_BASE: http://localhost:4000
+      NUXT_PUBLIC_DEFAULT_TENANT_SLUG: default
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: tournament_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tournament_e2e"
+          --health-interval 4s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 4s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Backend install
+        working-directory: backend
+        run: npm ci --include=dev
+
+      - name: Prisma migrate
+        working-directory: backend
+        run: npx prisma migrate deploy
+
+      - name: Backend build
+        working-directory: backend
+        run: npm run build
+
+      - name: Seed Playwright users
+        working-directory: backend
+        run: npm run seed:ci-playwright
+
+      - name: Start API
+        working-directory: backend
+        env:
+          USE_REDIS_THROTTLE: "1"
+          REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          nohup npm run start:prod > /tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4000/ >/dev/null; then
+              echo "API ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "--- api log ---"
+          cat /tmp/api.log || true
+          exit 1
+
+      - name: Setup Node (frontend cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend install
+        working-directory: frontend
+        run: npm ci --include=dev
+
+      - name: Playwright browsers
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Start Nuxt preview
+        working-directory: frontend
+        run: |
+          nohup npx nuxt preview -p 3000 > /tmp/nuxt.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:3000/ >/dev/null; then
+              echo "Nuxt ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "--- nuxt log ---"
+          cat /tmp/nuxt.log || true
+          exit 1
+
+      - name: Playwright tests
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Upload API and Nuxt logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-e2e-logs
+          path: |
+            /tmp/api.log
+            /tmp/nuxt.log

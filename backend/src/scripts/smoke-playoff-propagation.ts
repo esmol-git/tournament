@@ -84,7 +84,7 @@ async function runForSize(
             tenantId: tenant.id,
             name: `Smoke Team ${size}-${i + 1}`,
             slug: `smoke-team-${size}-${i + 1}-${stamp}`,
-            rating: ((i % 5) + 1),
+            rating: (i % 5) + 1,
           },
           select: { id: true },
         }),
@@ -162,7 +162,11 @@ async function runForSize(
               events: [
                 {
                   type: MatchEventType.CUSTOM,
-                  payload: { metaType: 'PENALTY_SCORE', homeScore: 4, awayScore: 2 },
+                  payload: {
+                    metaType: 'PENALTY_SCORE',
+                    homeScore: 4,
+                    awayScore: 2,
+                  },
                 },
               ],
             },
@@ -219,7 +223,8 @@ async function runForSize(
 
     const playedSemis = semis.filter(
       (m) =>
-        (m.status === MatchStatus.PLAYED || m.status === MatchStatus.FINISHED) &&
+        (m.status === MatchStatus.PLAYED ||
+          m.status === MatchStatus.FINISHED) &&
         m.homeScore !== null &&
         m.awayScore !== null,
     );
@@ -234,7 +239,8 @@ async function runForSize(
         homeScore: playedSemis[1].homeScore as number,
         awayScore: playedSemis[1].awayScore as number,
       });
-      if (!r1 || !r2) throw new Error(`Could not resolve semifinal winners for size=${size}`);
+      if (!r1 || !r2)
+        throw new Error(`Could not resolve semifinal winners for size=${size}`);
       const finalSet = new Set([final.homeTeamId, final.awayTeamId]);
       const thirdSet = new Set([third.homeTeamId, third.awayTeamId]);
       if (
@@ -249,34 +255,40 @@ async function runForSize(
 
     console.log(`SMOKE_OK size=${size}`);
   } finally {
-    await prisma.$transaction(async (tx) => {
-      await tx.matchEvent.deleteMany({
-        where: { match: { tournament: { tenantId: tenant.id } } },
-      });
-      await tx.match.deleteMany({
-        where: { tournament: { tenantId: tenant.id } },
-      });
-      await tx.tournamentTableRow.deleteMany({
-        where: { tournament: { tenantId: tenant.id } },
-      });
-      await tx.tournamentTeam.deleteMany({
-        where: { tournament: { tenantId: tenant.id } },
-      });
-      await tx.tournamentMember.deleteMany({
-        where: { tournament: { tenantId: tenant.id } },
-      });
-      await tx.tournamentGroup.deleteMany({
-        where: { tournament: { tenantId: tenant.id } },
-      });
-      await tx.tournament.deleteMany({ where: { tenantId: tenant.id } });
-      await tx.teamPlayer.deleteMany({ where: { team: { tenantId: tenant.id } } });
-      await tx.teamAdmin.deleteMany({ where: { team: { tenantId: tenant.id } } });
-      await tx.player.deleteMany({ where: { tenantId: tenant.id } });
-      await tx.team.deleteMany({ where: { tenantId: tenant.id } });
-      await tx.teamCategory.deleteMany({ where: { tenantId: tenant.id } });
-      await tx.refreshToken.deleteMany({ where: { tenantId: tenant.id } });
-      await tx.tenant.delete({ where: { id: tenant.id } });
-    }).catch(() => null);
+    await prisma
+      .$transaction(async (tx) => {
+        await tx.matchEvent.deleteMany({
+          where: { match: { tournament: { tenantId: tenant.id } } },
+        });
+        await tx.match.deleteMany({
+          where: { tournament: { tenantId: tenant.id } },
+        });
+        await tx.tournamentTableRow.deleteMany({
+          where: { tournament: { tenantId: tenant.id } },
+        });
+        await tx.tournamentTeam.deleteMany({
+          where: { tournament: { tenantId: tenant.id } },
+        });
+        await tx.tournamentMember.deleteMany({
+          where: { tournament: { tenantId: tenant.id } },
+        });
+        await tx.tournamentGroup.deleteMany({
+          where: { tournament: { tenantId: tenant.id } },
+        });
+        await tx.tournament.deleteMany({ where: { tenantId: tenant.id } });
+        await tx.teamPlayer.deleteMany({
+          where: { team: { tenantId: tenant.id } },
+        });
+        await tx.teamAdmin.deleteMany({
+          where: { team: { tenantId: tenant.id } },
+        });
+        await tx.player.deleteMany({ where: { tenantId: tenant.id } });
+        await tx.team.deleteMany({ where: { tenantId: tenant.id } });
+        await tx.teamCategory.deleteMany({ where: { tenantId: tenant.id } });
+        await tx.refreshToken.deleteMany({ where: { tenantId: tenant.id } });
+        await tx.tenant.delete({ where: { id: tenant.id } });
+      })
+      .catch(() => null);
   }
 }
 

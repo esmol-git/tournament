@@ -29,7 +29,9 @@ export class PublicController {
   }
 
   @Get('participants/teams')
-  @ApiOperation({ summary: 'Публичные команды организации (агрегировано по турнирам)' })
+  @ApiOperation({
+    summary: 'Публичные команды организации (агрегировано по турнирам)',
+  })
   async participantsTeams(@Param('tenantSlug') tenantSlug: string) {
     return this.tournaments.listPublicOrganizationTeamsCached(tenantSlug);
   }
@@ -61,8 +63,12 @@ export class PublicController {
     @Query('offset') offset?: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedOffset = Number.isFinite(Number(offset)) ? Math.max(0, Number(offset)) : undefined;
-    const parsedLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : undefined;
+    const parsedOffset = Number.isFinite(Number(offset))
+      ? Math.max(0, Number(offset))
+      : undefined;
+    const parsedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : undefined;
     return this.tournaments.getPublicTableCached(
       tenantSlug,
       tournamentId,
@@ -82,13 +88,19 @@ export class PublicController {
   }
 
   @Get('tournaments/:tournamentId')
-  @ApiOperation({ summary: 'Детали турнира, матчи, группы (без данных оргкомитета)' })
+  @ApiOperation({
+    summary: 'Детали турнира, матчи, группы (без данных оргкомитета)',
+  })
   async tournamentDetail(
     @Param('tenantSlug') tenantSlug: string,
     @Param('tournamentId') tournamentId: string,
     @Query() filters: MatchesFilterQueryDto,
   ) {
-    return this.tournaments.getPublicByIdCached(tenantSlug, tournamentId, filters);
+    return this.tournaments.getPublicByIdCached(
+      tenantSlug,
+      tournamentId,
+      filters,
+    );
   }
 
   @Get('tournaments/:tournamentId/news')
@@ -98,7 +110,11 @@ export class PublicController {
     @Param('tournamentId') tournamentId: string,
     @Query() query: ListTournamentNewsQueryDto,
   ) {
-    return this.tournaments.listPublicNewsCached(tenantSlug, tournamentId, query);
+    return this.tournaments.listPublicNewsCached(
+      tenantSlug,
+      tournamentId,
+      query,
+    );
   }
 
   @Get('tournaments/:tournamentId/gallery')
@@ -111,7 +127,9 @@ export class PublicController {
   }
 
   @Get('tournaments/:tournamentId/documents')
-  @ApiOperation({ summary: 'Публичные документы турнира (общие + привязанные)' })
+  @ApiOperation({
+    summary: 'Публичные документы турнира (общие + привязанные)',
+  })
   async tournamentDocuments(
     @Param('tenantSlug') tenantSlug: string,
     @Param('tournamentId') tournamentId: string,
@@ -122,14 +140,17 @@ export class PublicController {
   @Get('media')
   @ApiOperation({
     summary: 'Заглушка совместимости',
-    description: 'Используйте отдельные эндпоинты новостей и галереи по турнирам.',
+    description:
+      'Используйте отдельные эндпоинты новостей и галереи по турнирам.',
   })
   async mediaPlaceholder() {
     return { items: [] as unknown[] };
   }
 
   @Get('media/gallery')
-  @ApiOperation({ summary: 'Публичная галерея организации (все публичные турниры)' })
+  @ApiOperation({
+    summary: 'Публичная галерея организации (все публичные турниры)',
+  })
   async tenantGallery(
     @Param('tenantSlug') tenantSlug: string,
     @Query('limit') limit?: string,
@@ -138,7 +159,9 @@ export class PublicController {
   }
 
   @Get('media/video')
-  @ApiOperation({ summary: 'Публичный видео-фид организации (все публичные турниры)' })
+  @ApiOperation({
+    summary: 'Публичный видео-фид организации (все публичные турниры)',
+  })
   async tenantVideo(
     @Param('tenantSlug') tenantSlug: string,
     @Query('limit') limit?: string,

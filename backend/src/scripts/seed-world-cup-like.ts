@@ -14,9 +14,11 @@ async function main() {
     const prisma = app.get(PrismaService);
     const tournamentsService = app.get(TournamentsService);
 
-    const tenantSlug = process.env.WORLD_CUP_TENANT_SLUG?.trim() || 'load-test-1775032507811';
+    const tenantSlug =
+      process.env.WORLD_CUP_TENANT_SLUG?.trim() || 'load-test-1775032507811';
     const tournamentName =
-      process.env.WORLD_CUP_NAME?.trim() || `World Cup Style 32 (${Date.now()})`;
+      process.env.WORLD_CUP_NAME?.trim() ||
+      `World Cup Style 32 (${Date.now()})`;
 
     const tenant = await prisma.tenant.findFirst({
       where: { slug: tenantSlug },
@@ -33,7 +35,9 @@ async function main() {
       take: 32,
     });
     if (teams.length < 32) {
-      throw new Error(`Need at least 32 teams in tenant ${tenantSlug}. Found ${teams.length}.`);
+      throw new Error(
+        `Need at least 32 teams in tenant ${tenantSlug}. Found ${teams.length}.`,
+      );
     }
 
     const stamp = Date.now();

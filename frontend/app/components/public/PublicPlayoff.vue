@@ -181,7 +181,8 @@ const matchNumberById = computed<Record<string, number>>(() => {
     .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))
   const map: Record<string, number> = {}
   for (let i = 0; i < sorted.length; i++) {
-    map[sorted[i].id] = i + 1
+    const row = sorted[i]
+    if (row) map[row.id] = i + 1
   }
   return map
 })
@@ -281,13 +282,6 @@ function resolveTeamLogo(teamId: string | null | undefined) {
   const logo = props.teamLogos?.[teamId]
   if (typeof logo === 'string' && logo.trim().length > 0) return logo
   return TEAM_PLACEHOLDER_SRC
-}
-
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
 }
 
 function initLoadMoreObserver() {
@@ -645,15 +639,13 @@ onMounted(() => {
           >
             <div class="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto_1fr] md:items-center">
               <div class="flex min-w-0 items-center gap-2" :class="teamNameClass(m, 'home')">
-                <div class="h-8 w-8 shrink-0 overflow-hidden rounded-full">
-                  <img
-                    :src="resolveTeamLogo(displayedTeamId(m, 'home'))"
-                    :alt="displayedTeamName(m, 'home')"
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                    @error="handleTeamLogoError"
-                  />
-                </div>
+                <RemoteImage
+                  :src="resolveTeamLogo(displayedTeamId(m, 'home'))"
+                  :alt="displayedTeamName(m, 'home')"
+                  placeholder-icon="users"
+                  icon-class="text-xs"
+                  class="h-8 w-8 shrink-0 rounded-full"
+                />
                 <span class="truncate text-base font-semibold">{{ displayedTeamName(m, 'home') }}</span>
               </div>
               <div
@@ -663,15 +655,13 @@ onMounted(() => {
               </div>
               <div class="flex min-w-0 items-center gap-2 md:justify-end" :class="teamNameClass(m, 'away')">
                 <span class="truncate text-base font-semibold md:text-right">{{ displayedTeamName(m, 'away') }}</span>
-                <div class="h-8 w-8 shrink-0 overflow-hidden rounded-full">
-                  <img
-                    :src="resolveTeamLogo(displayedTeamId(m, 'away'))"
-                    :alt="displayedTeamName(m, 'away')"
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                    @error="handleTeamLogoError"
-                  />
-                </div>
+                <RemoteImage
+                  :src="resolveTeamLogo(displayedTeamId(m, 'away'))"
+                  :alt="displayedTeamName(m, 'away')"
+                  placeholder-icon="users"
+                  icon-class="text-xs"
+                  class="h-8 w-8 shrink-0 rounded-full"
+                />
               </div>
             </div>
             <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#eef3fa] pt-2">

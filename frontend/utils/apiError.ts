@@ -1,3 +1,9 @@
+function codeFromUnknownBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined
+  const c = (body as Record<string, unknown>).code
+  return typeof c === 'string' && c.trim() ? c.trim() : undefined
+}
+
 function messageFromUnknownBody(body: unknown): string | null {
   if (!body || typeof body !== 'object') return null
   const o = body as Record<string, unknown>
@@ -62,4 +68,14 @@ export function getApiErrorMessages(error: unknown, fallback = 'Произошл
 
   if (error instanceof Error && error.message.trim()) return [error.message]
   return [fallback]
+}
+
+/** Стабильный `code` из тела ответа API ($fetch / ofetch). */
+export function getApiErrorCode(error: unknown): string | undefined {
+  if (error == null || typeof error !== 'object') return undefined
+  const e = error as Record<string, unknown>
+  const fromData = codeFromUnknownBody(e.data)
+  if (fromData) return fromData
+  const response = e.response as Record<string, unknown> | undefined
+  return codeFromUnknownBody(response?._data)
 }

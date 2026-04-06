@@ -18,12 +18,15 @@ import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.gu
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
-import { TournamentCreatorAccessGuard } from '../auth/tournament-creator-access.guard';
+import { TenantContentGuard } from '../auth/tenant-content.guard';
+import { TournamentContentGuard } from '../auth/tournament-content.guard';
+import { TournamentManageGuard } from '../auth/tournament-manage.guard';
+import { TournamentMatchStaffGuard } from '../auth/tournament-match-staff.guard';
+import { ModeratorForbiddenStaffGuard } from '../auth/moderator-staff-scope.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { TournamentsService } from './tournaments.service';
 import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
-import { GenerateFromTemplateDto } from './dto/generate-from-template.dto';
 import { ReorderRoundDto } from './dto/reorder-round.dto';
 import { SetTeamGroupDto } from './dto/set-team-group.dto';
 import { SyncTeamsGroupLayoutDto } from './dto/sync-teams-group-layout.dto';
@@ -41,6 +44,17 @@ import { ReorderGalleryDto } from './dto/reorder-gallery.dto';
 import { CreateNewsTagDto } from './dto/create-news-tag.dto';
 import { UpdateNewsTagDto } from './dto/update-news-tag.dto';
 
+/**
+ * Доступ поверх JwtAuth + tenant guards:
+ *
+ * - **Только чтение (без object-guard):** список турниров тенанта. Новости/теги тенанта и создание турнира — не для MODERATOR.
+ * - **Контент тенанта (мутации):** {@link TenantContentGuard} — POST/PATCH/DELETE `tenants/:tenantId/news*`, `news-tags*`.
+ * - **Управление турниром:** {@link TournamentManageGuard} — PATCH/DELETE карточки, составы, календарь, плей-офф.
+ * - **Просмотр турнира и таблицы в админке:** {@link TournamentMatchStaffGuard} — GET карточки и `GET .../table` (в т.ч. модераторы турнира).
+ * - **Контент турнира:** {@link TournamentContentGuard} — новости и галерея по `tournaments/:id/...`.
+ *
+ * Публичный просмотр таблицы/сайта — эндпоинты {@link PublicModule}, не `GET .../tournaments/:id/table` здесь.
+ */
 @ApiTags('tournaments')
 @UseGuards(
   JwtAuthGuard,
@@ -66,6 +80,7 @@ export class TournamentsController {
   }
 
   @Post('tenants/:tenantId/tournaments')
+  @UseGuards(ModeratorForbiddenStaffGuard)
   async create(
     @Param('tenantId') tenantId: string,
     @Body() dto: CreateTournamentDto,
@@ -83,6 +98,7 @@ export class TournamentsController {
   }
 
   @Post('tenants/:tenantId/news')
+  @UseGuards(TenantContentGuard)
   async createNewsByTenant(
     @Param('tenantId') tenantId: string,
     @Body() dto: CreateTournamentNewsDto,
@@ -91,6 +107,7 @@ export class TournamentsController {
   }
 
   @Patch('tenants/:tenantId/news/:newsId')
+  @UseGuards(TenantContentGuard)
   async updateNewsByTenant(
     @Param('tenantId') tenantId: string,
     @Param('newsId') newsId: string,
@@ -100,6 +117,7 @@ export class TournamentsController {
   }
 
   @Delete('tenants/:tenantId/news/:newsId')
+  @UseGuards(TenantContentGuard)
   async deleteNewsByTenant(
     @Param('tenantId') tenantId: string,
     @Param('newsId') newsId: string,
@@ -108,11 +126,13 @@ export class TournamentsController {
   }
 
   @Get('tenants/:tenantId/news-tags')
+  @UseGuards(ModeratorForbiddenStaffGuard)
   async listNewsTagsByTenant(@Param('tenantId') tenantId: string) {
     return this.tournamentsService.listNewsTagsByTenant(tenantId);
   }
 
   @Post('tenants/:tenantId/news-tags')
+  @UseGuards(TenantContentGuard)
   async createNewsTagByTenant(
     @Param('tenantId') tenantId: string,
     @Body() dto: CreateNewsTagDto,
@@ -121,6 +141,7 @@ export class TournamentsController {
   }
 
   @Patch('tenants/:tenantId/news-tags/:tagId')
+  @UseGuards(TenantContentGuard)
   async updateNewsTagByTenant(
     @Param('tenantId') tenantId: string,
     @Param('tagId') tagId: string,
@@ -130,6 +151,7 @@ export class TournamentsController {
   }
 
   @Delete('tenants/:tenantId/news-tags/:tagId')
+  @UseGuards(TenantContentGuard)
   async deleteNewsTagByTenant(
     @Param('tenantId') tenantId: string,
     @Param('tagId') tagId: string,
@@ -138,7 +160,7 @@ export class TournamentsController {
   }
 
   @Get('tournaments/:id')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentMatchStaffGuard)
   async getById(
     @Param('id') id: string,
     @Query() filters?: MatchesFilterQueryDto,
@@ -147,43 +169,53 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async update(@Param('id') id: string, @Body() dto: UpdateTournamentDto) {
     return this.tournamentsService.update(id, dto);
   }
 
   @Delete('tournaments/:id')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async delete(@Param('id') id: string) {
     return this.tournamentsService.delete(id);
   }
 
   @Get('tournaments/:id/table')
+  @UseGuards(TournamentMatchStaffGuard)
   async getTable(
     @Param('id') id: string,
     @Query('groupId') groupId?: string,
     @Query('offset') offset?: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedOffset = Number.isFinite(Number(offset)) ? Math.max(0, Number(offset)) : undefined;
-    const parsedLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : undefined;
-    return this.tournamentsService.getTable(id, groupId, parsedOffset, parsedLimit);
+    const parsedOffset = Number.isFinite(Number(offset))
+      ? Math.max(0, Number(offset))
+      : undefined;
+    const parsedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : undefined;
+    return this.tournamentsService.getTable(
+      id,
+      groupId,
+      parsedOffset,
+      parsedLimit,
+    );
   }
 
   @Post('tournaments/:id/teams/:teamId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async addTeam(@Param('id') id: string, @Param('teamId') teamId: string) {
     return this.tournamentsService.addTeam(id, teamId);
   }
 
   @Delete('tournaments/:id/teams/:teamId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async removeTeam(@Param('id') id: string, @Param('teamId') teamId: string) {
     return this.tournamentsService.removeTeam(id, teamId);
   }
 
   @Patch('tournaments/:id/teams/:teamId/group')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async setTeamGroup(
     @Param('id') id: string,
     @Param('teamId') teamId: string,
@@ -197,7 +229,7 @@ export class TournamentsController {
   }
 
   @Put('tournaments/:id/teams/group-layout')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async syncTeamsGroupLayout(
     @Param('id') id: string,
     @Body() dto: SyncTeamsGroupLayoutDto,
@@ -206,7 +238,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/teams/:teamId/rating')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async setTeamRating(
     @Param('id') id: string,
     @Param('teamId') teamId: string,
@@ -216,7 +248,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:id/calendar')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async generateCalendar(
     @Param('id') id: string,
     @Body() dto: GenerateCalendarDto,
@@ -224,23 +256,14 @@ export class TournamentsController {
     return this.tournamentsService.generateCalendar(id, dto);
   }
 
-  @Post('tournaments/:id/calendar/from-template')
-  @UseGuards(TournamentCreatorAccessGuard)
-  async generateCalendarFromTemplate(
-    @Param('id') id: string,
-    @Body() dto: GenerateFromTemplateDto,
-  ) {
-    return this.tournamentsService.generateCalendarFromTemplate(id, dto);
-  }
-
   @Delete('tournaments/:id/calendar')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async clearCalendar(@Param('id') id: string) {
     return this.tournamentsService.clearCalendar(id);
   }
 
   @Post('tournaments/:id/playoff')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async generatePlayoff(@Param('id') id: string) {
     return this.tournamentsService.generatePlayoff(id, {
       replaceExisting: true,
@@ -248,7 +271,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:tournamentId/rounds/:roundDate/reorder')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentManageGuard)
   async reorderRound(
     @Param('tournamentId') tournamentId: string,
     @Param('roundDate') roundDate: string,
@@ -258,7 +281,7 @@ export class TournamentsController {
   }
 
   @Get('tournaments/:id/news')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async listNews(
     @Param('id') id: string,
     @Query() query: ListTournamentNewsQueryDto,
@@ -267,7 +290,7 @@ export class TournamentsController {
   }
 
   @Post('tournaments/:id/news')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async createNews(
     @Param('id') id: string,
     @Body() dto: CreateTournamentNewsDto,
@@ -276,7 +299,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/news/:newsId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async updateNews(
     @Param('id') id: string,
     @Param('newsId') newsId: string,
@@ -286,19 +309,19 @@ export class TournamentsController {
   }
 
   @Delete('tournaments/:id/news/:newsId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async deleteNews(@Param('id') id: string, @Param('newsId') newsId: string) {
     return this.tournamentsService.deleteNews(id, newsId);
   }
 
   @Get('tournaments/:id/gallery')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async listGallery(@Param('id') id: string) {
     return this.tournamentsService.listGallery(id);
   }
 
   @Post('tournaments/:id/gallery')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async createGalleryImage(
     @Param('id') id: string,
     @Body() dto: CreateGalleryImageDto,
@@ -308,7 +331,7 @@ export class TournamentsController {
 
   /** Должен быть выше `gallery/:imageId`, иначе `reorder` попадёт в imageId. */
   @Patch('tournaments/:id/gallery/reorder')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async reorderGallery(
     @Param('id') id: string,
     @Body() dto: ReorderGalleryDto,
@@ -317,7 +340,7 @@ export class TournamentsController {
   }
 
   @Patch('tournaments/:id/gallery/:imageId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async updateGalleryImage(
     @Param('id') id: string,
     @Param('imageId') imageId: string,
@@ -327,7 +350,7 @@ export class TournamentsController {
   }
 
   @Delete('tournaments/:id/gallery/:imageId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentContentGuard)
   async deleteGalleryImage(
     @Param('id') id: string,
     @Param('imageId') imageId: string,

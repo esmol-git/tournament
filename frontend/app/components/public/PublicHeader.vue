@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import type { PublicTenantMeta } from '~/composables/usePublicTournamentFetch'
 
@@ -252,6 +252,39 @@ const inactiveNavStyle = computed(() => ({
   backgroundColor: 'transparent',
 }))
 
+/** Местное время устройства — для ориентира относительно расписания матчей */
+const now = ref(new Date())
+let localClockTimer: ReturnType<typeof setInterval> | null = null
+
+const clockIso = computed(() => now.value.toISOString())
+
+const clockDateLabel = computed(() =>
+  new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(now.value),
+)
+
+/** Короче для узкой шапки на телефоне */
+const clockDateCompact = computed(() =>
+  new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(now.value),
+)
+
+const clockTimeLabel = computed(() =>
+  new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(now.value),
+)
+
 function applyPublicBranding() {
   if (typeof document === 'undefined') return
   const root = document.documentElement
@@ -352,17 +385,34 @@ onMounted(() => {
   applyPublicBranding()
   if (props.tenantMeta) applyMeta(props.tenantMeta)
   else void loadOrganizationName()
+  now.value = new Date()
+  localClockTimer = setInterval(() => {
+    now.value = new Date()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (localClockTimer) {
+    clearInterval(localClockTimer)
+    localClockTimer = null
+  }
 })
 </script>
 
 <template>
   <header class="w-full border-b border-[#d0d7e2] shadow-[0_6px_14px_rgba(15,23,42,0.1)]">
     <div class="text-white" :style="topBarStyle">
-      <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <div class="flex min-w-0 items-center gap-3">
+      <div class="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
           <NuxtLink :to="brandHomeTarget" class="flex items-center gap-3 min-w-0">
             <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm">
-              <img :src="brandLogoUrl" alt="Tournament Platform" class="h-full w-full object-contain" />
+              <RemoteImage
+                :src="brandLogoUrl"
+                alt="Tournament Platform"
+                fit="contain"
+                :lazy="false"
+                class="h-full w-full"
+              />
             </div>
             <div class="min-w-0">
               <p class="truncate text-lg font-semibold tracking-wide">
@@ -372,14 +422,33 @@ onMounted(() => {
             </div>
           </NuxtLink>
         </div>
-        <Button
-          class="md:!hidden !text-white"
-          icon="pi pi-bars"
-          text
-          rounded
-          aria-label="Открыть меню"
-          @click="mobileMenuOpen = true"
-        />
+        <div class="flex shrink-0 items-center gap-2 sm:gap-3">
+          <div
+            class="flex max-w-[min(100%,11.5rem)] flex-col items-end gap-0.5 text-right sm:max-w-none sm:rounded-lg sm:border sm:border-white/15 sm:bg-white/10 sm:px-3 sm:py-2 sm:shadow-sm sm:backdrop-blur-sm"
+            aria-live="polite"
+            title="Местное время вашего устройства. Сверяйте с расписанием матчей."
+          >
+            <span class="hidden text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-white/55 sm:inline">
+              Местное время
+            </span>
+            <span class="text-[0.65rem] leading-tight text-white/80 sm:hidden">{{ clockDateCompact }}</span>
+            <span class="hidden text-xs leading-snug text-white/80 sm:inline">{{ clockDateLabel }}</span>
+            <time
+              class="text-base font-semibold tabular-nums tracking-tight text-white sm:text-xl"
+              :datetime="clockIso"
+            >
+              {{ clockTimeLabel }}
+            </time>
+          </div>
+          <Button
+            class="md:!hidden !text-white"
+            icon="pi pi-bars"
+            text
+            rounded
+            aria-label="Открыть меню"
+            @click="mobileMenuOpen = true"
+          />
+        </div>
       </div>
     </div>
 

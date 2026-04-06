@@ -54,13 +54,14 @@ async function submit() {
       apiUrl('/auth/platform/login'),
       {
         method: 'POST',
+        credentials: 'include',
         body: {
           username: username.value.trim(),
           password: password.value,
         },
       },
     )
-    setSession(res.accessToken, res.refreshToken, res.user)
+    setSession(res.accessToken, null, res.user)
     await router.push('/platform/tenants')
   } catch (e: unknown) {
     error.value = getApiErrorMessage(e, 'Platform auth failed')
@@ -73,7 +74,7 @@ async function submit() {
 <template>
   <section class="mx-auto flex w-full max-w-md flex-col gap-6">
     <header class="space-y-2">
-      <h2 class="text-2xl font-semibold text-surface-900">
+      <h2 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
         Platform Login
       </h2>
       <p class="text-sm text-muted-color">

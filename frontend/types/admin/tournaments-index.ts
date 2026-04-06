@@ -37,6 +37,8 @@ export interface TournamentRow {
     shortLabel?: string | null
     code?: string | null
   } | null
+  /** До 3 URL первых фото галереи (порядок как в галерее) — превью в хабе «Фотогалерея». */
+  galleryPreviewUrls?: string[]
 }
 
 export interface TournamentListResponse {
@@ -68,7 +70,18 @@ export interface TournamentDetails {
   pointsWin: number
   pointsDraw: number
   pointsLoss: number
-  members: { userId: string; role: string }[]
+  members: Array<{
+    id: string
+    userId: string
+    role: string
+    user: {
+      id: string
+      email: string | null
+      name: string
+      lastName?: string
+      role: string
+    }
+  }>
   stadiumId?: string | null
   stadium?: {
     id: string
@@ -76,6 +89,16 @@ export interface TournamentDetails {
     city?: string | null
     address?: string | null
   } | null
+  tournamentStadiums?: Array<{
+    stadiumId: string
+    sortOrder: number
+    stadium: {
+      id: string
+      name: string
+      city?: string | null
+      address?: string | null
+    }
+  }>
   seasonId?: string | null
   season?: { id: string; name: string; code?: string | null } | null
   competitionId?: string | null
@@ -100,8 +123,10 @@ export interface TournamentDetails {
 
 export interface UserLite {
   id: string
-  email: string
+  email: string | null
+  username: string
   name: string
+  lastName?: string
   role: string
   blocked: boolean
 }

@@ -15,7 +15,8 @@ export class LoginDto {
 
   @ApiProperty({
     example: 'acme',
-    description: 'Tenant slug. Если отсутствует — будет определён из Host (subdomain).',
+    description:
+      'Tenant slug. Если отсутствует — будет определён из Host (subdomain).',
     required: false,
   })
   @IsOptional()

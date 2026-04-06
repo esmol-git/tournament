@@ -1,4 +1,4 @@
-import { computed, ref, unref, watch, type MaybeRefOrGetter } from 'vue'
+import { computed, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { TournamentRow } from '~/types/admin/tournaments-index'
 
@@ -42,13 +42,13 @@ export function usePublicTournamentSelection(params: Params) {
   }
 
   function initializeSelectionFromContext() {
-    selectedTournamentId.value = unref(params.selectedTid) ?? ''
+    selectedTournamentId.value = toValue(params.selectedTid) ?? ''
   }
 
   function applyPreferredTournament(loaded: TournamentRow[]) {
     tournaments.value = loaded
     const ids = new Set(loaded.map((t) => t.id))
-    const preferredId = (unref(params.selectedTid) ?? '').trim()
+    const preferredId = (toValue(params.selectedTid) ?? '').trim()
     if (preferredId && ids.has(preferredId)) {
       if (selectedTournamentId.value !== preferredId) {
         selectedTournamentId.value = preferredId
@@ -66,7 +66,7 @@ export function usePublicTournamentSelection(params: Params) {
   }
 
   async function fetchTournaments(options?: { onError?: (e: any) => void }) {
-    const tenantSlug = unref(params.tenant)
+    const tenantSlug = toValue(params.tenant)
     const warmList = tournamentsByTenant.value[tenantSlug]
     const showLoading = !warmList?.length
     if (showLoading) loading.value = true
@@ -88,7 +88,7 @@ export function usePublicTournamentSelection(params: Params) {
   }
 
   watch(
-    () => unref(params.tenant),
+    () => toValue(params.tenant),
     (slug, prev) => {
       if (!String(slug ?? '').trim()) return
       const cached = tournamentsByTenant.value[String(slug)]
@@ -102,7 +102,7 @@ export function usePublicTournamentSelection(params: Params) {
   )
 
   watch(
-    () => unref(params.selectedTid),
+    () => toValue(params.selectedTid),
     (tid) => {
       const v = (tid ?? '').trim()
       if (!v) return

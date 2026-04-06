@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
+import { ApiErrorCode } from '../common/api-error-codes';
 import { JwtPayload } from './jwt.strategy';
 
 /**
@@ -26,10 +27,12 @@ export class TenantParamConsistencyGuard implements CanActivate {
     }
 
     if (tenantIdFromParams !== tenantIdFromJwt) {
-      throw new ForbiddenException('Tenant mismatch');
+      throw new ForbiddenException({
+        message: 'Идентификатор организации в запросе не совпадает с сессией',
+        code: ApiErrorCode.CROSS_TENANT_ACCESS_DENIED,
+      });
     }
 
     return true;
   }
 }
-

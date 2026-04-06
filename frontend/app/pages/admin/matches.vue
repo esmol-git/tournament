@@ -3,46 +3,68 @@ import { useAuth } from '~/composables/useAuth'
 import { useTabQuerySync } from '~/composables/useTabQuerySync'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
+import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
 import { useTenantId } from '~/composables/useTenantId'
+import {
+  useAdminTenantTeamsAllQuery,
+  useAdminTenantTournamentsAllQuery,
+} from '~/composables/admin/useAdminTenantListQueries'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import type { MatchRow, TenantTournamentMatchRow } from '~/types/tournament-admin'
-import type { TournamentListResponse, TournamentRow } from '~/types/admin/tournaments-index'
-import type { TeamLite } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
-import { toYmdLocal } from '~/utils/dateYmd'
+import { toastMatchScheduleCreateApiError } from '~/utils/matchCreateToast'
+import { parseYmdLocal, toYmdLocal } from '~/utils/dateYmd'
 import {
   formatDateTimeNoSeconds,
   formatMatchScoreDisplay,
   isMatchEditLocked,
   statusLabel,
-  statusOptions,
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import type { LocationQuery } from 'vue-router'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
+import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 const { t } = useI18n()
 const { token, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
+const matchStatusSelectOptions = useMatchStatusSelectOptions()
 
 const { loadRefs, postponeReasonOptions } = useMatchProtocolReferences()
 
-const loading = ref(false)
 const standaloneMatches = ref<MatchRow[]>([])
-const teams = ref<TeamLite[]>([])
-const tournaments = ref<TournamentRow[]>([])
+const {
+  loading: standaloneLoading,
+  error: standaloneError,
+  run: runStandaloneFetch,
+  retry: retryStandaloneFetch,
+} = useAdminAsyncState()
+
+const { teams } = useAdminTenantTeamsAllQuery()
+const { tournaments } = useAdminTenantTournamentsAllQuery()
 
 const activeTab = ref(0)
 const { syncFromRoute: syncMatchesTabFromRoute } = useTabQuerySync(activeTab, [
-  'standalone',
   'tournament',
+  'standalone',
 ] as const)
-const loadingTournamentMatches = ref(false)
+const {
+  loading: loadingTournamentMatches,
+  error: tournamentMatchesError,
+  run: runTournamentMatchesFetch,
+  retry: retryTournamentMatchesFetch,
+} = useAdminAsyncState()
 const tournamentMatches = ref<TenantTournamentMatchRow[]>([])
 const tournamentMatchesTotal = ref(0)
 const tournamentMatchesPage = ref(1)
@@ -55,6 +77,62 @@ const detachingTournamentMatchId = ref<string | null>(null)
 
 const protocolStandalone = ref(true)
 const protocolTournamentIdForDialog = ref<string | null>(null)
+
+/** Фильтры вкладки «В турнирах» ↔ query (`mtTournament`, `mtStatus`, …). */
+let applyingTournamentFiltersFromRoute = false
+let ignoreNextTournamentQueryWatch = false
+let syncingTournamentPageFromFilters = false
+const tournamentListRouteReady = ref(false)
+
+function readTournamentFiltersFromQuery() {
+  const q = route.query
+  tournamentMatchFilterId.value = typeof q.mtTournament === 'string' ? q.mtTournament : ''
+  tournamentMatchStatusFilter.value = typeof q.mtStatus === 'string' ? q.mtStatus : ''
+  tournamentMatchTeamFilterId.value = typeof q.mtTeam === 'string' ? q.mtTeam : ''
+  const from =
+    typeof q.mtFrom === 'string' && q.mtFrom ? parseYmdLocal(q.mtFrom) : null
+  const to = typeof q.mtTo === 'string' && q.mtTo ? parseYmdLocal(q.mtTo) : null
+  if (from && to) tournamentMatchDateRange.value = [from, to]
+  else if (from) tournamentMatchDateRange.value = [from]
+  else tournamentMatchDateRange.value = null
+
+  const p = typeof q.mtPage === 'string' ? Number.parseInt(q.mtPage, 10) : Number.NaN
+  tournamentMatchesPage.value = !Number.isNaN(p) && p >= 1 ? p : 1
+  const ps = typeof q.mtPageSize === 'string' ? Number.parseInt(q.mtPageSize, 10) : Number.NaN
+  if (!Number.isNaN(ps) && (ps === 25 || ps === 50 || ps === 100)) {
+    tournamentMatchesPageSize.value = ps
+  }
+}
+
+function pushTournamentFiltersToRoute() {
+  const q: LocationQuery = { ...route.query }
+  if (tournamentMatchFilterId.value) q.mtTournament = tournamentMatchFilterId.value
+  else delete q.mtTournament
+  if (tournamentMatchStatusFilter.value) q.mtStatus = tournamentMatchStatusFilter.value
+  else delete q.mtStatus
+  if (tournamentMatchTeamFilterId.value) q.mtTeam = tournamentMatchTeamFilterId.value
+  else delete q.mtTeam
+  const dr = tournamentMatchDateRange.value
+  if (Array.isArray(dr) && dr[0]) {
+    q.mtFrom = toYmdLocal(dr[0])
+    if (dr[1]) q.mtTo = toYmdLocal(dr[1])
+    else delete q.mtTo
+  } else {
+    delete q.mtFrom
+    delete q.mtTo
+  }
+  if (tournamentMatchesPage.value > 1) q.mtPage = String(tournamentMatchesPage.value)
+  else delete q.mtPage
+  if (tournamentMatchesPageSize.value !== 25) q.mtPageSize = String(tournamentMatchesPageSize.value)
+  else delete q.mtPageSize
+
+  ignoreNextTournamentQueryWatch = true
+  void router.replace({ path: route.path, query: q }).then(() => {
+    nextTick(() => {
+      ignoreNextTournamentQueryWatch = false
+    })
+  })
+}
 
 const manualTournaments = computed(() =>
   tournaments.value.filter((t) => t.format === 'MANUAL'),
@@ -88,17 +166,20 @@ const visibleTournamentMatchesWithIndex = computed(() => {
   }))
 })
 
+const skeletonStandaloneMatchRows = Array.from({ length: 8 }, (_, i) => ({ id: `sk-sm-${i}` }))
+const skeletonTournamentMatchRows = Array.from({ length: 10 }, (_, i) => ({ id: `sk-tm-${i}` }))
+
 const teamOptions = computed(() =>
   teams.value.map((t) => ({ label: t.name, value: t.id })),
 )
 
 const tournamentStatusFilterOptions = computed(() => [
-  { label: 'Все статусы', value: '' },
-  ...statusOptions.map((s) => ({ label: s.label, value: s.value })),
+  { label: t('admin.tournament_page.filter_all_statuses'), value: '' },
+  ...matchStatusSelectOptions.value.map((s) => ({ label: s.label, value: s.value })),
 ])
 
 const tournamentTeamFilterOptions = computed(() => [
-  { label: 'Все команды', value: '' },
+  { label: t('admin.tournament_page.all_teams'), value: '' },
   ...teamOptions.value,
 ])
 
@@ -217,112 +298,62 @@ const deletingId = ref<string | null>(null)
 
 const fetchStandalone = async () => {
   if (!token.value) return
-  loading.value = true
-  try {
-    const res = await authFetch<MatchRow[]>(
-      apiUrl(`/tenants/${tenantId.value}/standalone-matches`),
-      { headers: { Authorization: `Bearer ${token.value}` } },
-    )
-    standaloneMatches.value = res
-  } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось загрузить матчи',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
-  } finally {
-    loading.value = false
-  }
+  await runStandaloneFetch(async () => {
+    try {
+      const res = await authFetch<MatchRow[]>(
+        apiUrl(`/tenants/${tenantId.value}/standalone-matches`),
+        { headers: { Authorization: `Bearer ${token.value}` } },
+      )
+      standaloneMatches.value = res
+    } catch (e: unknown) {
+      standaloneMatches.value = []
+      throw e
+    }
+  })
 }
 
 const fetchTournamentMatchesList = async () => {
   if (!token.value) return
-  loadingTournamentMatches.value = true
-  try {
-    const params = new URLSearchParams()
-    params.set('page', String(tournamentMatchesPage.value))
-    params.set('pageSize', String(tournamentMatchesPageSize.value))
-    params.set('excludeUndeterminedPlayoff', 'true')
-    if (tournamentMatchFilterId.value) {
-      params.set('tournamentId', tournamentMatchFilterId.value)
+  await runTournamentMatchesFetch(async () => {
+    try {
+      const params = new URLSearchParams()
+      params.set('page', String(tournamentMatchesPage.value))
+      params.set('pageSize', String(tournamentMatchesPageSize.value))
+      params.set('excludeUndeterminedPlayoff', 'true')
+      if (tournamentMatchFilterId.value) {
+        params.set('tournamentId', tournamentMatchFilterId.value)
+      }
+      if (tournamentMatchStatusFilter.value) {
+        params.set('status', tournamentMatchStatusFilter.value)
+      }
+      if (tournamentMatchTeamFilterId.value) {
+        params.set('teamId', tournamentMatchTeamFilterId.value)
+      }
+      const dr = tournamentMatchDateRange.value
+      if (Array.isArray(dr) && dr[0]) {
+        params.set('dateFrom', toYmdLocal(dr[0]))
+        if (dr[1]) params.set('dateTo', toYmdLocal(dr[1]))
+      }
+      const res = await authFetch<{
+        items: TenantTournamentMatchRow[]
+        total: number
+      }>(apiUrl(`/tenants/${tenantId.value}/matches?${params.toString()}`), {
+        headers: { Authorization: `Bearer ${token.value}` },
+      })
+      tournamentMatches.value = res.items ?? []
+      tournamentMatchesTotal.value =
+        typeof res.total === 'number' ? res.total : res.items?.length ?? 0
+    } catch (e: unknown) {
+      tournamentMatches.value = []
+      tournamentMatchesTotal.value = 0
+      throw e
     }
-    if (tournamentMatchStatusFilter.value) {
-      params.set('status', tournamentMatchStatusFilter.value)
-    }
-    if (tournamentMatchTeamFilterId.value) {
-      params.set('teamId', tournamentMatchTeamFilterId.value)
-    }
-    const dr = tournamentMatchDateRange.value
-    if (Array.isArray(dr) && dr[0]) {
-      params.set('dateFrom', toYmdLocal(dr[0]))
-      if (dr[1]) params.set('dateTo', toYmdLocal(dr[1]))
-    }
-    const res = await authFetch<{
-      items: TenantTournamentMatchRow[]
-      total: number
-    }>(apiUrl(`/tenants/${tenantId.value}/matches?${params.toString()}`), {
-      headers: { Authorization: `Bearer ${token.value}` },
-    })
-    tournamentMatches.value = res.items ?? []
-    tournamentMatchesTotal.value = typeof res.total === 'number' ? res.total : res.items?.length ?? 0
-  } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось загрузить матчи турниров',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
-    tournamentMatches.value = []
-    tournamentMatchesTotal.value = 0
-  } finally {
-    loadingTournamentMatches.value = false
-  }
+  })
 }
 
 function onTournamentPaginatorPage(e: { first: number; rows: number; page: number }) {
   tournamentMatchesPage.value = e.page + 1
   tournamentMatchesPageSize.value = e.rows
-  void fetchTournamentMatchesList()
-}
-
-const fetchTeams = async () => {
-  if (!token.value) return
-  try {
-    const res = await authFetch<{ items: TeamLite[]; total: number }>(
-      apiUrl(`/tenants/${tenantId.value}/teams`),
-      { headers: { Authorization: `Bearer ${token.value}` } },
-    )
-    teams.value = res.items ?? []
-  } catch {
-    teams.value = []
-  }
-}
-
-const fetchTournaments = async () => {
-  if (!token.value) return
-  try {
-    const loaded: TournamentRow[] = []
-    let page = 1
-    let total = 0
-    do {
-      const res = await authFetch<TournamentListResponse>(
-        apiUrl(`/tenants/${tenantId.value}/tournaments`),
-        {
-          headers: { Authorization: `Bearer ${token.value}` },
-          params: { page, pageSize: 100 },
-        },
-      )
-      const items = res.items ?? []
-      total = res.total ?? items.length
-      loaded.push(...items)
-      page += 1
-      if (!items.length) break
-    } while (loaded.length < total)
-    tournaments.value = loaded
-  } catch {
-    tournaments.value = []
-  }
 }
 
 const openCreate = () => {
@@ -341,6 +372,10 @@ const submitCreate = async () => {
   if (!canCreateMatch.value) {
     return
   }
+  const startTime = createForm.startTime
+  if (!startTime) {
+    return
+  }
   createSaving.value = true
   try {
     await authFetch(apiUrl(`/tenants/${tenantId.value}/standalone-matches`), {
@@ -349,19 +384,14 @@ const submitCreate = async () => {
       body: {
         homeTeamId: createForm.homeTeamId,
         awayTeamId: createForm.awayTeamId,
-        startTime: createForm.startTime.toISOString(),
+        startTime: startTime.toISOString(),
       },
     })
     createOpen.value = false
     await fetchStandalone()
     toast.add({ severity: 'success', summary: 'Матч создан', life: 2500 })
   } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось создать матч',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
+    toastMatchScheduleCreateApiError((m) => toast.add(m), t, e)
   } finally {
     createSaving.value = false
   }
@@ -378,7 +408,7 @@ const openEdit = async (m: MatchRow) => {
     return
   }
   if (token.value) {
-    await loadRefs(authFetch, apiUrl, token.value, tenantId.value)
+    await loadRefs()
   }
   editForm.matchId = m.id
   editForm.homeTeamId = m.homeTeam.id
@@ -423,7 +453,7 @@ const submitEdit = async () => {
     toast.add({
       severity: 'error',
       summary: 'Не удалось сохранить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -447,7 +477,7 @@ const openProtocolFromTournament = (m: TenantTournamentMatchRow) => {
 
 const onProtocolSaved = async () => {
   await fetchStandalone()
-  if (activeTab.value === 1) await fetchTournamentMatchesList()
+  if (activeTab.value === 0) await fetchTournamentMatchesList()
 }
 
 const deleteMatchConfirmOpen = ref(false)
@@ -485,7 +515,7 @@ async function confirmDeleteMatch() {
     toast.add({
       severity: 'error',
       summary: 'Не удалось удалить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -535,7 +565,7 @@ const attachToTournament = async (m: MatchRow) => {
     toast.add({
       severity: 'error',
       summary: 'Не удалось прикрепить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   }
@@ -589,7 +619,7 @@ async function confirmDetachTournamentMatch() {
     toast.add({
       severity: 'error',
       summary: 'Не удалось открепить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -607,17 +637,50 @@ watch(
     tournamentMatchDateRange,
   ],
   () => {
+    if (applyingTournamentFiltersFromRoute || ignoreNextTournamentQueryWatch) return
+    syncingTournamentPageFromFilters = true
     tournamentMatchesPage.value = 1
+    nextTick(() => {
+      syncingTournamentPageFromFilters = false
+    })
+    pushTournamentFiltersToRoute()
     if (tournamentListFiltersTimer) clearTimeout(tournamentListFiltersTimer)
     tournamentListFiltersTimer = setTimeout(() => {
-      if (activeTab.value === 1) void fetchTournamentMatchesList()
+      if (activeTab.value === 0) void fetchTournamentMatchesList()
+      tournamentListFiltersTimer = null
     }, 350)
   },
   { deep: true },
 )
 
+watch([tournamentMatchesPage, tournamentMatchesPageSize], () => {
+  if (
+    applyingTournamentFiltersFromRoute ||
+    ignoreNextTournamentQueryWatch ||
+    syncingTournamentPageFromFilters
+  ) {
+    return
+  }
+  pushTournamentFiltersToRoute()
+  void fetchTournamentMatchesList()
+})
+
+watch(
+  () => route.query,
+  () => {
+    if (!tournamentListRouteReady.value || ignoreNextTournamentQueryWatch) return
+    applyingTournamentFiltersFromRoute = true
+    readTournamentFiltersFromQuery()
+    nextTick(() => {
+      applyingTournamentFiltersFromRoute = false
+    })
+    if (activeTab.value === 0) void fetchTournamentMatchesList()
+  },
+  { deep: true },
+)
+
 watch(activeTab, (i) => {
-  if (i === 1) void fetchTournamentMatchesList()
+  if (i === 0) void fetchTournamentMatchesList()
 })
 
 onMounted(async () => {
@@ -628,17 +691,22 @@ onMounted(async () => {
       return
     }
   }
-  await Promise.all([fetchTeams(), fetchTournaments(), fetchStandalone()])
+  await fetchStandalone()
   syncMatchesTabFromRoute()
-  if (activeTab.value === 1) void fetchTournamentMatchesList()
+  applyingTournamentFiltersFromRoute = true
+  readTournamentFiltersFromQuery()
+  await nextTick()
+  applyingTournamentFiltersFromRoute = false
+  tournamentListRouteReady.value = true
+  if (activeTab.value === 0) void fetchTournamentMatchesList()
 })
 </script>
 
 <template>
-  <section class="p-6 space-y-8">
-    <div>
-      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">Матчи</h1>
-      <p class="mt-2 text-sm text-muted-color max-w-3xl">
+  <section class="admin-page space-y-6 sm:space-y-8">
+    <div class="min-w-0">
+      <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">Матчи</h1>
+      <p class="mt-2 text-xs text-muted-color max-w-3xl sm:text-sm">
         Создавайте матчи <strong>без привязки к турниру</strong>, ведите протокол, затем
         <strong>прикрепляйте</strong> к турниру с <strong>ручным расписанием</strong> (MANUAL). В турнире в
         <strong>«Составах»</strong> должны быть обе команды; если групп несколько — они должны быть в
@@ -648,153 +716,7 @@ onMounted(async () => {
     </div>
 
     <TabView v-model:activeIndex="activeTab">
-      <TabPanel header="Свободные матчи">
-    <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
-          Без турнира
-        </h2>
-        <Button
-          label="Создать матч"
-          icon="pi pi-plus"
-          size="small"
-          :disabled="teams.length < 2"
-          @click="openCreate"
-        />
-      </div>
-      <p v-if="teams.length < 2" class="mt-2 text-xs text-muted-color">
-        Нужно минимум две команды в арендаторе — добавьте их в разделе команд.
-      </p>
-      <p v-else-if="!manualTournaments.length" class="mt-2 text-xs text-muted-color">
-        Пока нет турниров формата «только ручное расписание» (MANUAL) — прикрепление будет доступно после их
-        создания.
-      </p>
-      <p v-else class="mt-2 text-xs text-muted-color max-w-3xl">
-        Прикрепление проверяет состав турнира и, при нескольких группах, что обе команды в одной группе; при успехе у
-        матча проставится нужный <code class="text-xs">groupId</code> для таблицы.
-      </p>
-
-      <div v-if="loading" class="mt-4 text-sm text-muted-color">Загрузка…</div>
-      <div v-else-if="!standaloneMatches.length" class="mt-4 text-sm text-muted-color">
-        Пока нет свободных матчей.
-      </div>
-
-      <DataTable
-        v-else
-        :value="standaloneMatches"
-        dataKey="id"
-        stripedRows
-        size="small"
-        class="mt-4"
-      >
-        <Column field="startTime" header="Начало" style="width: 9.5rem; min-width: 9rem">
-          <template #body="{ data }">
-            <span class="tabular-nums text-sm">{{ formatDateTimeNoSeconds(data.startTime) }}</span>
-          </template>
-        </Column>
-        <Column header="Матч" style="min-width: 12rem; max-width: 22rem">
-          <template #body="{ data }">
-            <div class="flex items-baseline gap-1.5 min-w-0 text-sm">
-              <span class="font-medium truncate" :title="data.homeTeam.name">{{ data.homeTeam.name }}</span>
-              <span class="text-muted-color shrink-0 text-xs">—</span>
-              <span class="font-medium truncate" :title="data.awayTeam.name">{{ data.awayTeam.name }}</span>
-            </div>
-          </template>
-        </Column>
-        <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
-          <template #body="{ data }">
-            <span
-              v-if="data.homeScore !== null && data.awayScore !== null"
-              class="tabular-nums text-sm font-medium whitespace-nowrap"
-            >
-              {{ formatMatchScoreDisplay(data) }}
-            </span>
-            <span v-else class="text-muted-color">—</span>
-          </template>
-        </Column>
-        <Column header="Статус" style="width: 7.5rem">
-          <template #body="{ data }">
-            <span :class="statusPillClass(data.status)" class="!text-[11px] !py-0.5 !px-1.5">
-              {{ statusLabel(data.status) }}
-            </span>
-          </template>
-        </Column>
-        <Column style="min-width: 11.5rem; width: 13rem">
-          <template #header>
-            <span v-tooltip.top="'Только турниры с ручным расписанием (MANUAL)'">К турниру</span>
-          </template>
-          <template #body="{ data }">
-            <div class="flex items-center gap-1.5">
-              <Select
-                v-model="attachTournamentByMatchId[data.id]"
-                :options="manualTournaments.map((t) => ({ label: t.name, value: t.id }))"
-                optionLabel="label"
-                optionValue="value"
-                class="flex-1 min-w-0 max-w-[10rem]"
-                size="small"
-                placeholder="Турнир"
-                :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
-              />
-              <Button
-                icon="pi pi-link"
-                severity="secondary"
-                outlined
-                size="small"
-                class="!shrink-0 !w-8 !h-8 !p-0"
-                :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
-                v-tooltip.top="'Прикрепить'"
-                @click="attachToTournament(data)"
-              />
-            </div>
-          </template>
-        </Column>
-        <Column
-          header="Действия"
-          style="width: 7rem"
-          headerClass="text-right !text-xs !font-normal !text-muted-color"
-          :headerStyle="{ textAlign: 'right' }"
-        >
-          <template #body="{ data }">
-            <div class="flex items-center justify-end gap-0">
-              <Button
-                icon="pi pi-book"
-                text
-                rounded
-                size="small"
-                class="!w-8 !h-8"
-                v-tooltip.top="'Протокол'"
-                @click="openProtocolStandalone(data)"
-              />
-              <Button
-                icon="pi pi-calendar"
-                text
-                rounded
-                size="small"
-                class="!w-8 !h-8"
-                :disabled="isMatchEditLocked(data.status)"
-                v-tooltip.top="'Дата и время'"
-                @click="openEdit(data)"
-              />
-              <Button
-                icon="pi pi-trash"
-                severity="danger"
-                text
-                rounded
-                size="small"
-                class="!w-8 !h-8"
-                :disabled="isMatchEditLocked(data.status)"
-                :loading="deletingId === data.id"
-                v-tooltip.top="'Удалить'"
-                @click="requestDeleteMatch(data)"
-              />
-            </div>
-          </template>
-        </Column>
-      </DataTable>
-    </div>
-      </TabPanel>
-
-      <TabPanel header="В турнирах">
+      <TabPanel value="in_tournaments" header="В турнирах">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 space-y-4">
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 sm:items-end">
             <div class="flex flex-col gap-1 min-w-0">
@@ -848,20 +770,79 @@ onMounted(async () => {
                 icon-display="input"
                 class="w-full"
                 size="small"
-                placeholder="С — По"
+                :placeholder="t('admin.matches_list.date_range_placeholder')"
               />
             </div>
           </div>
 
-          <div v-if="loadingTournamentMatches" class="text-sm text-muted-color">Загрузка…</div>
-          <div
-            v-else-if="!tournamentMatchesTotal"
-            class="text-sm text-muted-color"
+          <AdminDataState
+            :loading="loadingTournamentMatches"
+            :error="tournamentMatchesError"
+            :empty="!tournamentMatchesTotal"
+            empty-title="Нет матчей"
+            empty-description="Нет матчей по выбранным фильтрам."
+            :content-card="false"
+            @retry="retryTournamentMatchesFetch"
           >
-            Нет матчей по выбранным фильтрам.
-          </div>
-
-          <template v-else>
+            <template #loading>
+              <div
+                class="rounded-lg border border-surface-200 bg-surface-0 dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+              >
+                <DataTable
+                  :value="skeletonTournamentMatchRows"
+                  data-key="id"
+                  striped-rows
+                  size="small"
+                  class="min-h-[18rem]"
+                  aria-busy="true"
+                >
+                  <Column header="#" style="width: 2.75rem">
+                    <template #body>
+                      <Skeleton width="1.25rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Начало" style="width: 9.5rem; min-width: 9rem">
+                    <template #body>
+                      <Skeleton width="5.5rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Турнир" style="min-width: 8rem; max-width: 14rem">
+                    <template #body>
+                      <Skeleton width="75%" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Матч" style="min-width: 12rem; max-width: 22rem">
+                    <template #body>
+                      <Skeleton width="90%" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
+                    <template #body>
+                      <Skeleton width="2.5rem" height="0.875rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column header="Статус" style="width: 7.5rem">
+                    <template #body>
+                      <Skeleton width="4rem" height="1.25rem" class="rounded-md" />
+                    </template>
+                  </Column>
+                  <Column
+                    header="Действия"
+                    style="width: 5.5rem"
+                    header-class="text-right"
+                    :header-style="{ textAlign: 'right' }"
+                  >
+                    <template #body>
+                      <div class="flex justify-end gap-0">
+                        <Skeleton shape="circle" width="2rem" height="2rem" />
+                        <Skeleton shape="circle" width="2rem" height="2rem" />
+                      </div>
+                    </template>
+                  </Column>
+                </DataTable>
+              </div>
+            </template>
+          <div class="admin-datatable-scroll min-w-0">
           <DataTable :value="visibleTournamentMatchesWithIndex" data-key="id" striped-rows size="small">
             <Column header="#" style="width: 2.75rem">
               <template #body="{ data }">
@@ -934,8 +915,8 @@ onMounted(async () => {
             <Column
               header="Действия"
               style="width: 5.5rem"
-              headerClass="text-right !text-xs !font-normal !text-muted-color"
-              :headerStyle="{ textAlign: 'right' }"
+              header-class="text-right"
+              :header-style="{ textAlign: 'right' }"
             >
               <template #body="{ data }">
                 <div class="flex items-center justify-end gap-0">
@@ -964,6 +945,7 @@ onMounted(async () => {
               </template>
             </Column>
           </DataTable>
+          </div>
           <Paginator
             v-if="tournamentMatchesTotal > tournamentMatchesPageSize"
             class="border-t border-surface-200 dark:border-surface-700 mt-0 rounded-b-xl"
@@ -974,8 +956,219 @@ onMounted(async () => {
             template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
             @page="onTournamentPaginatorPage"
           />
-          </template>
+          </AdminDataState>
         </div>
+      </TabPanel>
+      <TabPanel value="standalone" header="Свободные матчи">
+    <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
+      <div class="admin-toolbar-responsive flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+          Без турнира
+        </h2>
+        <Button
+          label="Создать матч"
+          icon="pi pi-plus"
+          size="small"
+          :disabled="teams.length < 2"
+          @click="openCreate"
+        />
+      </div>
+      <p v-if="teams.length < 2" class="mt-2 text-xs text-muted-color">
+        Нужно минимум две команды в арендаторе — добавьте их в разделе команд.
+      </p>
+      <p v-else-if="!manualTournaments.length" class="mt-2 text-xs text-muted-color">
+        Пока нет турниров формата «только ручное расписание» (MANUAL) — прикрепление будет доступно после их
+        создания.
+      </p>
+      <p v-else class="mt-2 text-xs text-muted-color max-w-3xl">
+        Прикрепление проверяет состав турнира и, при нескольких группах, что обе команды в одной группе; при успехе у
+        матча проставится нужный <code class="text-xs">groupId</code> для таблицы.
+      </p>
+
+      <AdminDataState
+        class="mt-4"
+        :loading="standaloneLoading"
+        :error="standaloneError"
+        :empty="!standaloneMatches.length"
+        empty-title="Пока нет свободных матчей"
+        :content-card="false"
+        @retry="retryStandaloneFetch"
+      >
+        <template #loading>
+          <div
+            class="rounded-lg border border-surface-200 bg-surface-0 dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+          >
+            <DataTable
+              :value="skeletonStandaloneMatchRows"
+              data-key="id"
+              striped-rows
+              size="small"
+              class="min-h-[16rem]"
+              aria-busy="true"
+            >
+              <Column header="Начало" style="width: 9.5rem; min-width: 9rem">
+                <template #body>
+                  <Skeleton width="5.5rem" height="0.875rem" class="rounded-md" />
+                </template>
+              </Column>
+              <Column header="Матч" style="min-width: 12rem">
+                <template #body>
+                  <Skeleton width="85%" height="0.875rem" class="rounded-md" />
+                </template>
+              </Column>
+              <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
+                <template #body>
+                  <Skeleton width="2.5rem" height="0.875rem" class="rounded-md" />
+                </template>
+              </Column>
+              <Column header="Статус" style="width: 7.5rem">
+                <template #body>
+                  <Skeleton width="4rem" height="1.25rem" class="rounded-md" />
+                </template>
+              </Column>
+              <Column style="min-width: 11.5rem; width: 13rem">
+                <template #header>
+                  <span>К турниру</span>
+                </template>
+                <template #body>
+                  <div class="flex gap-1.5">
+                    <Skeleton width="100%" height="2rem" class="rounded-md max-w-[10rem]" />
+                    <Skeleton shape="circle" width="2rem" height="2rem" />
+                  </div>
+                </template>
+              </Column>
+              <Column
+                header="Действия"
+                style="width: 7rem"
+                header-class="text-right"
+                :header-style="{ textAlign: 'right' }"
+              >
+                <template #body>
+                  <div class="flex justify-end gap-0">
+                    <Skeleton shape="circle" width="2rem" height="2rem" />
+                    <Skeleton shape="circle" width="2rem" height="2rem" />
+                    <Skeleton shape="circle" width="2rem" height="2rem" />
+                  </div>
+                </template>
+              </Column>
+            </DataTable>
+          </div>
+        </template>
+      <div class="admin-datatable-scroll min-w-0">
+      <DataTable
+        :value="standaloneMatches"
+        dataKey="id"
+        stripedRows
+        size="small"
+        class="mt-0"
+      >
+        <Column field="startTime" header="Начало" style="width: 9.5rem; min-width: 9rem">
+          <template #body="{ data }">
+            <span class="tabular-nums text-sm">{{ formatDateTimeNoSeconds(data.startTime) }}</span>
+          </template>
+        </Column>
+        <Column header="Матч" style="min-width: 12rem; max-width: 22rem">
+          <template #body="{ data }">
+            <div class="flex items-baseline gap-1.5 min-w-0 text-sm">
+              <span class="font-medium truncate" :title="data.homeTeam.name">{{ data.homeTeam.name }}</span>
+              <span class="text-muted-color shrink-0 text-xs">—</span>
+              <span class="font-medium truncate" :title="data.awayTeam.name">{{ data.awayTeam.name }}</span>
+            </div>
+          </template>
+        </Column>
+        <Column header="Счёт" style="min-width: 8rem; width: 8.75rem">
+          <template #body="{ data }">
+            <span
+              v-if="data.homeScore !== null && data.awayScore !== null"
+              class="tabular-nums text-sm font-medium whitespace-nowrap"
+            >
+              {{ formatMatchScoreDisplay(data) }}
+            </span>
+            <span v-else class="text-muted-color">—</span>
+          </template>
+        </Column>
+        <Column header="Статус" style="width: 7.5rem">
+          <template #body="{ data }">
+            <span :class="statusPillClass(data.status)" class="!text-[11px] !py-0.5 !px-1.5">
+              {{ statusLabel(data.status) }}
+            </span>
+          </template>
+        </Column>
+        <Column style="min-width: 11.5rem; width: 13rem">
+          <template #header>
+            <span v-tooltip.top="'Только турниры с ручным расписанием (MANUAL)'">К турниру</span>
+          </template>
+          <template #body="{ data }">
+            <div class="flex items-center gap-1.5">
+              <Select
+                v-model="attachTournamentByMatchId[data.id]"
+                :options="manualTournaments.map((t) => ({ label: t.name, value: t.id }))"
+                optionLabel="label"
+                optionValue="value"
+                class="flex-1 min-w-0 max-w-[10rem]"
+                size="small"
+                placeholder="Турнир"
+                :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
+              />
+              <Button
+                icon="pi pi-link"
+                severity="secondary"
+                outlined
+                size="small"
+                class="!shrink-0 !w-8 !h-8 !p-0"
+                :disabled="!manualTournaments.length || isMatchEditLocked(data.status)"
+                v-tooltip.top="'Прикрепить'"
+                @click="attachToTournament(data)"
+              />
+            </div>
+          </template>
+        </Column>
+        <Column
+          header="Действия"
+          style="width: 7rem"
+          header-class="text-right"
+          :header-style="{ textAlign: 'right' }"
+        >
+          <template #body="{ data }">
+            <div class="flex items-center justify-end gap-0">
+              <Button
+                icon="pi pi-book"
+                text
+                rounded
+                size="small"
+                class="!w-8 !h-8"
+                v-tooltip.top="'Протокол'"
+                @click="openProtocolStandalone(data)"
+              />
+              <Button
+                icon="pi pi-calendar"
+                text
+                rounded
+                size="small"
+                class="!w-8 !h-8"
+                :disabled="isMatchEditLocked(data.status)"
+                v-tooltip.top="'Дата и время'"
+                @click="openEdit(data)"
+              />
+              <Button
+                icon="pi pi-trash"
+                severity="danger"
+                text
+                rounded
+                size="small"
+                class="!w-8 !h-8"
+                :disabled="isMatchEditLocked(data.status)"
+                :loading="deletingId === data.id"
+                v-tooltip.top="'Удалить'"
+                @click="requestDeleteMatch(data)"
+              />
+            </div>
+          </template>
+        </Column>
+      </DataTable>
+      </div>
+      </AdminDataState>
+    </div>
       </TabPanel>
     </TabView>
 
@@ -998,6 +1191,7 @@ onMounted(async () => {
     <Dialog
       v-model:visible="createOpen"
       modal
+      block-scroll
       header="Новый матч (без турнира)"
       :style="{ width: '36rem' }"
     >
@@ -1035,6 +1229,7 @@ onMounted(async () => {
           <label class="text-sm block mb-1">Начало</label>
           <DatePicker
             v-model="createForm.startTime"
+            input-id="e2e-standalone-create-start"
             class="w-full"
             showTime
             hourFormat="24"
@@ -1046,12 +1241,25 @@ onMounted(async () => {
         </div>
       </div>
       <template #footer>
-        <Button label="Отмена" text :disabled="createSaving" @click="createOpen = false" />
-        <Button label="Создать" icon="pi pi-check" :loading="createSaving" :disabled="createSaving || (createSubmitAttempted && !canCreateMatch)" @click="submitCreate" />
+        <Button type="button" label="Отмена" text :disabled="createSaving" @click="createOpen = false" />
+        <Button
+          type="button"
+          label="Создать"
+          icon="pi pi-check"
+          :loading="createSaving"
+          :disabled="createSaving || (createSubmitAttempted && !canCreateMatch)"
+          @click="submitCreate"
+        />
       </template>
     </Dialog>
 
-    <Dialog v-model:visible="editOpen" modal header="Параметры матча" :style="{ width: '36rem' }">
+    <Dialog
+      v-model:visible="editOpen"
+      modal
+      block-scroll
+      header="Параметры матча"
+      :style="{ width: '36rem' }"
+    >
       <div v-if="editForm.matchId" class="space-y-4">
         <div>
           <label class="text-sm block mb-1">Хозяева</label>
@@ -1116,8 +1324,15 @@ onMounted(async () => {
         </div>
       </div>
       <template #footer>
-        <Button label="Отмена" text :disabled="editSaving" @click="editOpen = false" />
-        <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" :disabled="editSaving || (editSubmitAttempted && !canEditMatch)" @click="submitEdit" />
+        <Button type="button" label="Отмена" text :disabled="editSaving" @click="editOpen = false" />
+        <Button
+          type="button"
+          label="Сохранить"
+          icon="pi pi-check"
+          :loading="editSaving"
+          :disabled="editSaving || (editSubmitAttempted && !canEditMatch)"
+          @click="submitEdit"
+        />
       </template>
     </Dialog>
 

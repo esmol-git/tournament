@@ -1,16 +1,12 @@
 import { useAuthStore } from '~/stores/auth'
+import { isModeratorForbiddenAdminRoute } from '~/utils/moderatorAdminRouteGate'
 import { isTenantAdminOnlyAdminRoute } from '~/utils/adminTenantRoleRouteGate'
-
-function readRole(user: unknown): string | null {
-  if (!user || typeof user !== 'object') return null
-  const role = (user as { role?: unknown }).role
-  return typeof role === 'string' && role.trim() ? role : null
-}
+import { readTenantStaffRole } from '~/utils/tenantStaffRole'
 
 /**
- * Маршруты только для TENANT_ADMIN (пользователи, соцссылки и т.д.).
+ * Роли: маршруты только для TENANT_ADMIN; для MODERATOR — закрыты справочники и часть разделов.
  */
-export default defineNuxtRouteMiddleware((to) => {
+export default defineNuxtRouteMiddleware(async (to) => {
   if (!process.client) return
   const p = to.path
   if (!p.startsWith('/admin')) return
@@ -22,13 +18,39 @@ export default defineNuxtRouteMiddleware((to) => {
   )
     return
 
-  if (!isTenantAdminOnlyAdminRoute(p)) return
+  const tabRaw = to.query.tab
+  const tabOne = Array.isArray(tabRaw) ? tabRaw[0] : tabRaw
+  const moderatorBlockedTemplatesTab = p === '/admin/tournaments' && tabOne === 'templates'
+
+  const needsAuthRoleCheck =
+    isModeratorForbiddenAdminRoute(p) ||
+    isTenantAdminOnlyAdminRoute(p) ||
+    moderatorBlockedTemplatesTab
+
+  if (!needsAuthRoleCheck) return
 
   const auth = useAuthStore()
   auth.syncWithStorage()
+  await auth.restoreSessionViaRefreshCookieIfNeeded()
   if (!auth.loggedIn) return
 
-  const role = readRole(auth.user)
+  const role = readTenantStaffRole(auth.user)
+
+  if (role === 'MODERATOR') {
+    if (isModeratorForbiddenAdminRoute(p)) {
+      return navigateTo({
+        path: '/admin/feature-unavailable',
+        query: { reason: 'moderator_scope' },
+      })
+    }
+    if (moderatorBlockedTemplatesTab) {
+      const { tab: _omit, ...rest } = to.query
+      return navigateTo({ path: '/admin/tournaments', query: rest })
+    }
+  }
+
+  if (!isTenantAdminOnlyAdminRoute(p)) return
+
   if (role === 'TENANT_ADMIN') return
 
   return navigateTo({

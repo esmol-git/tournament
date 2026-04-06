@@ -17,7 +17,7 @@ import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.gu
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
-import { TournamentCreatorAccessGuard } from '../auth/tournament-creator-access.guard';
+import { TournamentMatchStaffGuard } from '../auth/tournament-match-staff.guard';
 import { MatchesService } from './matches.service';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { UpdateProtocolDto } from './dto/update-protocol.dto';
@@ -28,11 +28,25 @@ import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
 import { ListStandaloneMatchesQueryDto } from './dto/list-standalone-matches-query.dto';
 import { Request } from 'express';
 import { JwtPayload } from '../auth/jwt.strategy';
+import { ApiErrorCode } from '../common/api-error-codes';
 import { UserRole } from '@prisma/client';
 
 function assertTenant(req: Request & { user: JwtPayload }, tenantId: string) {
   if (req.user.tenantId !== tenantId) {
-    throw new ForbiddenException('Нет доступа к этому арендатору');
+    throw new ForbiddenException({
+      message: 'Нет доступа к ресурсу другой организации',
+      code: ApiErrorCode.CROSS_TENANT_ACCESS_DENIED,
+    });
+  }
+}
+
+/** Матчи и протокол внутри турнира — у модератора есть доступ; общий список по тенанту — нет. */
+function assertModeratorNoOrgWideMatchAccess(user: JwtPayload) {
+  if (user.role === UserRole.MODERATOR) {
+    throw new ForbiddenException({
+      message: 'Календарь матчей организации недоступен для модератора',
+      code: ApiErrorCode.INSUFFICIENT_ROLE,
+    });
   }
 }
 
@@ -57,7 +71,7 @@ export class MatchesController {
     assertTenant(req, tenantId);
     return this.matchesService.listStandaloneMatches(
       tenantId,
-      req.user.role as UserRole,
+      req.user.role,
       query,
     );
   }
@@ -69,9 +83,10 @@ export class MatchesController {
     @Query() query: ListTenantMatchesQueryDto,
   ) {
     assertTenant(req, tenantId);
+    assertModeratorNoOrgWideMatchAccess(req.user);
     return this.matchesService.listTenantMatches(
       tenantId,
-      req.user.role as UserRole,
+      req.user.role,
       req.user.sub,
       query,
     );
@@ -84,7 +99,12 @@ export class MatchesController {
     @Body() dto: CreateStandaloneMatchDto,
   ) {
     assertTenant(req, tenantId);
-    return this.matchesService.createStandaloneMatch(tenantId, req.user.role as UserRole, dto);
+    assertModeratorNoOrgWideMatchAccess(req.user);
+    return this.matchesService.createStandaloneMatch(
+      tenantId,
+      req.user.role,
+      dto,
+    );
   }
 
   @Patch('tenants/:tenantId/standalone-matches/:matchId')
@@ -95,13 +115,19 @@ export class MatchesController {
     @Body() dto: UpdateMatchDto,
   ) {
     assertTenant(req, tenantId);
-    return this.matchesService.updateStandaloneMatch(tenantId, matchId, req.user.role as UserRole, {
-      startTime: dto.startTime ? new Date(dto.startTime) : undefined,
-      homeTeamId: dto.homeTeamId,
-      awayTeamId: dto.awayTeamId,
-      scheduleChangeReasonId: dto.scheduleChangeReasonId,
-      scheduleChangeNote: dto.scheduleChangeNote,
-    });
+    return this.matchesService.updateStandaloneMatch(
+      tenantId,
+      matchId,
+      req.user.role,
+      {
+        startTime: dto.startTime ? new Date(dto.startTime) : undefined,
+        homeTeamId: dto.homeTeamId,
+        awayTeamId: dto.awayTeamId,
+        scheduleChangeReasonId: dto.scheduleChangeReasonId,
+        scheduleChangeNote: dto.scheduleChangeNote,
+        stadiumId: dto.stadiumId,
+      },
+    );
   }
 
   @Delete('tenants/:tenantId/standalone-matches/:matchId')
@@ -111,10 +137,11 @@ export class MatchesController {
     @Req() req: Request & { user: JwtPayload },
   ) {
     assertTenant(req, tenantId);
+    assertModeratorNoOrgWideMatchAccess(req.user);
     return this.matchesService.deleteStandaloneMatch(
       tenantId,
       matchId,
-      req.user.role as UserRole,
+      req.user.role,
     );
   }
 
@@ -129,8 +156,9 @@ export class MatchesController {
     return this.matchesService.updateStandaloneProtocol(
       tenantId,
       matchId,
-      req.user.role as UserRole,
+      req.user.role,
       dto,
+      req.user.sub,
     );
   }
 
@@ -142,6 +170,7 @@ export class MatchesController {
     @Body() dto: AttachMatchToTournamentDto,
   ) {
     assertTenant(req, tenantId);
+    assertModeratorNoOrgWideMatchAccess(req.user);
     return this.matchesService.attachMatchToTournament(
       tenantId,
       matchId,
@@ -157,6 +186,7 @@ export class MatchesController {
     @Req() req: Request & { user: JwtPayload },
   ) {
     assertTenant(req, tenantId);
+    assertModeratorNoOrgWideMatchAccess(req.user);
     return this.matchesService.detachMatchFromTournament(
       tenantId,
       matchId,
@@ -165,21 +195,17 @@ export class MatchesController {
   }
 
   @Post('tournaments/:tournamentId/matches')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentMatchStaffGuard)
   async createMatch(
     @Param('tournamentId') tournamentId: string,
     @Req() req: Request & { user: JwtPayload },
     @Body() dto: CreateMatchDto,
   ) {
-    return this.matchesService.createMatch(
-      tournamentId,
-      req.user.role as UserRole,
-      dto,
-    );
+    return this.matchesService.createMatch(tournamentId, req.user.role, dto);
   }
 
   @Delete('tournaments/:tournamentId/matches/:matchId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentMatchStaffGuard)
   async deleteMatch(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,
@@ -188,12 +214,12 @@ export class MatchesController {
     return this.matchesService.deleteMatch(
       tournamentId,
       matchId,
-      req.user.role as UserRole,
+      req.user.role,
     );
   }
 
   @Patch('tournaments/:tournamentId/matches/:matchId')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentMatchStaffGuard)
   async updateMatch(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,
@@ -212,12 +238,13 @@ export class MatchesController {
         groupId: dto.groupId,
         scheduleChangeReasonId: dto.scheduleChangeReasonId,
         scheduleChangeNote: dto.scheduleChangeNote,
+        stadiumId: dto.stadiumId,
       },
     );
   }
 
   @Patch('tournaments/:tournamentId/matches/:matchId/protocol')
-  @UseGuards(TournamentCreatorAccessGuard)
+  @UseGuards(TournamentMatchStaffGuard)
   async updateProtocol(
     @Param('tournamentId') tournamentId: string,
     @Param('matchId') matchId: string,
@@ -229,6 +256,7 @@ export class MatchesController {
       matchId,
       req.user.role as any,
       dto,
+      req.user.sub,
     );
   }
 }

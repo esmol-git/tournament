@@ -5,8 +5,6 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { randomUUID } from 'node:crypto';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-
 async function bootstrap() {
   // Express + Multer: загрузка файлов через FileInterceptor (multer) в контроллерах
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -21,8 +19,6 @@ async function bootstrap() {
     res.setHeader('X-Request-Id', requestId);
     next();
   });
-
-  app.useGlobalFilters(new AllExceptionsFilter());
 
   const isProd = process.env.NODE_ENV === 'production';
   const allowedOriginPatterns = [
@@ -69,7 +65,9 @@ async function bootstrap() {
             callback(null, true);
             return;
           }
-          const isPatternAllowed = allowedOriginPatterns.some((re) => re.test(origin));
+          const isPatternAllowed = allowedOriginPatterns.some((re) =>
+            re.test(origin),
+          );
           // Не передавать Error в callback — иначе express/cors вызывает next(err) и ответ 500 на preflight.
           callback(null, isPatternAllowed);
         }

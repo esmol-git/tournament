@@ -10,7 +10,9 @@ import {
   type BucketLocationConstraint,
   CreateBucketCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadBucketCommand,
+  ListObjectsV2Command,
   PutBucketPolicyCommand,
   PutObjectCommand,
   type PutObjectCommandInput,
@@ -350,18 +352,19 @@ export class StorageService implements OnModuleInit {
           'Хранилище S3 недоступно (нет соединения). Проверьте, что MinIO запущен; S3_ENDPOINT должен указывать на API (порт 9000), не на веб-консоль (9001).';
       }
       if (code === 'InvalidAccessKeyId' || code === 'SignatureDoesNotMatch') {
-        hint =
-          'Неверные ключи S3 (S3_ACCESS_KEY / S3_SECRET_KEY).';
+        hint = 'Неверные ключи S3 (S3_ACCESS_KEY / S3_SECRET_KEY).';
       }
       if (code === 'AccessDenied') {
-        hint =
-          'Доступ к S3 запрещён. Проверьте права ключа и политику бакета.';
+        hint = 'Доступ к S3 запрещён. Проверьте права ключа и политику бакета.';
       }
       if (code === 'NoSuchBucket') {
         hint =
           'Бакет не найден. Создайте бакет в MinIO или задайте S3_CREATE_BUCKET_IF_MISSING=true (если допустимо для среды).';
       }
-      if (/acl|access control/i.test(message) || code === 'AccessControlListNotSupported') {
+      if (
+        /acl|access control/i.test(message) ||
+        code === 'AccessControlListNotSupported'
+      ) {
         hint =
           'PutObject отклонён из‑за ACL. Задайте S3_OBJECT_ACL=none в .env и публичное чтение через политику бакета.';
       }
@@ -420,6 +423,84 @@ export class StorageService implements OnModuleInit {
       this.logger.log(`S3: удалён объект ${bucket}/${key}`);
     } catch (e) {
       this.logger.warn(`S3 DeleteObject не удался (${bucket}/${key}): ${e}`);
+    }
+  }
+
+  private static readonly TENANT_PREFIX_CHUNK = 1000;
+
+  /**
+   * Удаляет все объекты с ключами `tenants/{tenantId}/...` (после удаления организации в БД).
+   * При отсутствии S3 или ошибке только пишет в лог — не бросает исключение.
+   */
+  async deleteAllForTenant(tenantId: string): Promise<void> {
+    const id = tenantId?.trim();
+    if (!id) return;
+
+    const prefix = `tenants/${id}/`;
+    const bucket = this.config.get<string>('S3_BUCKET')?.trim();
+    const endpoint = this.config.get<string>('S3_ENDPOINT')?.trim();
+    const accessKeyId = this.config.get<string>('S3_ACCESS_KEY')?.trim();
+    const secretAccessKey = this.config.get<string>('S3_SECRET_KEY')?.trim();
+    if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
+      this.logger.warn(
+        `S3 не настроено — пропуск очистки файлов организации (${prefix})`,
+      );
+      return;
+    }
+
+    const maxKeys = StorageService.TENANT_PREFIX_CHUNK;
+
+    try {
+      let continuation: string | undefined;
+      let deletedTotal = 0;
+
+      do {
+        const listed = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            MaxKeys: maxKeys,
+            ContinuationToken: continuation,
+          }),
+        );
+
+        const keys =
+          listed.Contents?.map((c) => c.Key).filter((k): k is string =>
+            Boolean(k),
+          ) ?? [];
+
+        if (keys.length > 0) {
+          const del = await this.client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: {
+                Objects: keys.map((Key) => ({ Key })),
+                Quiet: true,
+              },
+            }),
+          );
+          if (del.Errors && del.Errors.length > 0) {
+            this.logger.warn(
+              `S3 DeleteObjects: не удалена часть объектов (${del.Errors.length}) для ${prefix}`,
+            );
+          }
+          deletedTotal += keys.length;
+        }
+
+        continuation = listed.IsTruncated
+          ? listed.NextContinuationToken
+          : undefined;
+      } while (continuation);
+
+      if (deletedTotal > 0) {
+        this.logger.log(
+          `S3: удалены файлы организации (${deletedTotal} объектов, префикс ${prefix})`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `S3: не удалось очистить файлы организации (${prefix}): ${e}`,
+      );
     }
   }
 }

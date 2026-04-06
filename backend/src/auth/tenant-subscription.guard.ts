@@ -25,7 +25,11 @@ export class TenantSubscriptionGuard implements CanActivate {
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: user.tenantId },
-      select: { blocked: true, subscriptionEndsAt: true },
+      select: {
+        blocked: true,
+        subscriptionStatus: true,
+        subscriptionEndsAt: true,
+      },
     });
     if (!tenant) {
       throw new ForbiddenException({

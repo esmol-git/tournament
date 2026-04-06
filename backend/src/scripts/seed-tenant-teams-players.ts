@@ -9,11 +9,12 @@ function toInt(value: string | undefined, fallback: number): number {
 }
 
 async function main() {
-  const tenantSlug = (process.env.SEED_TENANT_SLUG ?? 'impuls-2').trim().toLowerCase();
+  const tenantSlug = (process.env.SEED_TENANT_SLUG ?? 'impuls-2')
+    .trim()
+    .toLowerCase();
   const teamsCount = toInt(process.env.SEED_TEAMS, 20);
   const playersPerTeam = toInt(process.env.SEED_PLAYERS_PER_TEAM, 10);
-  const batch =
-    (process.env.SEED_BATCH ?? '').trim() || String(Date.now());
+  const batch = (process.env.SEED_BATCH ?? '').trim() || String(Date.now());
 
   const tenant = await prisma.tenant.findUnique({
     where: { slug: tenantSlug },

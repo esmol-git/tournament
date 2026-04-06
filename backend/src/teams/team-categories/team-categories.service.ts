@@ -40,10 +40,18 @@ export class TeamCategoriesService {
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.slug !== undefined ? { slug: dto.slug?.trim() || null } : {}),
-        ...(dto.minBirthYear !== undefined ? { minBirthYear: dto.minBirthYear ?? null } : {}),
-        ...(dto.maxBirthYear !== undefined ? { maxBirthYear: dto.maxBirthYear ?? null } : {}),
-        ...(dto.requireBirthDate !== undefined ? { requireBirthDate: dto.requireBirthDate } : {}),
-        ...(dto.allowedGenders !== undefined ? { allowedGenders: dto.allowedGenders } : {}),
+        ...(dto.minBirthYear !== undefined
+          ? { minBirthYear: dto.minBirthYear ?? null }
+          : {}),
+        ...(dto.maxBirthYear !== undefined
+          ? { maxBirthYear: dto.maxBirthYear ?? null }
+          : {}),
+        ...(dto.requireBirthDate !== undefined
+          ? { requireBirthDate: dto.requireBirthDate }
+          : {}),
+        ...(dto.allowedGenders !== undefined
+          ? { allowedGenders: dto.allowedGenders }
+          : {}),
       },
     });
   }

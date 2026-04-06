@@ -50,4 +50,11 @@ export class UpdateMatchDto {
   @IsString()
   @MaxLength(2000)
   scheduleChangeNote?: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Площадка матча; null — снять привязку',
+  })
+  @IsOptional()
+  stadiumId?: string | null;
 }

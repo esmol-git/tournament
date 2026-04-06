@@ -107,7 +107,12 @@ onMounted(() => {
     <div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-6">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex items-center gap-3">
-          <img :src="logoUrl" alt="Tournament Platform" class="h-9 w-auto object-contain" loading="lazy" />
+          <RemoteImage
+            :src="logoUrl"
+            alt="Tournament Platform"
+            fit="contain"
+            class="h-9 w-auto max-w-[12rem]"
+          />
           <div>
             <p class="text-sm font-semibold tracking-wide">{{ footerName }}</p>
             <p class="text-xs text-white/70">{{ tagline }}</p>

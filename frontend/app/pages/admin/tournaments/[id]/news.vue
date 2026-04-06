@@ -3,7 +3,10 @@
  * Раздел новостей перенесён в сайдбар: `/admin/news`.
  * Старый URL сохраняем редиректом с предвыбором турнира.
  */
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const route = useRoute()
 

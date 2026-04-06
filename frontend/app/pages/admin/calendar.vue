@@ -9,16 +9,24 @@ import ruLocale from '@fullcalendar/core/locales/ru'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
-import type { MatchRow, TeamLite, TenantTournamentMatchRow } from '~/types/tournament-admin'
+import { useAdminTenantTeamsAllQuery } from '~/composables/admin/useAdminTenantListQueries'
+import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
+import type { MatchRow, TenantTournamentMatchRow } from '~/types/tournament-admin'
 import {
   formatMatchScoreDisplay,
   isMatchEditLocked,
   statusLabel,
-  statusOptions,
 } from '~/utils/tournamentAdminUi'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { toastMatchScheduleCreateApiError } from '~/utils/matchCreateToast'
+import { displayTeamNameForUi } from '~/utils/teamDisplayName'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
+import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const router = useRouter()
 const toast = useToast()
@@ -26,11 +34,17 @@ const { t } = useI18n()
 const { token, syncWithStorage, loggedIn, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
+const matchStatusSelectOptions = useMatchStatusSelectOptions()
 
-const loading = ref(false)
+const {
+  loading,
+  error: calendarLoadError,
+  run: runCalendarFetch,
+  retry: retryCalendarFetch,
+} = useAdminAsyncState()
 const standaloneMatches = ref<MatchRow[]>([])
 const tournamentMatches = ref<TenantTournamentMatchRow[]>([])
-const teams = ref<TeamLite[]>([])
+const { teams } = useAdminTenantTeamsAllQuery()
 const selectedTournamentId = ref('')
 const selectedTeamId = ref('')
 const selectedStatus = ref('')
@@ -60,16 +74,8 @@ function calendarApi(): CalendarApi | null {
   return inst?.getApi?.() ?? null
 }
 
-/** Убираем служебные суффиксы вроде «(batch …)» в подписи в ячейке календаря */
-function displayTeamNameForCalendar(name: string) {
-  return name
-    .replace(/\s*\(\s*batch\s+[^)]+\)/gi, '')
-    .replace(/\s*\(batch[^)]*\)/gi, '')
-    .trim()
-}
-
 function calendarMatchTitle(m: MatchRow | TenantTournamentMatchRow) {
-  const base = `${displayTeamNameForCalendar(m.homeTeam.name)} – ${displayTeamNameForCalendar(m.awayTeam.name)}`
+  const base = `${displayTeamNameForUi(m.homeTeam.name)} – ${displayTeamNameForUi(m.awayTeam.name)}`
   const hasScore =
     m.homeScore !== null &&
     m.homeScore !== undefined &&
@@ -125,7 +131,14 @@ function loadColors() {
   if (!process.client) return
   try {
     const raw = localStorage.getItem(colorStorageKey())
-    eventColors.value = raw ? (JSON.parse(raw) as Record<string, string>) : {}
+    const parsed = raw ? (JSON.parse(raw) as Record<string, string>) : {}
+    /** Раньше цвет турнирных матчей можно было класть в localStorage — теперь только цвет турнира с сервера. */
+    eventColors.value = Object.fromEntries(
+      Object.entries(parsed).filter(([k]) => !k.startsWith('tournament:')),
+    )
+    if (Object.keys(eventColors.value).length !== Object.keys(parsed).length) {
+      saveColors()
+    }
   } catch {
     eventColors.value = {}
   }
@@ -221,7 +234,7 @@ const tournamentOptions = computed(() => {
   return Array.from(map.values())
 })
 const statusFilterOptions = computed(() =>
-  statusOptions.map((s) => ({ label: s.label, value: s.value })),
+  matchStatusSelectOptions.value.map((s) => ({ label: s.label, value: s.value })),
 )
 const editErrors = computed(() => {
   const m = editModel.value
@@ -305,8 +318,8 @@ const calendarEvents = computed<EventInput[]>(() => {
     const locked = isMatchEditLocked(m.status)
     const stripe = tournamentMatchStripeColor(m)
     const fallback = defaultColor(locked, 'tournament')
-    const fill =
-      eventColors.value[eventId] ?? stripe ?? fallback
+    /** Цвет турнира с сервера; локальные переопределения для турнирных матчей не используем. */
+    const fill = stripe ?? fallback
     return {
     id: eventId,
     start: m.startTime,
@@ -335,90 +348,64 @@ const calendarEvents = computed<EventInput[]>(() => {
 
 async function fetchMatches() {
   if (!token.value) return
-  loading.value = true
-  try {
-    const common = new URLSearchParams()
-    if (selectedTeamId.value) common.set('teamId', selectedTeamId.value)
-    if (selectedStatus.value) common.set('status', selectedStatus.value)
-    if (!showLocked.value) common.set('includeLocked', 'false')
+  await runCalendarFetch(async () => {
+    try {
+      const common = new URLSearchParams()
+      if (selectedTeamId.value) common.set('teamId', selectedTeamId.value)
+      if (selectedStatus.value) common.set('status', selectedStatus.value)
+      if (!showLocked.value) common.set('includeLocked', 'false')
 
-    const shouldLoadStandalone =
-      sourceFilter.value === 'all' || sourceFilter.value === 'standalone'
-    const shouldLoadTournament =
-      sourceFilter.value === 'all' || sourceFilter.value === 'tournament'
+      const shouldLoadStandalone =
+        sourceFilter.value === 'all' || sourceFilter.value === 'standalone'
+      const shouldLoadTournament =
+        sourceFilter.value === 'all' || sourceFilter.value === 'tournament'
 
-    const standalonePromise = shouldLoadStandalone
-      ? authFetch<MatchRow[]>(
-          apiUrl(
-            `/tenants/${tenantId.value}/standalone-matches${
-              common.toString() ? `?${common.toString()}` : ''
-            }`,
-          ),
-        )
-      : Promise.resolve([] as MatchRow[])
+      const standalonePromise = shouldLoadStandalone
+        ? authFetch<MatchRow[]>(
+            apiUrl(
+              `/tenants/${tenantId.value}/standalone-matches${
+                common.toString() ? `?${common.toString()}` : ''
+              }`,
+            ),
+          )
+        : Promise.resolve([] as MatchRow[])
 
-    const allTournamentMatches: TenantTournamentMatchRow[] = []
-    if (shouldLoadTournament) {
-      let page = 1
-      let total = 0
-      do {
-        const params = new URLSearchParams(common.toString())
-        params.set('page', String(page))
-        params.set('pageSize', '100')
-        params.set('excludeUndeterminedPlayoff', 'true')
-        if (selectedTournamentId.value) {
-          params.set('tournamentId', selectedTournamentId.value)
-        }
-        const chunk = await authFetch<{ items: TenantTournamentMatchRow[]; total: number }>(
-          apiUrl(`/tenants/${tenantId.value}/matches?${params.toString()}`),
-        )
-        const items = chunk.items ?? []
-        total = chunk.total ?? items.length
-        allTournamentMatches.push(...items)
-        page += 1
-        if (!items.length) break
-      } while (allTournamentMatches.length < total)
+      const allTournamentMatches: TenantTournamentMatchRow[] = []
+      if (shouldLoadTournament) {
+        let page = 1
+        let total = 0
+        do {
+          const params = new URLSearchParams(common.toString())
+          params.set('page', String(page))
+          params.set('pageSize', '100')
+          params.set('excludeUndeterminedPlayoff', 'true')
+          if (selectedTournamentId.value) {
+            params.set('tournamentId', selectedTournamentId.value)
+          }
+          const chunk = await authFetch<{ items: TenantTournamentMatchRow[]; total: number }>(
+            apiUrl(`/tenants/${tenantId.value}/matches?${params.toString()}`),
+          )
+          const items = chunk.items ?? []
+          total = chunk.total ?? items.length
+          allTournamentMatches.push(...items)
+          page += 1
+          if (!items.length) break
+        } while (allTournamentMatches.length < total)
+      }
+
+      const standalone = await standalonePromise
+
+      const inTournament = {
+        items: allTournamentMatches,
+      }
+      standaloneMatches.value = standalone ?? []
+      tournamentMatches.value = inTournament.items ?? []
+    } catch (e: unknown) {
+      standaloneMatches.value = []
+      tournamentMatches.value = []
+      throw e
     }
-
-    const standalone = await standalonePromise
-
-    const inTournament = {
-      items: allTournamentMatches,
-    }
-    standaloneMatches.value = standalone ?? []
-    tournamentMatches.value = inTournament.items ?? []
-  } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось загрузить матчи',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 5000,
-    })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function fetchTeams() {
-  if (!token.value) return
-  try {
-    const all: TeamLite[] = []
-    let page = 1
-    let total = 0
-    do {
-      const res = await authFetch<{ items: TeamLite[]; total: number }>(
-        apiUrl(`/tenants/${tenantId.value}/teams?page=${page}&pageSize=100`),
-      )
-      const items = res.items ?? []
-      total = res.total ?? items.length
-      all.push(...items)
-      page += 1
-      if (!items.length) break
-    } while (all.length < total)
-    teams.value = all
-  } catch {
-    teams.value = []
-  }
+  })
 }
 
 function onEventClick(arg: any) {
@@ -441,10 +428,9 @@ function onEventClick(arg: any) {
     startLocal: toLocalDatetimeValue(startIso),
     endLocal: toLocalDatetimeValue(endDate.toISOString()),
     color:
-      eventColors.value[eventId] ??
-      (meta.source === 'tournament' && meta.tournamentStripeColor
-        ? meta.tournamentStripeColor
-        : defaultColor(meta.locked, meta.source)),
+      meta.source === 'tournament'
+        ? meta.tournamentStripeColor ?? defaultColor(meta.locked, meta.source)
+        : eventColors.value[eventId] ?? defaultColor(meta.locked, meta.source),
   }
   editSubmitAttempted.value = false
   editVisible.value = true
@@ -459,8 +445,13 @@ async function saveEventEdit() {
   }
   editSaving.value = true
   try {
-    eventColors.value[model.eventId] = model.color
-    saveColors()
+    if (model.source === 'tournament') {
+      delete eventColors.value[model.eventId]
+      saveColors()
+    } else {
+      eventColors.value[model.eventId] = model.color
+      saveColors()
+    }
 
     if (!model.locked) {
       const newStartDate = new Date(model.startLocal)
@@ -501,7 +492,7 @@ async function saveEventEdit() {
     toast.add({
       severity: 'error',
       summary: 'Не удалось сохранить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 5000,
     })
   } finally {
@@ -562,11 +553,8 @@ async function createMatchFromSlot() {
     await fetchMatches()
     toast.add({ severity: 'success', summary: 'Матч создан', life: 2200 })
   } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось создать матч',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 5000,
+    toastMatchScheduleCreateApiError((m) => toast.add(m), t, e, {
+      genericErrorLifeMs: 5000,
     })
   } finally {
     createSaving.value = false
@@ -619,7 +607,7 @@ async function onEventDrop(arg: any) {
     toast.add({
       severity: 'error',
       summary: 'Не удалось изменить дату',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 5000,
     })
   }
@@ -644,13 +632,13 @@ const calendarOptions = computed(() => {
     snapDuration: slot,
     slotLabelInterval: slot,
     slotLabelFormat: {
-      hour: 'numeric',
-      minute: '2-digit',
+      hour: 'numeric' as const,
+      minute: '2-digit' as const,
       hour12: false,
     },
     eventTimeFormat: {
-      hour: '2-digit',
-      minute: '2-digit',
+      hour: '2-digit' as const,
+      minute: '2-digit' as const,
       hour12: false,
     },
     allDaySlot: false,
@@ -699,7 +687,7 @@ onMounted(async () => {
   }
   loadColors()
   loadDurations()
-  await Promise.all([fetchMatches(), fetchTeams()])
+  await fetchMatches()
 })
 
 onBeforeUnmount(() => {
@@ -716,7 +704,7 @@ watch(
 </script>
 
 <template>
-  <section class="space-y-3 px-4 py-4 sm:space-y-4 sm:px-6 sm:py-5">
+  <section class="admin-page space-y-3 sm:space-y-4">
     <header class="space-y-1">
       <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-xl">
         Календарь матчей
@@ -793,21 +781,52 @@ watch(
     <div
       class="admin-calendar rounded-xl border border-surface-200 bg-surface-0 p-2 shadow-sm dark:border-surface-700 dark:bg-surface-900 sm:p-3"
     >
-      <div class="-mx-2 overflow-x-auto sm:mx-0">
-        <div class="min-w-[36rem] sm:min-w-0">
-          <ClientOnly>
-            <FullCalendar ref="fullCalendarRef" :options="calendarOptions" />
-          </ClientOnly>
+      <AdminDataState
+        :loading="loading"
+        :error="calendarLoadError"
+        :empty="false"
+        :content-card="false"
+        @retry="retryCalendarFetch"
+      >
+        <template #loading>
+          <div class="space-y-3 p-2 sm:p-3" aria-busy="true">
+            <div class="flex flex-wrap gap-2">
+              <Skeleton height="2.25rem" class="min-w-[8rem] flex-1 rounded-lg" />
+              <Skeleton height="2.25rem" class="min-w-[8rem] flex-1 rounded-lg" />
+              <Skeleton height="2.25rem" class="min-w-[6rem] w-24 rounded-lg" />
+            </div>
+            <div class="flex gap-1.5 sm:gap-2">
+              <Skeleton
+                v-for="d in 7"
+                :key="'cal-hd-' + d"
+                height="2rem"
+                class="min-w-0 flex-1 rounded-md"
+              />
+            </div>
+            <div v-for="row in 5" :key="'cal-row-' + row" class="grid grid-cols-7 gap-1.5 sm:gap-2">
+              <Skeleton
+                v-for="col in 7"
+                :key="'cal-row-' + row + '-c-' + col"
+                height="3.25rem"
+                class="rounded-lg"
+              />
+            </div>
+          </div>
+        </template>
+        <div class="-mx-2 overflow-x-auto sm:mx-0">
+          <div class="min-w-[36rem] sm:min-w-0">
+            <ClientOnly>
+              <FullCalendar ref="fullCalendarRef" :options="calendarOptions" />
+            </ClientOnly>
+          </div>
         </div>
-      </div>
-      <div v-if="loading" class="mt-2 px-1 text-xs text-muted-color sm:text-sm">
-        Загрузка матчей…
-      </div>
+      </AdminDataState>
     </div>
 
     <Dialog
       v-model:visible="editVisible"
       modal
+      block-scroll
       :style="{ width: '30rem', maxWidth: '95vw' }"
       header="Редактирование матча"
     >
@@ -845,7 +864,7 @@ watch(
           <p v-if="editSubmitAttempted && editErrors.range" class="mt-0 text-[11px] leading-3 text-red-500">{{ editErrors.range }}</p>
         </div>
 
-        <div>
+        <div v-if="editModel.source === 'standalone'">
           <label class="text-sm block mb-1">Цвет выделения</label>
           <InputText
             v-model="editModel.color"
@@ -853,10 +872,33 @@ watch(
             class="h-10 w-16 p-1"
           />
         </div>
+        <div v-else class="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-600 dark:bg-surface-800/60">
+          <div class="text-xs font-medium text-surface-800 dark:text-surface-100">
+            {{ t('admin.calendar_page.tournament_color_readonly_title') }}
+          </div>
+          <p class="mt-1 text-xs leading-relaxed text-muted-color">
+            {{ t('admin.calendar_page.tournament_color_readonly_hint') }}
+          </p>
+          <div class="mt-2 flex items-center gap-2">
+            <span
+              class="inline-block h-8 w-10 rounded border border-surface-300 dark:border-surface-600"
+              :style="{ backgroundColor: editModel.color }"
+              aria-hidden="true"
+            />
+            <span class="text-xs font-mono text-muted-color">{{ editModel.color }}</span>
+          </div>
+        </div>
 
         <div class="flex justify-end gap-2 pt-2">
-          <Button label="Отмена" text @click="editVisible = false" />
-          <Button label="Сохранить" icon="pi pi-check" :loading="editSaving" :disabled="editSaving || (editSubmitAttempted && !canSaveEdit)" @click="saveEventEdit" />
+          <Button type="button" label="Отмена" text @click="editVisible = false" />
+          <Button
+            type="button"
+            label="Сохранить"
+            icon="pi pi-check"
+            :loading="editSaving"
+            :disabled="editSaving || (editSubmitAttempted && !canSaveEdit)"
+            @click="saveEventEdit"
+          />
         </div>
       </div>
     </Dialog>
@@ -864,6 +906,7 @@ watch(
     <Dialog
       v-model:visible="createVisible"
       modal
+      block-scroll
       :style="{ width: '32rem', maxWidth: '95vw' }"
       header="Создание матча"
     >
@@ -911,8 +954,15 @@ watch(
           <InputText v-model="createModel.color" type="color" class="h-10 w-16 p-1" />
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <Button label="Отмена" text @click="createVisible = false" />
-          <Button label="Создать" icon="pi pi-check" :loading="createSaving" :disabled="createSaving || (createSubmitAttempted && !canCreateFromSlot)" @click="createMatchFromSlot" />
+          <Button type="button" label="Отмена" text @click="createVisible = false" />
+          <Button
+            type="button"
+            label="Создать"
+            icon="pi pi-check"
+            :loading="createSaving"
+            :disabled="createSaving || (createSubmitAttempted && !canCreateFromSlot)"
+            @click="createMatchFromSlot"
+          />
         </div>
       </div>
     </Dialog>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import type { MenuItem } from 'primevue/menuitem'
 import useVuelidate from '@vuelidate/core'
 import { helpers } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
@@ -48,7 +49,10 @@ const { token, authFetch, syncWithStorage } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
 const { t } = useI18n()
-const loading = ref(false)
+/** Сразу true: при первом рендере и после F5 показываем скелетон, а не пустую таблицу до onMounted. */
+const loading = ref(true)
+const listError = ref<string | null>(null)
+const firstFetchDone = ref(false)
 const search = ref('')
 const tenants = ref<PlatformTenantRow[]>([])
 const total = ref(0)
@@ -70,7 +74,69 @@ const editEndsAt = ref<Date | null>(null)
 const editNoEndsAt = ref(true)
 const subscriptionSubmitAttempted = ref(false)
 
+const tenantActionsMenuRef = ref<{ toggle: (e: Event) => void } | null>(null)
+const tenantActionsMenuRow = ref<PlatformTenantRow | null>(null)
+
+const tenantActionsMenuItems = computed((): MenuItem[] => {
+  const row = tenantActionsMenuRow.value
+  if (!row) return []
+  const locked = row.protectedFromRemoval
+  return [
+    {
+      label: 'Переименовать',
+      icon: 'pi pi-pencil',
+      command: () => openRenameTenantDialog(row),
+    },
+    {
+      label: 'Подписка и тариф',
+      icon: 'pi pi-credit-card',
+      command: () => openSubscriptionDialog(row),
+    },
+    {
+      label: 'Пользователи',
+      icon: 'pi pi-users',
+      command: () => void openTenantUsers(row),
+    },
+    { separator: true },
+    {
+      label: row.blocked ? 'Разблокировать' : 'Заблокировать',
+      icon: row.blocked ? 'pi pi-lock-open' : 'pi pi-lock',
+      disabled: locked,
+      command: () => {
+        if (!locked) void toggleBlocked(row)
+      },
+    },
+    {
+      label: 'Удалить',
+      icon: 'pi pi-trash',
+      disabled: locked,
+      class: 'text-red-600 dark:text-red-400',
+      command: () => {
+        if (!locked) requestDeleteTenant(row)
+      },
+    },
+  ]
+})
+
+async function openTenantActionsMenu(event: Event, row: PlatformTenantRow) {
+  tenantActionsMenuRow.value = row
+  await nextTick()
+  tenantActionsMenuRef.value?.toggle(event)
+}
+
 const first = computed(() => (page.value - 1) * pageSize.value)
+
+const TENANTS_SKELETON_ROWS = 8
+const skeletonRows = Array.from({ length: TENANTS_SKELETON_ROWS }, (_, i) => ({ id: `sk-${i}` }))
+
+const tenantsEmptyTitle = computed(() =>
+  search.value.trim() ? 'Ничего не найдено' : 'Нет организаций',
+)
+const tenantsEmptyDescription = computed(() =>
+  search.value.trim()
+    ? 'Измените запрос поиска или сбросьте фильтр.'
+    : 'Когда появятся зарегистрированные организации, они отобразятся в этой таблице.',
+)
 
 const planSelectOptions = computed(() =>
   Object.entries(SUBSCRIPTION_PLAN_LABELS_RU).map(([value, label]) => ({ value, label })),
@@ -103,8 +169,15 @@ const showSubscriptionEndDateError = computed(
 )
 
 async function fetchTenants() {
-  if (!token.value) return
+  if (!token.value) {
+    firstFetchDone.value = true
+    tenants.value = []
+    total.value = 0
+    loading.value = false
+    return
+  }
   loading.value = true
+  listError.value = null
   try {
     const res = await authFetch<{
       items: PlatformTenantRow[]
@@ -120,9 +193,23 @@ async function fetchTenants() {
     })
     tenants.value = res.items
     total.value = res.total
+  } catch (err: unknown) {
+    listError.value = getApiErrorMessage(err, 'Не удалось загрузить список организаций')
   } finally {
     loading.value = false
+    firstFetchDone.value = true
   }
+}
+
+function retryFetchTenants() {
+  listError.value = null
+  void fetchTenants()
+}
+
+function clearSearchAndFetch() {
+  search.value = ''
+  page.value = 1
+  void fetchTenants()
 }
 
 async function toggleBlocked(row: PlatformTenantRow) {
@@ -301,16 +388,18 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="space-y-4">
-    <header class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-semibold">Организации платформы</h1>
-        <p class="text-sm text-muted-color">Глобальное управление tenant-ами</p>
-      </div>
+  <section class="space-y-6">
+    <header class="space-y-1">
+      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+        Организации платформы
+      </h1>
+      <p class="text-sm text-muted-color">Глобальное управление tenant-ами</p>
     </header>
 
-    <div class="flex items-center gap-3">
-      <IconField class="w-full max-w-lg">
+    <div
+      class="flex flex-col gap-3 rounded-xl border border-surface-200 bg-surface-0/80 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900/50 sm:flex-row sm:items-center"
+    >
+      <IconField class="w-full min-w-0 sm:max-w-lg">
         <InputIcon class="pi pi-search" />
         <InputText
           v-model="search"
@@ -319,109 +408,227 @@ onMounted(async () => {
           @keyup.enter="fetchTenants"
         />
       </IconField>
-      <Button label="Найти" icon="pi pi-search" @click="fetchTenants" />
+      <div class="flex shrink-0 flex-wrap items-center gap-2">
+        <Button label="Найти" icon="pi pi-search" :disabled="loading" @click="fetchTenants" />
+        <Button
+          label="Обновить"
+          icon="pi pi-refresh"
+          severity="secondary"
+          outlined
+          :loading="loading"
+          @click="fetchTenants"
+        />
+        <Button
+          v-if="search.trim()"
+          label="Сбросить"
+          icon="pi pi-times"
+          severity="secondary"
+          outlined
+          :disabled="loading"
+          @click="clearSearchAndFetch"
+        />
+      </div>
     </div>
 
-    <DataTable
-      :value="tenants"
+    <AdminDataState
       :loading="loading"
-      data-key="id"
-      :paginator="true"
-      :rows="pageSize"
-      :first="first"
-      :total-records="total"
-      :rows-per-page-options="[10, 20, 50]"
-      @page="onPage"
+      :error="listError"
+      :empty="firstFetchDone && !loading && !listError && tenants.length === 0"
+      empty-icon="pi pi-building-columns"
+      :empty-title="tenantsEmptyTitle"
+      :empty-description="tenantsEmptyDescription"
+      @retry="retryFetchTenants"
     >
-      <Column field="name" header="Организация" />
-      <Column field="slug" header="Slug" />
-      <Column header="Тариф">
-        <template #body="{ data }">{{ formatSubscriptionPlanLabel(data.subscriptionPlan) }}</template>
-      </Column>
-      <Column header="Подписка">
-        <template #body="{ data }">{{ formatSubscriptionStatusLabel(data.subscriptionStatus) }}</template>
-      </Column>
-      <Column header="Оплачено до">
-        <template #body="{ data }">{{ formatSubscriptionEnds(data.subscriptionEndsAt) }}</template>
-      </Column>
-      <Column header="Пользователи">
-        <template #body="{ data }">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-medium text-primary hover:bg-primary/10 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
-            title="Показать пользователей организации"
-            @click="openTenantUsers(data)"
+      <template #loading>
+        <div
+          class="platform-tenants-table-wrap rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900"
+        >
+          <DataTable
+            :value="skeletonRows"
+            data-key="id"
+            size="small"
+            class="min-h-[22rem] platform-tenants-datatable text-sm"
+            aria-busy="true"
+            :pt="{
+              table: { class: 'min-w-[64rem]' },
+            }"
           >
-            <span class="pi pi-users text-sm opacity-80" aria-hidden="true" />
-            <span class="tabular-nums">{{ data.usersCount }}</span>
-          </button>
+            <Column header="Организация" style="min-width: 10rem">
+              <template #body>
+                <Skeleton width="85%" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Slug" style="min-width: 7rem">
+              <template #body>
+                <Skeleton width="70%" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Тариф" style="width: 6rem">
+              <template #body>
+                <Skeleton width="3.5rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Подписка" style="width: 7rem">
+              <template #body>
+                <Skeleton width="4rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Оплачено до" style="min-width: 8rem">
+              <template #body>
+                <Skeleton width="90%" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Польз." style="width: 4.5rem">
+              <template #body>
+                <Skeleton width="1.75rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Турн." style="width: 4rem">
+              <template #body>
+                <Skeleton width="1.5rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Ком." style="width: 4rem">
+              <template #body>
+                <Skeleton width="1.5rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Статус" style="width: 6.5rem">
+              <template #body>
+                <Skeleton width="4.5rem" height="1.35rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Супер-адм." style="width: 5rem">
+              <template #body>
+                <Skeleton width="1.25rem" height="0.85rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header=" " style="width: 3.25rem">
+              <template #body>
+                <div class="flex justify-end">
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </div>
+      </template>
+
+      <template #empty-actions>
+        <Button label="Обновить" icon="pi pi-refresh" severity="secondary" outlined @click="fetchTenants" />
+      </template>
+
+      <DataTable
+        :value="tenants"
+        data-key="id"
+        lazy
+        size="small"
+        striped-rows
+        show-gridlines
+        paginator
+        :rows="pageSize"
+        :first="first"
+        :total-records="total"
+        :rows-per-page-options="[10, 20, 50]"
+        paginator-template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
+        current-page-report-template="{first}–{last} из {totalRecords}"
+        class="platform-tenants-datatable text-sm"
+        :pt="{
+          table: { class: 'min-w-[64rem]' },
+        }"
+        @page="onPage"
+      >
+        <template #empty>
+          <span class="sr-only">Пусто</span>
         </template>
-      </Column>
-      <Column header="Турниры">
-        <template #body="{ data }">{{ data.tournamentsCount }}</template>
-      </Column>
-      <Column header="Команды">
-        <template #body="{ data }">{{ data.teamsCount }}</template>
-      </Column>
-      <Column header="Статус">
-        <template #body="{ data }">
-          <Tag :severity="data.blocked ? 'danger' : 'success'" :value="data.blocked ? 'Blocked' : 'Active'" />
-        </template>
-      </Column>
-      <Column header="SUPER_ADMIN">
-        <template #body="{ data }">
-          {{ data.superAdminsCount }}
-        </template>
-      </Column>
-      <Column header="Действия" style="width: 12rem">
-        <template #body="{ data }">
-          <div class="flex justify-end gap-1 flex-wrap">
-            <Button
-              icon="pi pi-pencil"
-              text
-              rounded
-              severity="secondary"
-              title="Переименовать организацию"
-              @click="openRenameTenantDialog(data)"
-            />
-            <Button
-              icon="pi pi-credit-card"
-              text
-              rounded
-              severity="secondary"
-              title="Подписка и тариф"
-              @click="openSubscriptionDialog(data)"
-            />
-            <Button
-              icon="pi pi-users"
-              text
-              rounded
-              severity="info"
-              title="Пользователи tenant-а"
+        <Column field="name" header="Организация" style="min-width: 10rem">
+          <template #body="{ data }">
+            <span class="font-medium text-surface-900 dark:text-surface-0">{{ data.name }}</span>
+          </template>
+        </Column>
+        <Column field="slug" header="Slug" style="min-width: 7rem">
+          <template #body="{ data }">
+            <code
+              class="rounded bg-surface-100 px-1.5 py-0.5 text-xs text-surface-700 dark:bg-surface-800 dark:text-surface-200"
+              >{{ data.slug }}</code
+            >
+          </template>
+        </Column>
+        <Column header="Тариф" style="width: 7rem">
+          <template #body="{ data }">{{ formatSubscriptionPlanLabel(data.subscriptionPlan) }}</template>
+        </Column>
+        <Column header="Подписка" style="min-width: 7rem">
+          <template #body="{ data }">{{ formatSubscriptionStatusLabel(data.subscriptionStatus) }}</template>
+        </Column>
+        <Column header="Оплачено до" style="min-width: 9rem">
+          <template #body="{ data }">
+            <span class="text-muted-color tabular-nums text-xs sm:text-sm">{{
+              formatSubscriptionEnds(data.subscriptionEndsAt)
+            }}</span>
+          </template>
+        </Column>
+        <Column header="Польз." style="width: 4.75rem">
+          <template #body="{ data }">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-left font-medium text-primary hover:bg-primary/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+              title="Показать пользователей организации"
               @click="openTenantUsers(data)"
+            >
+              <span class="pi pi-users text-xs opacity-80" aria-hidden="true" />
+              <span class="tabular-nums">{{ data.usersCount }}</span>
+            </button>
+          </template>
+        </Column>
+        <Column header="Турн." style="width: 4rem">
+          <template #body="{ data }">
+            <span class="tabular-nums text-surface-800 dark:text-surface-200">{{ data.tournamentsCount }}</span>
+          </template>
+        </Column>
+        <Column header="Ком." style="width: 4rem">
+          <template #body="{ data }">
+            <span class="tabular-nums text-surface-800 dark:text-surface-200">{{ data.teamsCount }}</span>
+          </template>
+        </Column>
+        <Column header="Статус" style="width: 7rem">
+          <template #body="{ data }">
+            <Tag
+              :severity="data.blocked ? 'danger' : 'success'"
+              :value="data.blocked ? 'Заблокирована' : 'Активна'"
             />
-            <Button
-              :icon="data.blocked ? 'pi pi-lock-open' : 'pi pi-lock'"
-              text
-              rounded
-              :disabled="data.protectedFromRemoval"
-              :severity="data.blocked ? 'warn' : 'secondary'"
-              :title="data.protectedFromRemoval ? 'Нельзя блокировать tenant с SUPER_ADMIN' : ''"
-              @click="toggleBlocked(data)"
-            />
-            <Button
-              icon="pi pi-trash"
-              text
-              rounded
-              severity="danger"
-              :disabled="data.protectedFromRemoval"
-              :title="data.protectedFromRemoval ? 'Нельзя удалять tenant с SUPER_ADMIN' : ''"
-              @click="requestDeleteTenant(data)"
-            />
-          </div>
-        </template>
-      </Column>
-    </DataTable>
+          </template>
+        </Column>
+        <Column header="Супер-адм." style="width: 5rem">
+          <template #body="{ data }">
+            <span class="tabular-nums text-surface-800 dark:text-surface-200">{{ data.superAdminsCount }}</span>
+          </template>
+        </Column>
+        <Column header="Действия" style="width: 3.25rem">
+          <template #body="{ data }">
+            <div class="flex justify-end">
+              <Button
+                type="button"
+                icon="pi pi-ellipsis-v"
+                text
+                rounded
+                size="small"
+                class="!h-8 !w-8 !min-w-8"
+                :aria-label="`Действия: ${data.name}`"
+                aria-haspopup="true"
+                @click="openTenantActionsMenu($event, data)"
+              />
+            </div>
+          </template>
+        </Column>
+      </DataTable>
+
+      <Menu
+        ref="tenantActionsMenuRef"
+        :model="tenantActionsMenuItems"
+        :popup="true"
+        append-to="body"
+      />
+    </AdminDataState>
 
     <AdminConfirmDialog
       v-model="deleteTenantConfirmOpen"
@@ -433,6 +640,7 @@ onMounted(async () => {
     <Dialog
       v-model:visible="renameDialogVisible"
       modal
+      block-scroll
       :style="{ width: '32rem', maxWidth: '95vw' }"
       header="Переименовать организацию"
     >
@@ -445,8 +653,9 @@ onMounted(async () => {
           <InputText v-model="editTenantName" class="w-full" maxlength="120" />
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <Button label="Отмена" severity="secondary" @click="renameDialogVisible = false" />
+          <Button type="button" label="Отмена" severity="secondary" @click="renameDialogVisible = false" />
           <Button
+            type="button"
             label="Сохранить"
             icon="pi pi-check"
             :disabled="!canSaveTenantName"
@@ -459,6 +668,7 @@ onMounted(async () => {
     <Dialog
       v-model:visible="subscriptionDialogVisible"
       modal
+      block-scroll
       :style="{ width: '28rem', maxWidth: '95vw' }"
       header="Подписка организации"
     >
@@ -511,8 +721,9 @@ onMounted(async () => {
           </p>
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <Button label="Отмена" severity="secondary" @click="subscriptionDialogVisible = false" />
+          <Button type="button" label="Отмена" severity="secondary" @click="subscriptionDialogVisible = false" />
           <Button
+            type="button"
             label="Сохранить"
             icon="pi pi-check"
             :disabled="subscriptionSubmitAttempted && !canSaveSubscription"
@@ -525,10 +736,13 @@ onMounted(async () => {
     <Dialog
       v-model:visible="usersDialogVisible"
       modal
+      block-scroll
       :style="{ width: '52rem', maxWidth: '95vw' }"
       :header="selectedTenant ? `Пользователи: ${selectedTenant.name} (${selectedTenant.slug})` : 'Пользователи tenant-а'"
     >
-      <div class="mb-3 rounded border border-surface-200 p-3 text-sm text-surface-700">
+      <div
+        class="mb-3 rounded-lg border border-surface-200 bg-surface-50 p-3 text-sm text-surface-700 dark:border-surface-600 dark:bg-surface-800/60 dark:text-surface-200"
+      >
         <div v-if="selectedTenant">
           <div><strong>URL входа:</strong> {{ buildTenantLoginUrl(selectedTenant.slug) }}</div>
           <div><strong>Параметры входа:</strong> логин (`username`) + пароль пользователя tenant-а.</div>
@@ -557,7 +771,10 @@ onMounted(async () => {
         </Column>
         <Column header="Статус">
           <template #body="{ data }">
-            <Tag :severity="data.blocked ? 'danger' : 'success'" :value="data.blocked ? 'Blocked' : 'Active'" />
+            <Tag
+              :severity="data.blocked ? 'danger' : 'success'"
+              :value="data.blocked ? 'Заблокирован' : 'Активен'"
+            />
           </template>
         </Column>
         <Column header="Создан">
@@ -569,3 +786,12 @@ onMounted(async () => {
     </Dialog>
   </section>
 </template>
+
+<style scoped>
+.platform-tenants-datatable :deep(.p-datatable-tbody > tr) {
+  transition: background-color 0.12s ease;
+}
+.platform-tenants-datatable :deep(.p-datatable-tbody > tr:hover) {
+  background: var(--p-content-hover-background);
+}
+</style>

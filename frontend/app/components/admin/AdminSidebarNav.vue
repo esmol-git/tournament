@@ -17,6 +17,7 @@ import { useAdminSidebarCollapsed } from '~/composables/useAdminSidebarCollapsed
 import { useAuth } from '~/composables/useAuth'
 import { userRoleLabelRu } from '~/constants/userRoles'
 import { formatUserFullNameFromParts } from '~/utils/userDisplayName'
+import { readTenantStaffRole } from '~/utils/tenantStaffRole'
 const props = withDefaults(
   defineProps<{
     /** В выезжающем меню всегда полные подписи, не «только иконки». */
@@ -41,11 +42,7 @@ const tenantSubscriptionPlan = computed(() => {
   return u?.tenantSubscription?.plan ?? null
 })
 
-const userRole = computed(() => {
-  const u = user.value as { role?: string | null } | null
-  const r = u?.role
-  return typeof r === 'string' && r.trim() ? r : null
-})
+const userRole = computed(() => readTenantStaffRole(user.value))
 
 /** Пункты без скрытых по роли разделов (админ турнира не видит пользователей / настроек орг. и т.д.). */
 const navEntries = computed(() => filterAdminNavForRole(userRole.value, ADMIN_NAV_ENTRIES))
@@ -189,6 +186,10 @@ onMounted(async () => {
       class="mt-4 shrink-0 border-t border-surface-200 dark:border-surface-700 pt-3"
       :class="effectiveMini ? 'flex w-full flex-col items-center' : ''"
     >
+      <AdminTenantSubscriptionSummary
+        v-if="user && clientMounted"
+        :variant="effectiveMini ? 'mini' : 'card'"
+      />
       <NuxtLink
         v-if="user && clientMounted"
         to="/admin/profile"
@@ -223,7 +224,7 @@ onMounted(async () => {
             {{ userDisplayName }}
           </p>
           <p class="truncate text-xs text-muted-color">
-            {{ userRoleLabelRu(String(user.role ?? '')) }}
+            {{ userRoleLabelRu(String(userRole ?? '')) }}
           </p>
         </div>
       </NuxtLink>

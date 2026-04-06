@@ -771,12 +771,12 @@ const quizDesign = ref<'base' | 'custom'>('base')
 
 const quizRecommendation = computed(() => {
   if (quizTeamSize.value === 'large' || quizDesign.value === 'custom') {
-    return plans[3]
+    return plans[3]!
   }
   if (quizTeamSize.value === 'medium' || quizMobile.value === 'yes') {
-    return plans[2]
+    return plans[2]!
   }
-  return plans[1]
+  return plans[1]!
 })
 
 function animateMetric(key: string, target: number) {

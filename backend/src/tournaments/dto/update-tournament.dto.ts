@@ -228,11 +228,24 @@ export class UpdateTournamentDto {
   @Type(() => TournamentAdminDto)
   admins?: TournamentAdminDto[];
 
-  @ApiPropertyOptional({ nullable: true, description: 'Stadium id or null to clear' })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Stadium id or null to clear',
+  })
   @IsOptional()
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsString()
   stadiumId?: string | null;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Полная замена списка площадок турнира (порядок важен). Пустой массив — снять все. Имеет приоритет над stadiumId.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  stadiumIds?: string[];
 
   @ApiPropertyOptional({
     nullable: true,
@@ -261,9 +274,22 @@ export class UpdateTournamentDto {
   @IsString()
   ageGroupId?: string | null;
 
-  @ApiPropertyOptional({ type: [String], description: 'Replace tournament referees' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Replace tournament referees',
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   refereeIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Полная замена списка модераторов турнира (только user с ролью MODERATOR). Пустой массив — снять всех.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  moderatorIds?: string[];
 }

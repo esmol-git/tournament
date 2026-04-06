@@ -45,7 +45,10 @@ function shuffleInPlace<T>(rng: () => number, arr: T[]): T[] {
   return arr;
 }
 
-function buildScore(rng: () => number, stage: MatchStage): { home: number; away: number } {
+function buildScore(
+  rng: () => number,
+  stage: MatchStage,
+): { home: number; away: number } {
   const home = randInt(rng, 0, 4);
   let away = randInt(rng, 0, 4);
   if (stage === MatchStage.PLAYOFF && home === away) {
@@ -101,9 +104,12 @@ function buildCardEvents(
 }
 
 async function main() {
-  const tournamentId = process.env.SEED_TOURNAMENT_ID?.trim() || process.argv[2]?.trim();
+  const tournamentId =
+    process.env.SEED_TOURNAMENT_ID?.trim() || process.argv[2]?.trim();
   if (!tournamentId) {
-    throw new Error('Pass tournament id via SEED_TOURNAMENT_ID or first argument');
+    throw new Error(
+      'Pass tournament id via SEED_TOURNAMENT_ID or first argument',
+    );
   }
 
   const seed = Number(process.env.SEED_RANDOM) || 20260401;
@@ -128,7 +134,12 @@ async function main() {
     const matchIds = await prisma.match.findMany({
       where: { tournamentId: tournament.id },
       select: { id: true, stage: true, roundNumber: true, startTime: true },
-      orderBy: [{ stage: 'asc' }, { roundNumber: 'asc' }, { startTime: 'asc' }, { id: 'asc' }],
+      orderBy: [
+        { stage: 'asc' },
+        { roundNumber: 'asc' },
+        { startTime: 'asc' },
+        { id: 'asc' },
+      ],
     });
 
     if (!matchIds.length) {
@@ -168,29 +179,46 @@ async function main() {
 
       const score = buildScore(rng, match.stage);
       const events: ProtocolEventInput[] = [];
-      events.push(...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers));
-      events.push(...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers));
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.HOME, score.home, homePlayers),
+      );
+      events.push(
+        ...buildGoalEvents(rng, MatchTeamSide.AWAY, score.away, awayPlayers),
+      );
       events.push(...buildCardEvents(rng, MatchTeamSide.HOME, homePlayers));
       events.push(...buildCardEvents(rng, MatchTeamSide.AWAY, awayPlayers));
-      shuffleInPlace(rng, events).sort((a, b) => (a.minute ?? 0) - (b.minute ?? 0));
+      shuffleInPlace(rng, events).sort(
+        (a, b) => (a.minute ?? 0) - (b.minute ?? 0),
+      );
 
-      await matchesService.updateProtocol(tournament.id, match.id, UserRole.TENANT_ADMIN, {
-        homeScore: score.home,
-        awayScore: score.away,
-        status: MatchStatus.PLAYED,
-        events,
-      });
+      await matchesService.updateProtocol(
+        tournament.id,
+        match.id,
+        UserRole.TENANT_ADMIN,
+        {
+          homeScore: score.home,
+          awayScore: score.away,
+          status: MatchStatus.PLAYED,
+          events,
+        },
+      );
 
       played += 1;
       goals += events.filter((e) => e.type === MatchEventType.GOAL).length;
       cards += events.filter((e) => e.type === MatchEventType.CARD).length;
-      assists += events.filter((e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId).length;
+      assists += events.filter(
+        (e) => e.type === MatchEventType.GOAL && !!e.payload?.assistId,
+      ).length;
     }
 
-    console.log(`SEED_RESULTS_OK tournament=${tournament.id} slug=${tournament.slug}`);
+    console.log(
+      `SEED_RESULTS_OK tournament=${tournament.id} slug=${tournament.slug}`,
+    );
     console.log(`SEED_RESULTS_NAME ${tournament.name}`);
     console.log(`SEED_RESULTS_MATCHES played=${played}/${matchIds.length}`);
-    console.log(`SEED_RESULTS_EVENTS goals=${goals} assists=${assists} cards=${cards}`);
+    console.log(
+      `SEED_RESULTS_EVENTS goals=${goals} assists=${assists} cards=${cards}`,
+    );
   } finally {
     await app.close();
   }

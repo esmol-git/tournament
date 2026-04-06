@@ -42,4 +42,12 @@ export class CreateMatchDto {
   @IsOptional()
   @IsEnum(PlayoffRound)
   playoffRound?: PlayoffRound | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Площадка из справочника; при списке площадок турнира должна быть из него',
+  })
+  @IsOptional()
+  @IsString()
+  stadiumId?: string;
 }

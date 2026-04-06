@@ -1,9 +1,15 @@
 <script setup lang="ts">
+import { useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 
-import type { TableRow, TournamentDetails, MatchRow } from '~/types/tournament-admin'
+import type { TableRow, MatchRow } from '~/types/tournament-admin'
+import {
+  arePublicTableAndDetailFresh,
+  getCachedTableAndTournamentDetail,
+} from '~/composables/public/readPublicTournamentViewCache'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
+import { isMatchCountedInPublicStandings } from '~/utils/publicTournamentStandingsMatch'
 
 const props = defineProps<{
   tournamentId: string
@@ -15,6 +21,7 @@ const props = defineProps<{
 const { tenantSlug, ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const tenant = tenantSlug
 const { fetchTable, fetchTournamentDetail } = usePublicTournamentFetch()
+const queryClient = useQueryClient()
 
 /** Старт с true при наличии турнира — иначе один кадр «Недостаточно команд» до начала load(). */
 const loading = ref(!!props.tournamentId)
@@ -54,16 +61,9 @@ function resolveTeamLogo(teamId: string | null | undefined) {
   return TEAM_PLACEHOLDER_SRC
 }
 
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
-}
-
 const cellLinesByKey = computed(() => {
   const grid: Record<string, string[]> = {}
-  const played = groupMatches.value.filter((m) => m.homeScore != null && m.awayScore != null)
+  const played = groupMatches.value.filter(isMatchCountedInPublicStandings)
 
   const push = (rowId: string, colId: string, text: string) => {
     const key = `${rowId}|${colId}`
@@ -87,20 +87,44 @@ const cellLinesByKey = computed(() => {
 
 const load = async () => {
   errorText.value = ''
-  tableRows.value = []
-  matches.value = []
 
   if (!props.tournamentId) {
+    tableRows.value = []
+    matches.value = []
     loading.value = false
     return
   }
   await ensureTenantResolved()
   if (tenantNotFound.value) {
+    tableRows.value = []
+    matches.value = []
     errorText.value = 'Тенант не найден. Проверьте ссылку.'
+    loading.value = false
     return
   }
-  loading.value = true
+
+  const cached = getCachedTableAndTournamentDetail(
+    queryClient,
+    tenant.value,
+    props.tournamentId,
+    props.groupId,
+  )
+  if (cached) {
+    tableRows.value = cached.table
+    matches.value = cached.detail.matches ?? []
+    loading.value = false
+  } else {
+    tableRows.value = []
+    matches.value = []
+    loading.value = true
+  }
+
   try {
+    if (
+      arePublicTableAndDetailFresh(queryClient, tenant.value, props.tournamentId, props.groupId)
+    ) {
+      return
+    }
     const [table, details] = await Promise.all([
       fetchTable(tenant.value, props.tournamentId, props.groupId ?? undefined),
       fetchTournamentDetail(tenant.value, props.tournamentId),
@@ -152,7 +176,7 @@ watch(
             <th
               v-for="i in 8"
               :key="`chess-sk-h-${i}`"
-              class="border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center"
+              class="chess-col-score border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center"
             >
               <Skeleton width="1rem" height="0.8rem" class="mx-auto" />
             </th>
@@ -166,7 +190,7 @@ watch(
             <td
               v-for="c in 8"
               :key="`chess-sk-c-${r}-${c}`"
-              class="border border-[#e1e8f2] px-2 py-2 text-center"
+              class="chess-score-cell border border-[#e1e8f2] px-2 py-2 text-center"
               :class="r === c ? 'bg-[#fff2f7]' : c % 2 === 0 ? 'bg-[#f9fbff]' : 'bg-white'"
             >
               <Skeleton width="1.8rem" height="0.8rem" class="mx-auto" />
@@ -201,7 +225,7 @@ watch(
             <th
               v-for="t in teamsInOrder"
               :key="t.id"
-              class="chess-head whitespace-nowrap border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center font-medium text-[#123c67]"
+              class="chess-head chess-col-score whitespace-nowrap border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-2 text-center font-medium text-[#123c67]"
             >
               {{ t.position }}
             </th>
@@ -213,15 +237,13 @@ watch(
               class="chess-sticky-left sticky left-0 z-10 whitespace-nowrap border border-[#e1e8f2] bg-white px-2 py-2 text-left font-medium text-[#123c67]"
             >
               <div class="flex items-center gap-2">
-                <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                  <img
-                    :src="resolveTeamLogo(row.id)"
-                    :alt="row.name"
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                    @error="handleTeamLogoError"
-                  />
-                </div>
+                <RemoteImage
+                  :src="resolveTeamLogo(row.id)"
+                  :alt="row.name"
+                  placeholder-icon="users"
+                  icon-class="text-xs"
+                  class="h-7 w-7 shrink-0 rounded-full"
+                />
                 <span>{{ row.position }}. {{ row.name }}</span>
               </div>
             </th>
@@ -274,6 +296,16 @@ watch(
   box-shadow: 6px 0 10px -10px rgba(18, 60, 103, 0.55);
 }
 
+/** Одинаковая ширина колонок со счётом (и с «—», и с «0:0» / двумя кругами). */
+.chess-col-score,
+.chess-score-cell {
+  min-width: 2.85rem;
+  width: 2.85rem;
+  max-width: 2.85rem;
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+
 .chess-score-cell {
   padding: 0.28rem 0.35rem;
 }
@@ -283,7 +315,7 @@ watch(
   flex-direction: column;
   align-items: center;
   gap: 0.1rem;
-  min-width: 1.9rem;
+  min-width: 100%;
   line-height: 1.1;
 }
 

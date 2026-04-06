@@ -65,6 +65,11 @@
     transition: opacity 0.22s ease;
   }
 
+  .public-view-fade-leave-active {
+    /* opacity:0 всё ещё ловит клики без этого — ломает навигацию с сайдбара при out-in */
+    pointer-events: none;
+  }
+
   .public-view-fade-enter-from,
   .public-view-fade-leave-to {
     opacity: 0;
@@ -216,6 +221,121 @@
 
   .public-error {
     @apply rounded-2xl border border-red-300 bg-red-50 p-5 text-red-900;
+  }
+
+  /**
+   * Админка: единые отступы и горизонтальный скролл для Prime DataTable.
+   */
+  .admin-page {
+    @apply mx-auto min-w-0 max-w-[100rem] space-y-3 p-3 sm:space-y-4 sm:p-4 lg:p-6;
+  }
+
+  /**
+   * Статусы матча в Prime DataTable: стили здесь через @apply, а не только строкой из `utils/*.ts`,
+   * иначе JIT может не сгенерировать `!text-*` / `dark:!*` — в ячейке остаётся светлый текст на светлом бейдже.
+   */
+  .admin-match-status-pill {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border;
+  }
+
+  .admin-match-status-pill--scheduled {
+    @apply !bg-slate-100 !text-slate-800 !border-slate-200 dark:!bg-slate-800 dark:!text-slate-100 dark:!border-slate-600;
+  }
+
+  .admin-match-status-pill--live {
+    @apply !bg-amber-50 !text-amber-950 !border-amber-200 dark:!bg-amber-950 dark:!text-amber-100 dark:!border-amber-700;
+  }
+
+  .admin-match-status-pill--played {
+    @apply !bg-indigo-50 !text-indigo-900 !border-indigo-200 dark:!bg-indigo-950 dark:!text-indigo-100 dark:!border-indigo-700;
+  }
+
+  .admin-match-status-pill--finished {
+    @apply !bg-emerald-50 !text-emerald-900 !border-emerald-200 dark:!bg-emerald-950 dark:!text-emerald-100 dark:!border-emerald-700;
+  }
+
+  .admin-match-status-pill--canceled {
+    @apply !bg-red-50 !text-red-900 !border-red-200 dark:!bg-red-950 dark:!text-red-100 dark:!border-red-800;
+  }
+
+  .admin-match-status-pill--default {
+    @apply !bg-surface-100 !text-surface-800 !border-surface-200 dark:!bg-surface-800 dark:!text-surface-100 dark:!border-surface-600;
+  }
+
+  .admin-datatable-scroll {
+    @apply min-w-0 w-full max-w-full overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch];
+  }
+
+  .admin-datatable-scroll .p-datatable-table-container {
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    max-width: none !important;
+  }
+
+  .admin-datatable-scroll table.p-datatable-table {
+    width: max(100%, 52rem) !important;
+    table-layout: auto !important;
+  }
+
+  .admin-datatable-scroll .p-datatable-tbody > tr > td,
+  .admin-datatable-scroll .p-datatable-thead > tr > th {
+    min-width: 0;
+    vertical-align: top;
+  }
+
+  @media (max-width: 639px) {
+    .admin-toolbar-responsive .p-button-label {
+      display: none !important;
+    }
+
+    .admin-toolbar-responsive .p-button-icon {
+      margin-inline-end: 0 !important;
+    }
+
+    /**
+     * PrimeVue Dialog: на мобиле на весь экран, без «карточки» по центру.
+     * Подтверждения и формы используют одну разметку .p-dialog-mask > .p-dialog.
+     */
+    .p-dialog-mask {
+      align-items: stretch !important;
+      justify-content: stretch !important;
+      padding: 0 !important;
+    }
+
+    .p-dialog-mask .p-dialog {
+      width: 100vw !important;
+      max-width: 100vw !important;
+      min-height: 100vh !important;
+      min-height: 100dvh !important;
+      height: 100dvh !important;
+      max-height: 100dvh !important;
+      margin: 0 !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+    }
+
+    .p-dialog-mask .p-dialog .p-dialog-header {
+      flex-shrink: 0;
+      padding: 0.625rem 0.75rem !important;
+    }
+
+    .p-dialog-mask .p-dialog .p-dialog-title {
+      font-size: 1rem !important;
+      line-height: 1.35 !important;
+    }
+
+    .p-dialog-mask .p-dialog .p-dialog-content {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch;
+      padding: 0.75rem !important;
+    }
+
+    .p-dialog-mask .p-dialog .p-dialog-footer {
+      flex-shrink: 0;
+      padding: 0.625rem 0.75rem !important;
+    }
   }
 
   .public-table-wrap {

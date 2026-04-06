@@ -42,7 +42,10 @@ async function main() {
         `LOAD_GROUPS_TEAMS must be at least ${groupsCount * 2}. Got ${groupsTournamentTeams}.`,
       );
     }
-    if (playoffTournamentTeams < 4 || (playoffTournamentTeams & (playoffTournamentTeams - 1)) !== 0) {
+    if (
+      playoffTournamentTeams < 4 ||
+      (playoffTournamentTeams & (playoffTournamentTeams - 1)) !== 0
+    ) {
       throw new Error(
         `LOAD_PLAYOFF_TEAMS must be power of two and >= 4. Got ${playoffTournamentTeams}.`,
       );
@@ -78,7 +81,9 @@ async function main() {
         }),
       ),
     );
-    console.log(`LOAD_TEAMS_CREATED count=${teams.length} duration=${formatMs(Date.now() - tTeams0)}`);
+    console.log(
+      `LOAD_TEAMS_CREATED count=${teams.length} duration=${formatMs(Date.now() - tTeams0)}`,
+    );
 
     const tPlayers0 = Date.now();
     const players = await Promise.all(
@@ -109,7 +114,9 @@ async function main() {
         },
       });
     }
-    console.log(`LOAD_TEAM_PLAYERS_CREATED count=${players.length} duration=${formatMs(Date.now() - tLinks0)}`);
+    console.log(
+      `LOAD_TEAM_PLAYERS_CREATED count=${players.length} duration=${formatMs(Date.now() - tLinks0)}`,
+    );
 
     const groupsTournament = await prisma.tournament.create({
       data: {

@@ -7,6 +7,13 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
+    "test:unit": "vitest run",
+    "lint": "eslint .",
+    "check:admin-moderator-meta": "node scripts/check-admin-org-moderator-meta.mjs",
+    "typecheck": "nuxt typecheck",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:install": "playwright install chromium",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
@@ -21,10 +28,11 @@
     "@nuxtjs/i18n": "^9.5.6",
     "@pinia/nuxt": "^0.11.3",
     "@primeuix/themes": "^2.0.3",
+    "@tanstack/vue-query": "^5.96.2",
     "@vuelidate/core": "^2.0.3",
     "@vuelidate/validators": "^2.0.4",
     "chart.js": "^4.5.1",
-    "dompurify": "^3.3.3",
+    "isomorphic-dompurify": "^3.7.1",
     "markdown-it": "^14.1.1",
     "markdown-it-task-lists": "^2.1.1",
     "nuxt": "^4.4.2",
@@ -38,13 +46,19 @@
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
+    "@nuxt/eslint": "^1.15.2",
     "@nuxtjs/tailwindcss": "^6.14.0",
+    "@playwright/test": "^1.59.1",
     "@primevue/nuxt-module": "^4.5.4",
-    "@types/dompurify": "^3.0.5",
     "@types/markdown-it": "^14.1.2",
+    "@types/node": "^25.5.2",
+    "@vue/language-core": "^3.2.6",
     "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
-    "tailwindcss-primeui": "^0.6.1"
+    "tailwindcss-primeui": "^0.6.1",
+    "vitest": "^4.1.2",
+    "vue-tsc": "^3.2.6"
   }
 }

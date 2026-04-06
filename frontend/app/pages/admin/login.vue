@@ -7,7 +7,10 @@ import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useAdminSettingsStore } from '~/stores/adminSettings'
 import { useTenantStore } from '~/stores/tenant'
+import type { AdminSettingsPersisted } from '~/constants/adminSettings'
+import { TENANT_PLAN_LIMITS_BY_PLAN } from '~/constants/tenantPlanLimits'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { normalizeSubscriptionPlanCode } from '~/utils/subscriptionFeatures'
 
 definePageMeta({
   layout: 'auth',
@@ -273,6 +276,7 @@ const submit = async () => {
     }>(apiUrl(endpoint), {
       method: 'POST',
       body,
+      credentials: 'include',
       headers: { 'x-original-host': window.location.host },
     })
 
@@ -286,15 +290,21 @@ const submit = async () => {
       const endsAt = endsRaw ? new Date(endsRaw) : null
       const active =
         !endsAt || Number.isNaN(endsAt.getTime()) ? true : endsAt.getTime() > Date.now()
+      const planRaw = res.tenant.subscriptionPlan
+      const planCode =
+        typeof planRaw === 'string' && planRaw.trim()
+          ? planRaw.trim().toUpperCase()
+          : 'FREE'
       userForSession.tenantSubscription = {
         plan: res.tenant.subscriptionPlan,
         status: res.tenant.subscriptionStatus,
         endsAt: endsRaw ?? null,
         active,
+        limits: TENANT_PLAN_LIMITS_BY_PLAN[normalizeSubscriptionPlanCode(planCode)],
       }
     }
 
-    setSession(res.accessToken, res.refreshToken, userForSession)
+    setSession(res.accessToken, null, userForSession)
     if (mode.value === 'register') {
       const tenantSlug = (res as any)?.tenant?.slug
       if (typeof tenantSlug === 'string' && tenantSlug.trim()) {
@@ -335,7 +345,7 @@ onMounted(async () => {
     const r = await $fetch<{
       tenantSlug: string | null
       blocked: boolean
-      uiSettings?: { themeMode: string; locale: string; accent: string }
+      uiSettings?: Partial<AdminSettingsPersisted>
     }>(apiUrl('/auth/tenant/resolve'), {
       headers: { 'x-original-host': window.location.host },
     })
@@ -365,7 +375,7 @@ onMounted(async () => {
 <template>
   <section class="flex flex-col gap-6">
     <header class="space-y-2">
-      <h2 class="text-2xl font-semibold text-surface-900">
+      <h2 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
         {{ mode === 'login' ? 'Вход' : 'Создать организацию' }}
       </h2>
       <p class="text-sm text-muted-color">

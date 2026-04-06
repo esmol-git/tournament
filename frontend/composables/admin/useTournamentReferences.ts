@@ -1,4 +1,9 @@
-import { computed, ref, unref } from 'vue'
+import {
+  adminTenantQueryKeys,
+  ADMIN_TENANT_QUERY_STALE_MS,
+} from '~/composables/admin/adminTenantQueryKeys'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { computed, unref } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { AgeGroupRow } from '~/types/admin/age-group'
 import type { CompetitionRow } from '~/types/admin/competition'
@@ -34,86 +39,203 @@ function allowRefStandard(deps: Deps) {
   return c === undefined ? true : !!unref(c)
 }
 
+type StadiumsRefereesBundle = { stadiums: StadiumRow[]; referees: RefereeRow[] }
+
 export function useTournamentReferences(deps: Deps) {
-  const seasonsList = ref<SeasonRow[]>([])
-  const seasonsLoading = ref(false)
+  const { t, locale } = useI18n()
+  const queryClient = useQueryClient()
 
-  const competitionsList = ref<CompetitionRow[]>([])
-  const competitionsLoading = ref(false)
+  const tenantId = computed(() => deps.tenantId.value)
+  const tokenReady = computed(() => !!deps.token.value)
 
-  const ageGroupsList = ref<AgeGroupRow[]>([])
-  const ageGroupsLoading = ref(false)
+  const seasonsEnabled = computed(() => tokenReady.value && allowRefBasic(deps))
+  const standardEnabled = computed(() => tokenReady.value && allowRefStandard(deps))
 
-  const stadiumsList = ref<StadiumRow[]>([])
-  const stadiumsLoading = ref(false)
+  const authHeader = () => ({
+    headers: { Authorization: `Bearer ${deps.token.value!}` },
+  })
 
-  const refereesList = ref<RefereeRow[]>([])
-  const refereesLoading = ref(false)
+  const seasonsQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.seasons(tenantId.value)),
+    enabled: seasonsEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<SeasonRow[]> => {
+      try {
+        return await deps.authFetch<SeasonRow[]>(
+          deps.apiUrl(`/tenants/${deps.tenantId.value}/seasons`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
+  const competitionsQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.competitions(tenantId.value)),
+    enabled: standardEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<CompetitionRow[]> => {
+      try {
+        return await deps.authFetch<CompetitionRow[]>(
+          deps.apiUrl(`/tenants/${deps.tenantId.value}/competitions`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
+  const ageGroupsQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.ageGroups(tenantId.value)),
+    enabled: seasonsEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<AgeGroupRow[]> => {
+      try {
+        return await deps.authFetch<AgeGroupRow[]>(
+          deps.apiUrl(`/tenants/${deps.tenantId.value}/age-groups`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
+  const stadiumsRefereesQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.stadiumsReferees(tenantId.value)),
+    enabled: standardEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<StadiumsRefereesBundle> => {
+      try {
+        const h = authHeader()
+        const [stadiums, referees] = await Promise.all([
+          deps.authFetch<StadiumRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/stadiums`),
+            h,
+          ),
+          deps.authFetch<RefereeRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/referees`),
+            h,
+          ),
+        ])
+        return { stadiums, referees }
+      } catch {
+        return { stadiums: [], referees: [] }
+      }
+    },
+  })
+
+  const seasonsList = computed(() => seasonsQuery.data.value ?? [])
+  const seasonsLoading = computed(() => seasonsQuery.isFetching.value)
+
+  const competitionsList = computed(() => competitionsQuery.data.value ?? [])
+  const competitionsLoading = computed(() => competitionsQuery.isFetching.value)
+
+  const ageGroupsList = computed(() => ageGroupsQuery.data.value ?? [])
+  const ageGroupsLoading = computed(() => ageGroupsQuery.isFetching.value)
+
+  const stadiumsList = computed(() => stadiumsRefereesQuery.data.value?.stadiums ?? [])
+  const refereesList = computed(() => stadiumsRefereesQuery.data.value?.referees ?? [])
+  const stadiumsLoading = computed(() => stadiumsRefereesQuery.isFetching.value)
+  const refereesLoading = computed(() => stadiumsRefereesQuery.isFetching.value)
 
   const seasonSelectOptions = computed(() => [
-    { label: 'Без сезона', value: '' },
+    { label: t('admin.references.season_none'), value: '' },
     ...seasonsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((s) => ({
-        label: s.active ? s.name : `${s.name} (неактивен)`,
+        label: s.active
+          ? s.name
+          : t('admin.references.inactive_masc', { name: s.name }),
         value: s.id,
       })),
   ])
 
   const seasonFilterOptions = computed(() => [
-    { label: 'Все сезоны', value: '' },
+    { label: t('admin.references.season_all'), value: '' },
     ...seasonsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((s) => ({ label: s.name, value: s.id })),
   ])
 
   const competitionSelectOptions = computed(() => [
-    { label: 'Без типа', value: '' },
+    { label: t('admin.references.competition_none'), value: '' },
     ...competitionsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((c) => ({
-        label: c.active ? c.name : `${c.name} (неактивен)`,
+        label: c.active
+          ? c.name
+          : t('admin.references.inactive_masc', { name: c.name }),
         value: c.id,
       })),
   ])
 
   const competitionFilterOptions = computed(() => [
-    { label: 'Все типы', value: '' },
+    { label: t('admin.references.competition_all'), value: '' },
     ...competitionsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((c) => ({ label: c.name, value: c.id })),
   ])
 
   const ageGroupSelectOptions = computed(() => [
-    { label: 'Без группы', value: '' },
+    { label: t('admin.references.age_group_none'), value: '' },
     ...ageGroupsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((g) => ({
-        label: g.active ? g.name : `${g.name} (неактивна)`,
+        label: g.active
+          ? g.name
+          : t('admin.references.inactive_fem', { name: g.name }),
         value: g.id,
       })),
   ])
 
   const ageGroupFilterOptions = computed(() => [
-    { label: 'Все группы', value: '' },
+    { label: t('admin.references.age_group_all'), value: '' },
     ...ageGroupsList.value
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, 'ru'))
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
+      )
       .map((g) => ({ label: g.name, value: g.id })),
   ])
 
   const stadiumSelectOptions = computed(() => [
-    { label: 'Не выбран', value: '' },
+    { label: t('admin.references.stadium_none'), value: '' },
     ...stadiumsList.value.map((s) => ({
       label: s.city ? `${s.name} (${s.city})` : s.name,
       value: s.id,
     })),
   ])
+
+  const stadiumMultiOptions = computed(() =>
+    stadiumsList.value.map((s) => ({
+      label: s.city ? `${s.name} (${s.city})` : s.name,
+      value: s.id,
+    })),
+  )
 
   const refereeMultiOptions = computed(() =>
     refereesList.value.map((r) => {
@@ -128,71 +250,82 @@ export function useTournamentReferences(deps: Deps) {
 
   async function fetchSeasonsList() {
     if (!deps.token.value || !allowRefBasic(deps)) return
-    seasonsLoading.value = true
-    try {
-      seasonsList.value = await deps.authFetch<SeasonRow[]>(
-        deps.apiUrl(`/tenants/${deps.tenantId.value}/seasons`),
-        { headers: { Authorization: `Bearer ${deps.token.value}` } },
-      )
-    } catch {
-      seasonsList.value = []
-    } finally {
-      seasonsLoading.value = false
-    }
+    await queryClient.fetchQuery({
+      queryKey: adminTenantQueryKeys.seasons(deps.tenantId.value),
+      staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+      queryFn: async () => {
+        try {
+          return await deps.authFetch<SeasonRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/seasons`),
+            authHeader(),
+          )
+        } catch {
+          return []
+        }
+      },
+    })
   }
 
   async function fetchCompetitionsList() {
     if (!deps.token.value || !allowRefStandard(deps)) return
-    competitionsLoading.value = true
-    try {
-      competitionsList.value = await deps.authFetch<CompetitionRow[]>(
-        deps.apiUrl(`/tenants/${deps.tenantId.value}/competitions`),
-        { headers: { Authorization: `Bearer ${deps.token.value}` } },
-      )
-    } catch {
-      competitionsList.value = []
-    } finally {
-      competitionsLoading.value = false
-    }
+    await queryClient.fetchQuery({
+      queryKey: adminTenantQueryKeys.competitions(deps.tenantId.value),
+      staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+      queryFn: async () => {
+        try {
+          return await deps.authFetch<CompetitionRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/competitions`),
+            authHeader(),
+          )
+        } catch {
+          return []
+        }
+      },
+    })
   }
 
   async function fetchAgeGroupsList() {
     if (!deps.token.value || !allowRefBasic(deps)) return
-    ageGroupsLoading.value = true
-    try {
-      ageGroupsList.value = await deps.authFetch<AgeGroupRow[]>(
-        deps.apiUrl(`/tenants/${deps.tenantId.value}/age-groups`),
-        { headers: { Authorization: `Bearer ${deps.token.value}` } },
-      )
-    } catch {
-      ageGroupsList.value = []
-    } finally {
-      ageGroupsLoading.value = false
-    }
+    await queryClient.fetchQuery({
+      queryKey: adminTenantQueryKeys.ageGroups(deps.tenantId.value),
+      staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+      queryFn: async () => {
+        try {
+          return await deps.authFetch<AgeGroupRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/age-groups`),
+            authHeader(),
+          )
+        } catch {
+          return []
+        }
+      },
+    })
   }
 
   async function fetchStadiumsReferees() {
     if (!deps.token.value || !allowRefStandard(deps)) return
-    stadiumsLoading.value = true
-    refereesLoading.value = true
-    try {
-      const [s, r] = await Promise.all([
-        deps.authFetch<StadiumRow[]>(deps.apiUrl(`/tenants/${deps.tenantId.value}/stadiums`), {
-          headers: { Authorization: `Bearer ${deps.token.value}` },
-        }),
-        deps.authFetch<RefereeRow[]>(deps.apiUrl(`/tenants/${deps.tenantId.value}/referees`), {
-          headers: { Authorization: `Bearer ${deps.token.value}` },
-        }),
-      ])
-      stadiumsList.value = s
-      refereesList.value = r
-    } catch {
-      stadiumsList.value = []
-      refereesList.value = []
-    } finally {
-      stadiumsLoading.value = false
-      refereesLoading.value = false
-    }
+    await queryClient.fetchQuery({
+      queryKey: adminTenantQueryKeys.stadiumsReferees(deps.tenantId.value),
+      staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+      queryFn: async (): Promise<StadiumsRefereesBundle> => {
+        try {
+          const h = authHeader()
+          const [stadiums, referees] = await Promise.all([
+            deps.authFetch<StadiumRow[]>(
+              deps.apiUrl(`/tenants/${deps.tenantId.value}/stadiums`),
+              h,
+            ),
+            deps.authFetch<RefereeRow[]>(
+              deps.apiUrl(`/tenants/${deps.tenantId.value}/referees`),
+              h,
+            ),
+          ])
+          return { stadiums, referees }
+        } catch {
+          return { stadiums: [], referees: [] }
+        }
+      },
+    })
   }
 
   return {
@@ -213,6 +346,7 @@ export function useTournamentReferences(deps: Deps) {
     ageGroupSelectOptions,
     ageGroupFilterOptions,
     stadiumSelectOptions,
+    stadiumMultiOptions,
     refereeMultiOptions,
     fetchSeasonsList,
     fetchCompetitionsList,

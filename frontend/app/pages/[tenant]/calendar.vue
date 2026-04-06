@@ -1,9 +1,31 @@
 <script setup lang="ts">
+import { useQueryClient } from '@tanstack/vue-query'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
-import type { TournamentDetails, CalendarRound, CalendarViewMode, TableRow } from '~/types/tournament-admin'
-import { buildCalendarRoundsFromMatches, buildTourSectionsFromMatches } from '~/utils/tournamentMatchCalendar'
+import {
+  arePublicCalendarBootstrapFresh,
+  getCachedCalendarBootstrap,
+} from '~/composables/public/readPublicTournamentViewCache'
+import { publicTenantQueryKeys } from '~/composables/public/publicTenantQueryKeys'
+import {
+  usePublicTournamentFetch,
+  type PublicRosterTeam,
+} from '~/composables/usePublicTournamentFetch'
+import type {
+  CalendarRound,
+  CalendarViewMode,
+  MatchRow,
+  TableRow,
+  TournamentDetails,
+} from '~/types/tournament-admin'
+
+type MatchEventRow = NonNullable<MatchRow['events']>[number]
+import {
+  buildCalendarRoundsFromMatches,
+  buildTourSectionsFromMatches,
+  formatPublicCalendarDateLabel,
+} from '~/utils/tournamentMatchCalendar'
+import { isMatchCountedInPublicStandings } from '~/utils/publicTournamentStandingsMatch'
 import { formatMatchScoreDisplay, statusLabel } from '~/utils/tournamentAdminUi'
 import { buildPlayoffSlotLabels } from '~/utils/playoffSlotResolver'
 
@@ -18,6 +40,7 @@ definePageMeta({
 })
 
 const { fetchTournamentDetail, fetchRoster, fetchTable } = usePublicTournamentFetch()
+const queryClient = useQueryClient()
 
 const { ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
 const {
@@ -106,7 +129,7 @@ function eventMinuteLabel(minute?: number | null) {
   return `${minute}'`
 }
 
-function playerNameByEvent(event: TournamentDetails['matches'][number]['events'][number]) {
+function playerNameByEvent(event: MatchEventRow) {
   const id = String(event.playerId ?? '').trim()
   if (!id) return 'Игрок не указан'
   return playerNameById.value[id] ?? 'Игрок'
@@ -146,7 +169,7 @@ function normalizeCardType(raw: unknown): 'YELLOW' | 'RED' | null {
   return null
 }
 
-function cardTypeByEvent(event: TournamentDetails['matches'][number]['events'][number]): 'YELLOW' | 'RED' | null {
+function cardTypeByEvent(event: MatchEventRow): 'YELLOW' | 'RED' | null {
   const payload = (event.payload ?? {}) as Record<string, unknown>
   return (
     normalizeCardType(payload.cardType) ||
@@ -157,14 +180,14 @@ function cardTypeByEvent(event: TournamentDetails['matches'][number]['events'][n
   )
 }
 
-function cardTypeLabel(event: TournamentDetails['matches'][number]['events'][number]) {
+function cardTypeLabel(event: MatchEventRow) {
   const t = cardTypeByEvent(event)
   if (t === 'YELLOW') return 'ЖК'
   if (t === 'RED') return 'КК'
   return 'Карта'
 }
 
-function cardTypeBadgeClass(event: TournamentDetails['matches'][number]['events'][number]) {
+function cardTypeBadgeClass(event: MatchEventRow) {
   const t = cardTypeByEvent(event)
   if (t === 'YELLOW') return 'bg-amber-100 text-amber-900'
   if (t === 'RED') return 'bg-rose-100 text-rose-900'
@@ -184,13 +207,6 @@ function resolveTeamLogo(teamId: string | null | undefined) {
   return TEAM_PLACEHOLDER_SRC
 }
 
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
-}
-
 function normalizeCalendarViewMode(value: unknown): CalendarViewMode {
   return value === 'tour' ? 'tour' : 'grouped'
 }
@@ -208,7 +224,7 @@ function syncCalendarViewToQuery(mode: CalendarViewMode) {
 
 function debugLog(event: string, meta?: Record<string, unknown>) {
   if (!import.meta.dev) return
-  // eslint-disable-next-line no-console
+   
   console.debug('[public-calendar]', event, { ...debugRequestCounts.value, ...(meta ?? {}) })
 }
 
@@ -246,7 +262,12 @@ function matchMetaLabel(m: TournamentDetails['matches'][number]) {
 
 const calendarSections = computed<Array<{ key: string; title: string; dateLabel: string; matches: TournamentDetails['matches'] }>>(() =>
   calendarViewMode.value === 'grouped'
-    ? calendarRounds.value.map((r) => ({ key: r.key, title: r.title, dateLabel: r.dateLabel, matches: r.matches }))
+    ? calendarRounds.value.map((r, idx) => ({
+        key: `${r.dateKey}:${r.round}:${idx}`,
+        title: r.title,
+        dateLabel: r.dateLabel,
+        matches: r.matches,
+      }))
     : calendarTours.value,
 )
 const calendarMatchesLoaded = computed(() => calendarDetail.value?.matches?.length ?? 0)
@@ -288,7 +309,10 @@ const matchNumberById = computed<Record<string, number>>(() => {
     .slice()
     .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))
   const map: Record<string, number> = {}
-  for (let i = 0; i < sorted.length; i++) map[sorted[i].id] = i + 1
+  for (let i = 0; i < sorted.length; i++) {
+    const row = sorted[i]
+    if (row) map[row.id] = i + 1
+  }
   return map
 })
 const playoffSlotLabelsByMatchId = computed(() =>
@@ -307,13 +331,6 @@ function localDateKey(value: string): string {
   return `${y}-${m}-${day}`
 }
 
-function localDateLabelFromKey(dateKey: string): string {
-  if (dateKey === 'unknown') return 'Дата не задана'
-  const d = new Date(`${dateKey}T00:00:00`)
-  if (Number.isNaN(d.getTime())) return 'Дата не задана'
-  return d.toLocaleDateString('ru-RU')
-}
-
 const tourSectionBucketsByKey = computed(() => {
   const out: Record<string, Array<{ dateKey: string; dateLabel: string; matches: TournamentDetails['matches'] }>> = {}
   if (calendarViewMode.value !== 'tour') return out
@@ -330,7 +347,7 @@ const tourSectionBucketsByKey = computed(() => {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([dateKey, matches]) => ({
         dateKey,
-        dateLabel: localDateLabelFromKey(dateKey),
+        dateLabel: formatPublicCalendarDateLabel(dateKey),
         matches: matches
           .slice()
           .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id)),
@@ -415,7 +432,91 @@ const selectedMatchFacts = computed(() => {
   return facts
 })
 
-async function fetchCalendar() {
+async function applyCalendarLoadedData(
+  res: TournamentDetails,
+  roster: PublicRosterTeam[],
+  tableRows: TableRow[],
+  tid: string,
+  reqId: number,
+) {
+  if (reqId !== calendarRequestId.value || tid !== selectedTournamentId.value) return
+  const nextMap: Record<string, string> = {}
+  const nextPlayers: Record<string, string> = {}
+  for (const team of roster) {
+    const logo = String(team.logoUrl ?? '').trim()
+    if (logo) nextMap[team.teamId] = logo
+    for (const p of team.players) {
+      nextPlayers[p.id] = `${String(p.lastName ?? '').trim()} ${String(p.firstName ?? '').trim()}`.trim() || 'Игрок'
+    }
+  }
+  teamLogoById.value = nextMap
+  playerNameById.value = nextPlayers
+  calendarDetail.value = res
+  const mapSidebarRow = (row: TableRow) => ({
+    teamId: row.teamId,
+    teamName: row.teamName,
+    points: Number(row.points ?? 0),
+    played: Number(row.played ?? 0),
+    goalDiff: Number(row.goalDiff ?? 0),
+    logoUrl: nextMap[row.teamId] ?? null,
+  })
+  const sortRows = (rows: TableRow[]) =>
+    rows
+      .slice()
+      .sort(
+        (a, b) =>
+          Number(b.points ?? 0) - Number(a.points ?? 0) ||
+          Number(b.goalDiff ?? 0) - Number(a.goalDiff ?? 0) ||
+          Number(b.goalsFor ?? 0) - Number(a.goalsFor ?? 0),
+      )
+
+  const playoffTeamsTotal = Number(res.summary?.teamsExpectedTotal ?? res.minTeams ?? 0)
+  const calendarTitleOptions =
+    Number.isFinite(playoffTeamsTotal) && playoffTeamsTotal >= 2
+      ? { totalPlayoffTeams: playoffTeamsTotal }
+      : undefined
+
+  /** Сначала матчи из ответа — не ждём N× `fetchTable` по группам (иначе «вечный» скелетон и блокировка UI). */
+  calendarRounds.value = buildCalendarRoundsFromMatches(
+    res.matches ?? [],
+    res.groups ?? [],
+    calendarTitleOptions,
+  )
+  calendarTours.value = buildTourSectionsFromMatches(res.matches ?? [], calendarTitleOptions)
+  applyCalendarViewModeConstraints()
+
+  const groups = res.groups ?? []
+  if (groups.length > 1) {
+    const groupedRows = await Promise.all(
+      groups.map(async (group) => {
+        const groupRows = sortRows((await fetchTable(tenant.value, tid, group.id)) as TableRow[])
+        return {
+          groupId: group.id,
+          groupName: group.name,
+          rows: groupRows.slice(0, 3).map(mapSidebarRow),
+        }
+      }),
+    )
+    if (reqId !== calendarRequestId.value || tid !== selectedTournamentId.value) return
+    publishSidebarStandings(
+      tenant.value,
+      tid,
+      [],
+      groupedRows.filter((x) => x.rows.length > 0),
+    )
+  } else {
+    publishSidebarStandings(
+      tenant.value,
+      tid,
+      sortRows(tableRows as TableRow[])
+        .slice(0, 3)
+        .map(mapSidebarRow),
+      [],
+    )
+  }
+}
+
+async function fetchCalendar(opts?: { soft?: boolean }) {
   if (!selectedTournamentId.value) {
     calendarRounds.value = []
     teamLogoById.value = {}
@@ -423,11 +524,27 @@ async function fetchCalendar() {
     return
   }
 
+  const soft = opts?.soft === true
   const tid = selectedTournamentId.value
   const reqId = ++calendarRequestId.value
-  calendarLoading.value = true
   errorText.value = ''
+
   try {
+    const warm = getCachedCalendarBootstrap(queryClient, tenant.value, tid, CALENDAR_MATCHES_PAGE_SIZE)
+    const bootstrapFresh = arePublicCalendarBootstrapFresh(
+      queryClient,
+      tenant.value,
+      tid,
+      CALENDAR_MATCHES_PAGE_SIZE,
+    )
+
+    if (bootstrapFresh && warm) {
+      calendarLoading.value = false
+      await applyCalendarLoadedData(warm.detail, warm.roster, warm.table, tid, reqId)
+      return
+    }
+
+    if (!soft) calendarLoading.value = true
     debugRequestCounts.value.calendar += 1
     debugRequestCounts.value.roster += 1
     debugRequestCounts.value.table += 1
@@ -440,85 +557,7 @@ async function fetchCalendar() {
       fetchRoster(tenant.value, tid),
       fetchTable(tenant.value, tid),
     ])
-    if (reqId !== calendarRequestId.value || tid !== selectedTournamentId.value) return
-    const nextMap: Record<string, string> = {}
-    const nextPlayers: Record<string, string> = {}
-    for (const team of roster) {
-      const logo = String(team.logoUrl ?? '').trim()
-      if (logo) nextMap[team.teamId] = logo
-      for (const p of team.players) {
-        nextPlayers[p.id] = `${String(p.lastName ?? '').trim()} ${String(p.firstName ?? '').trim()}`.trim() || 'Игрок'
-      }
-    }
-    teamLogoById.value = nextMap
-    playerNameById.value = nextPlayers
-    calendarDetail.value = res
-    const mapSidebarRow = (row: TableRow) => ({
-      teamId: row.teamId,
-      teamName: row.teamName,
-      points: Number(row.points ?? 0),
-      played: Number(row.played ?? 0),
-      goalDiff: Number(row.goalDiff ?? 0),
-      logoUrl: nextMap[row.teamId] ?? null,
-    })
-    const sortRows = (rows: TableRow[]) =>
-      rows
-        .slice()
-        .sort(
-          (a, b) =>
-            Number(b.points ?? 0) - Number(a.points ?? 0) ||
-            Number(b.goalDiff ?? 0) - Number(a.goalDiff ?? 0) ||
-            Number(b.goalsFor ?? 0) - Number(a.goalsFor ?? 0),
-        )
-
-    const groups = res.groups ?? []
-    if (groups.length > 1) {
-      const groupedRows = await Promise.all(
-        groups.map(async (group) => {
-          const groupRows = sortRows((await fetchTable(tenant.value, tid, group.id)) as TableRow[])
-          return {
-            groupId: group.id,
-            groupName: group.name,
-            rows: groupRows.slice(0, 3).map(mapSidebarRow),
-          }
-        }),
-      )
-      if (reqId !== calendarRequestId.value || tid !== selectedTournamentId.value) return
-      publishSidebarStandings(
-        tenant.value,
-        tid,
-        [],
-        groupedRows.filter((x) => x.rows.length > 0),
-      )
-    } else {
-      publishSidebarStandings(
-        tenant.value,
-        tid,
-        sortRows(tableRows as TableRow[])
-          .slice(0, 3)
-          .map(mapSidebarRow),
-        [],
-      )
-    }
-
-    const playoffTeamsTotal = Number(
-      res.summary?.teamsExpectedTotal ?? res.minTeams ?? 0,
-    )
-    const calendarTitleOptions =
-      Number.isFinite(playoffTeamsTotal) && playoffTeamsTotal >= 2
-        ? { totalPlayoffTeams: playoffTeamsTotal }
-        : undefined
-
-    calendarRounds.value = buildCalendarRoundsFromMatches(
-      res.matches ?? [],
-      res.groups ?? [],
-      calendarTitleOptions,
-    )
-    calendarTours.value = buildTourSectionsFromMatches(
-      res.matches ?? [],
-      calendarTitleOptions,
-    )
-    applyCalendarViewModeConstraints()
+    await applyCalendarLoadedData(res, roster, tableRows as TableRow[], tid, reqId)
   } catch {
     if (reqId !== calendarRequestId.value || tid !== selectedTournamentId.value) return
     calendarDetail.value = null
@@ -527,9 +566,31 @@ async function fetchCalendar() {
     publishSidebarStandings(tenant.value, tid, [], [])
     errorText.value = 'Не удалось загрузить календарь матчей.'
   } finally {
-    if (reqId === calendarRequestId.value) {
-      calendarLoading.value = false
-    }
+    calendarLoading.value = false
+  }
+}
+
+const calendarManualRefreshPending = ref(false)
+
+async function refreshCalendar() {
+  if (!selectedTournamentId.value || tenantNotFound.value) return
+  const tid = selectedTournamentId.value
+  calendarManualRefreshPending.value = true
+  try {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ['public', 'tenant', tenant.value, 'tournament', tid, 'detail'],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: publicTenantQueryKeys.tournamentRoster(tenant.value, tid),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ['public', 'tenant', tenant.value, 'tournament', tid, 'table'],
+      }),
+    ])
+    await fetchCalendar({ soft: true })
+  } finally {
+    calendarManualRefreshPending.value = false
   }
 }
 
@@ -640,7 +701,7 @@ watch(calendarLoadMoreSentinel, () => {
 })
 
 watch(debugPanelCollapsed, (next) => {
-  if (!showDebugPanel || typeof window === 'undefined') return
+  if (!showDebugPanel.value || typeof window === 'undefined') return
   window.localStorage.setItem(DEBUG_PANEL_COLLAPSE_KEY, next ? '1' : '0')
 })
 
@@ -670,7 +731,7 @@ watch(
 )
 
 onMounted(() => {
-  if (showDebugPanel && typeof window !== 'undefined') {
+  if (showDebugPanel.value && typeof window !== 'undefined') {
     debugPanelCollapsed.value = window.localStorage.getItem(DEBUG_PANEL_COLLAPSE_KEY) === '1'
   }
 })
@@ -706,9 +767,12 @@ onBeforeUnmount(() => {
         {{ errorText }}
       </div>
 
-      <div v-else class="space-y-4">
-          <div v-if="showCalendarModeSwitch" class="public-card !p-3">
-            <div class="inline-flex rounded-xl border border-surface-200 bg-surface-0 p-1">
+      <div v-else class="space-y-6">
+          <div class="public-card !p-3 flex flex-wrap items-center gap-3">
+            <div
+              v-if="showCalendarModeSwitch"
+              class="inline-flex rounded-xl border border-surface-200 bg-surface-0 p-1"
+            >
               <button
                 type="button"
                 class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
@@ -726,6 +790,24 @@ onBeforeUnmount(() => {
                 По турам
               </button>
             </div>
+            <Button
+              type="button"
+              icon="pi pi-refresh"
+              label="Обновить"
+              outlined
+              size="small"
+              class="ml-auto shrink-0 !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#c80a48]/35 hover:!text-[#c80a48]"
+              :loading="calendarManualRefreshPending"
+              :disabled="
+                !selectedTournamentId ||
+                calendarManualRefreshPending ||
+                calendarLoadingMore ||
+                !pageReady
+              "
+              title="Запросить актуальные матчи, составы и турнирную таблицу"
+              aria-label="Обновить календарь матчей"
+              @click="refreshCalendar"
+            />
           </div>
 
           <div v-if="calendarLoading" class="public-card">
@@ -780,26 +862,22 @@ onBeforeUnmount(() => {
                       <div class="flex items-center justify-between gap-3">
                         <div class="min-w-0">
                           <div class="flex items-center gap-2 text-sm font-medium">
-                            <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                              <img
-                                :src="resolveTeamLogo(displayedCalendarTeamId(m, 'home'))"
-                                :alt="displayedCalendarTeamName(m, 'home')"
-                                class="h-full w-full object-cover"
-                                loading="lazy"
-                                @error="handleTeamLogoError"
-                              />
-                            </div>
+                            <RemoteImage
+                              :src="resolveTeamLogo(displayedCalendarTeamId(m, 'home'))"
+                              :alt="displayedCalendarTeamName(m, 'home')"
+                              placeholder-icon="users"
+                              icon-class="text-xs"
+                              class="h-7 w-7 shrink-0 rounded-full"
+                            />
                             <span class="truncate">{{ displayedCalendarTeamName(m, 'home') }}</span>
                             <span class="shrink-0 text-[#4f6b8c]">{{ teamsSeparator(m) }}</span>
-                            <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                              <img
-                                :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
-                                :alt="displayedCalendarTeamName(m, 'away')"
-                                class="h-full w-full object-cover"
-                                loading="lazy"
-                                @error="handleTeamLogoError"
-                              />
-                            </div>
+                            <RemoteImage
+                              :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
+                              :alt="displayedCalendarTeamName(m, 'away')"
+                              placeholder-icon="users"
+                              icon-class="text-xs"
+                              class="h-7 w-7 shrink-0 rounded-full"
+                            />
                             <span class="truncate">{{ displayedCalendarTeamName(m, 'away') }}</span>
                           </div>
                           <div class="text-xs text-muted-color">
@@ -808,7 +886,7 @@ onBeforeUnmount(() => {
                         </div>
                         <div class="flex items-center gap-3 shrink-0">
                           <div class="text-sm font-semibold">
-                            <template v-if="m.homeScore != null && m.awayScore != null">
+                            <template v-if="isMatchCountedInPublicStandings(m)">
                               {{ formatMatchScoreDisplay(m) }}
                             </template>
                             <template v-else>—</template>
@@ -836,26 +914,22 @@ onBeforeUnmount(() => {
                     <div class="flex items-center justify-between gap-3">
                       <div class="min-w-0">
                         <div class="flex items-center gap-2 text-sm font-medium">
-                          <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                            <img
-                              :src="resolveTeamLogo(displayedCalendarTeamId(m, 'home'))"
-                              :alt="displayedCalendarTeamName(m, 'home')"
-                              class="h-full w-full object-cover"
-                              loading="lazy"
-                              @error="handleTeamLogoError"
-                            />
-                          </div>
+                          <RemoteImage
+                            :src="resolveTeamLogo(displayedCalendarTeamId(m, 'home'))"
+                            :alt="displayedCalendarTeamName(m, 'home')"
+                            placeholder-icon="users"
+                            icon-class="text-xs"
+                            class="h-7 w-7 shrink-0 rounded-full"
+                          />
                           <span class="truncate">{{ displayedCalendarTeamName(m, 'home') }}</span>
                           <span class="shrink-0 text-[#4f6b8c]">{{ teamsSeparator(m) }}</span>
-                          <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full">
-                            <img
-                              :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
-                              :alt="displayedCalendarTeamName(m, 'away')"
-                              class="h-full w-full object-cover"
-                              loading="lazy"
-                              @error="handleTeamLogoError"
-                            />
-                          </div>
+                          <RemoteImage
+                            :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
+                            :alt="displayedCalendarTeamName(m, 'away')"
+                            placeholder-icon="users"
+                            icon-class="text-xs"
+                            class="h-7 w-7 shrink-0 rounded-full"
+                          />
                           <span class="truncate">{{ displayedCalendarTeamName(m, 'away') }}</span>
                         </div>
                         <div class="text-xs text-muted-color">
@@ -864,7 +938,7 @@ onBeforeUnmount(() => {
                       </div>
                       <div class="flex items-center gap-3 shrink-0">
                         <div class="text-sm font-semibold">
-                          <template v-if="m.homeScore != null && m.awayScore != null">
+                          <template v-if="isMatchCountedInPublicStandings(m)">
                             {{ formatMatchScoreDisplay(m) }}
                           </template>
                           <template v-else>—</template>
@@ -931,11 +1005,16 @@ onBeforeUnmount(() => {
         </div>
 
         <TabView :activeIndex="matchStatsTab" @update:activeIndex="(v) => (matchStatsTab = v)">
-          <TabPanel header="Общая">
+          <TabPanel value="summary" header="Общая">
             <div class="space-y-3">
               <div class="rounded-xl border border-[#d6e0ee] bg-white p-3">
                 <div class="text-xs text-[#4f6b8c]">Счет</div>
-                <div class="mt-1 text-xl font-semibold text-[#123c67]">{{ formatMatchScoreDisplay(selectedMatchForStats) }}</div>
+                <div class="mt-1 text-xl font-semibold text-[#123c67]">
+                  <template v-if="selectedMatchForStats && isMatchCountedInPublicStandings(selectedMatchForStats)">
+                    {{ formatMatchScoreDisplay(selectedMatchForStats) }}
+                  </template>
+                  <template v-else>—</template>
+                </div>
               </div>
               <div v-if="selectedMatchFacts.length" class="flex flex-wrap gap-2">
                 <div
@@ -953,7 +1032,7 @@ onBeforeUnmount(() => {
             </div>
           </TabPanel>
 
-          <TabPanel header="Голы">
+          <TabPanel value="goals" header="Голы">
             <div v-if="!selectedMatchGoals.length" class="text-sm text-muted-color">Событий нет.</div>
             <div v-else class="space-y-2">
               <div
@@ -972,7 +1051,7 @@ onBeforeUnmount(() => {
             </div>
           </TabPanel>
 
-          <TabPanel header="Карточки">
+          <TabPanel value="cards" header="Карточки">
             <div v-if="!selectedMatchCards.length" class="text-sm text-muted-color">Событий нет.</div>
             <div v-else class="space-y-2">
               <div
@@ -997,7 +1076,7 @@ onBeforeUnmount(() => {
             </div>
           </TabPanel>
 
-          <TabPanel header="Замены">
+          <TabPanel value="subs" header="Замены">
             <div v-if="!selectedMatchSubs.length" class="text-sm text-muted-color">Событий нет.</div>
             <div v-else class="space-y-2">
               <div

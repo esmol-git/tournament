@@ -110,3 +110,55 @@ html[data-accent='cyan'] {
 html.dark-mode .p-tabview .p-tabview-panels {
   background: transparent;
 }
+
+/*
+ * TabView: индикатор активного таба (ink bar). В теме Aura полоска часто 1–2px и слабый контраст
+ * на фоне border tablist — делаем толще и явный primary.
+ */
+.p-tabview .p-tabview-ink-bar {
+  height: 3px;
+  bottom: 0;
+  border-radius: 2px 2px 0 0;
+  background: var(--p-primary-color);
+}
+
+html.dark-mode .p-tabview .p-tabview-ink-bar {
+  background: var(--p-primary-400, var(--p-primary-color));
+}
+
+/*
+ * PrimeVue Tooltip (v-tooltip): длинный текст не должен растягивать подсказку на всю ширину
+ * экрана и перекрывать формы (fit-content + отсутствие переноса давали «полосу» слева/сверху).
+ */
+.p-tooltip.p-component {
+  max-width: min(22rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+}
+
+.p-tooltip .p-tooltip-text {
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.45;
+  display: block;
+}
+
+/* DataTable: спокойные заголовки колонок (меньший размер, приглушённый цвет) */
+.p-datatable .p-datatable-thead > tr > th {
+  font-size: 0.8125rem; /* ~13px при 16px root; чуть крупнее прежних ~11px */
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+  letter-spacing: 0.02em;
+}
+
+.p-datatable .p-datatable-thead > tr > th .p-datatable-column-header-content {
+  color: inherit;
+}
+
+/* Сортировка: SVG меньше кегля заголовка (em считается от font-size ячейки) */
+.p-datatable .p-datatable-thead .p-datatable-sort-icon {
+  width: 0.68em;
+  height: 0.68em;
+  flex-shrink: 0;
+  vertical-align: middle;
+}

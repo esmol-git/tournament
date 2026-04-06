@@ -9,8 +9,13 @@ import type { NewsTagRow } from '~/types/admin/news-tag'
 import type { TournamentNewsRow } from '~/types/admin/tournament-news'
 import type { TournamentListResponse, TournamentRow } from '~/types/admin/tournaments-index'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  adminOrgModeratorReadOnly: false,
+})
 
 const route = useRoute()
 const router = useRouter()
@@ -20,20 +25,46 @@ const tenantId = useTenantId()
 const toast = useToast()
 const { t } = useI18n()
 
-const loading = ref(true)
 const tournamentsLoading = ref(false)
 const newsTagsLoading = ref(false)
 const saving = ref(false)
-const items = ref<TournamentNewsRow[]>([])
+const {
+  items,
+  loading,
+  error,
+  isEmpty,
+  run,
+  retry,
+} = useAdminAsyncListState<TournamentNewsRow>({
+  initialLoading: true,
+  clearItemsOnError: true,
+})
 const tournaments = ref<TournamentRow[]>([])
 const newsTags = ref<NewsTagRow[]>([])
 const showForm = ref(false)
 const editing = ref<TournamentNewsRow | null>(null)
 const isEdit = computed(() => !!editing.value)
 
-const tournamentFilter = ref<string | null>(null)
-const sectionFilter = ref<string | null>(null)
-const tagFilter = ref<string | null>(null)
+/** Пустая строка = «все» (Prime Select плохо матчит `null` с option-value — получалась пустая метка). */
+const tournamentFilter = ref('')
+const sectionFilter = ref('')
+const tagFilter = ref('')
+
+const hasNewsFilters = computed(
+  () =>
+    tournamentFilter.value !== '' ||
+    sectionFilter.value !== '' ||
+    tagFilter.value !== '',
+)
+
+const skeletonNewsRows = Array.from({ length: 10 }, (_, i) => ({ id: `sk-n-${i}` }))
+
+function resetNewsFilters() {
+  tournamentFilter.value = ''
+  sectionFilter.value = ''
+  tagFilter.value = ''
+  void fetchItems()
+}
 
 const sectionOptions = [
   { value: 'ANNOUNCEMENT', label: 'Анонс' },
@@ -152,18 +183,18 @@ const showPublishedTournamentError = computed(
   () => (submitAttempted.value || v$.value.tournamentId.$dirty) && !!formErrors.value.publishedTournament,
 )
 
-function onTournamentFilterChange(v: string | null) {
-  tournamentFilter.value = v
+function onTournamentFilterChange(v: string | null | undefined) {
+  tournamentFilter.value = v ?? ''
   void fetchItems()
 }
 
-function onSectionFilterChange(v: string | null) {
-  sectionFilter.value = v
+function onSectionFilterChange(v: string | null | undefined) {
+  sectionFilter.value = v ?? ''
   void fetchItems()
 }
 
-function onTagFilterChange(v: string | null) {
-  tagFilter.value = v
+function onTagFilterChange(v: string | null | undefined) {
+  tagFilter.value = v ?? ''
   void fetchItems()
 }
 
@@ -213,10 +244,9 @@ async function loadNewsTags() {
   }
 }
 
-const fetchItems = async () => {
-  if (!token.value) return
-  loading.value = true
-  try {
+function fetchItems() {
+  return run(async () => {
+    if (!token.value) return
     const qs = new URLSearchParams()
     const qTid = tournamentFilter.value
     if (qTid) qs.set('tournamentId', qTid)
@@ -229,17 +259,7 @@ const fetchItems = async () => {
       apiUrl(`/tenants/${tenantId.value}/news${suffix}`),
       { headers: { Authorization: `Bearer ${token.value}` } },
     )
-  } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: t('admin.news.load_error'),
-      detail: getApiErrorMessage(e),
-      life: 6000,
-    })
-    items.value = []
-  } finally {
-    loading.value = false
-  }
+  })
 }
 
 function openCreate() {
@@ -409,6 +429,7 @@ onMounted(() => {
   if (process.client) {
     syncWithStorage()
     if (!loggedIn.value) {
+      loading.value = false
       router.push('/admin/login')
       return
     }
@@ -422,27 +443,36 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="news-page mx-auto w-full max-w-7xl space-y-4 p-6">
-    <header
-      class="rounded-2xl border border-surface-200 bg-surface-0 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900 md:p-5"
-    >
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div class="min-w-0">
-          <h1 class="text-xl font-semibold tracking-tight">{{ t('admin.news.title') }}</h1>
-          <p class="mt-1 max-w-2xl text-sm leading-6 text-muted-color">{{ t('admin.news.intro') }}</p>
-        </div>
+  <section class="admin-page news-page space-y-4 sm:space-y-6">
+    <div class="min-w-0 space-y-3 sm:space-y-4">
+      <div class="min-w-0">
+        <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">
+          {{ t('admin.news.title') }}
+        </h1>
+        <p class="mt-2 max-w-3xl text-xs text-muted-color sm:text-sm">{{ t('admin.news.intro') }}</p>
+      </div>
 
-        <div class="grid w-full grid-cols-1 gap-2 sm:grid-cols-3 lg:w-auto lg:min-w-[42rem]">
-          <div class="min-w-0 sm:min-w-[16rem]">
-            <label for="news_tournament_filter" class="mb-1 block text-xs font-medium text-muted-color">
-              {{ t('admin.news.filter_tournament') }}
-            </label>
+      <div
+        class="admin-toolbar-responsive flex flex-col gap-3 sm:flex-row sm:flex-nowrap sm:items-end sm:gap-x-3 sm:gap-y-2"
+      >
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:flex-1 sm:basis-0">
+          <label
+            for="news_tournament_filter"
+            class="text-xs font-medium text-muted-color"
+          >
+            {{ t('admin.news.filter_tournament') }}
+          </label>
+          <div
+            class="overflow-hidden rounded-lg border border-surface-300/90 bg-surface-0 shadow-sm dark:border-surface-600 dark:bg-surface-950/50 dark:shadow-none"
+          >
             <Select
               :model-value="tournamentFilter"
               input-id="news_tournament_filter"
-              class="w-full"
+              class="news-filter-select w-full"
+              size="small"
+              :placeholder="t('admin.news.filter_all')"
               :options="[
-                { label: t('admin.news.filter_all'), value: null },
+                { label: t('admin.news.filter_all'), value: '' },
                 ...tournamentSelectOptions,
               ]"
               option-label="label"
@@ -452,46 +482,157 @@ onMounted(() => {
               @update:model-value="onTournamentFilterChange"
             />
           </div>
-          <div class="min-w-0">
-            <label for="news_section_filter" class="mb-1 block text-xs font-medium text-muted-color">
-              Раздел
-            </label>
+        </div>
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:flex-1 sm:basis-0">
+          <label
+            for="news_section_filter"
+            class="text-xs font-medium text-muted-color"
+          >
+            {{ t('admin.news.filter_section') }}
+          </label>
+          <div
+            class="overflow-hidden rounded-lg border border-surface-300/90 bg-surface-0 shadow-sm dark:border-surface-600 dark:bg-surface-950/50 dark:shadow-none"
+          >
             <Select
               :model-value="sectionFilter"
               input-id="news_section_filter"
-              class="w-full"
-              :options="[{ label: t('admin.news.filter_all'), value: null }, ...sectionOptions]"
+              class="news-filter-select w-full"
+              size="small"
+              :placeholder="t('admin.news.filter_option_all')"
+              :options="[
+                { label: t('admin.news.filter_option_all'), value: '' },
+                ...sectionOptions,
+              ]"
               option-label="label"
               option-value="value"
               :show-clear="false"
               @update:model-value="onSectionFilterChange"
             />
           </div>
-          <div class="min-w-0 sm:flex sm:items-end sm:gap-2">
-            <div class="min-w-0 sm:flex-1">
-              <label for="news_tag_filter" class="mb-1 block text-xs font-medium text-muted-color">
-                Тег
-              </label>
-              <Select
-                :model-value="tagFilter"
-                input-id="news_tag_filter"
-                class="w-full"
-                :options="[{ label: t('admin.news.filter_all'), value: null }, ...newsTagSelectOptions]"
-                option-label="label"
-                option-value="value"
-                :show-clear="false"
-                :loading="newsTagsLoading"
-                @update:model-value="onTagFilterChange"
-              />
-            </div>
-            <Button :label="t('admin.news.add')" icon="pi pi-plus" class="mt-2 sm:mt-0 sm:h-[2.65rem]" @click="openCreate" />
+        </div>
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:flex-1 sm:basis-0">
+          <label
+            for="news_tag_filter"
+            class="text-xs font-medium text-muted-color"
+          >
+            {{ t('admin.news.filter_tag') }}
+          </label>
+          <div
+            class="overflow-hidden rounded-lg border border-surface-300/90 bg-surface-0 shadow-sm dark:border-surface-600 dark:bg-surface-950/50 dark:shadow-none"
+          >
+            <Select
+              :model-value="tagFilter"
+              input-id="news_tag_filter"
+              class="news-filter-select w-full"
+              size="small"
+              :placeholder="t('admin.news.filter_option_all')"
+              :options="[
+                { label: t('admin.news.filter_option_all'), value: '' },
+                ...newsTagSelectOptions,
+              ]"
+              option-label="label"
+              option-value="value"
+              :show-clear="false"
+              :loading="newsTagsLoading"
+              @update:model-value="onTagFilterChange"
+            />
           </div>
         </div>
+        <div class="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:shrink-0">
+          <span class="hidden text-xs font-medium text-transparent select-none sm:block" aria-hidden="true">.</span>
+          <Button
+            :label="t('admin.news.add')"
+            icon="pi pi-plus"
+            class="w-full sm:w-auto"
+            @click="openCreate"
+          />
+        </div>
       </div>
-    </header>
+    </div>
 
-    <div class="rounded-2xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900">
-      <DataTable :value="items" data-key="id" :loading="loading" striped-rows>
+    <AdminDataState
+      :loading="loading"
+      :error="error"
+      :empty="isEmpty"
+      :empty-title="hasNewsFilters ? t('admin.news.filtered_empty_title') : t('admin.news.empty')"
+      :empty-description="hasNewsFilters ? t('admin.news.filtered_empty_desc') : ''"
+      :error-title="t('admin.news.load_error')"
+      :content-card="false"
+      @retry="retry"
+    >
+      <template #empty-actions>
+        <Button
+          v-if="hasNewsFilters"
+          :label="t('admin.news.clear_filters')"
+          icon="pi pi-filter-slash"
+          severity="secondary"
+          outlined
+          @click="resetNewsFilters"
+        />
+        <Button v-else :label="t('admin.news.add')" icon="pi pi-plus" @click="openCreate" />
+      </template>
+      <template #loading>
+        <div
+          class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+        >
+          <DataTable
+            :value="skeletonNewsRows"
+            data-key="id"
+            striped-rows
+            class="min-h-[22rem]"
+            aria-busy="true"
+          >
+            <Column :header="t('admin.news.col_title')">
+              <template #body>
+                <Skeleton width="70%" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column :header="t('admin.news.col_slug')">
+              <template #body>
+                <Skeleton width="5rem" height="0.875rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Раздел" style="width: 8rem">
+              <template #body>
+                <Skeleton width="4.5rem" height="1.25rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Теги" style="width: 14rem">
+              <template #body>
+                <div class="flex flex-wrap gap-1">
+                  <Skeleton width="3rem" height="1.25rem" class="rounded-md" />
+                  <Skeleton width="3.5rem" height="1.25rem" class="rounded-md" />
+                </div>
+              </template>
+            </Column>
+            <Column :header="t('admin.news.col_tournament')" style="width: 12rem">
+              <template #body>
+                <Skeleton width="65%" height="0.875rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column :header="t('admin.news.col_order')" style="width: 6rem">
+              <template #body>
+                <Skeleton width="2rem" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column :header="t('admin.news.col_status')" style="width: 10rem">
+              <template #body>
+                <Skeleton width="5.5rem" height="1.25rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="" style="width: 8rem">
+              <template #body>
+                <div class="flex justify-end gap-1">
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </div>
+      </template>
+      <div class="rounded-2xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll">
+      <DataTable :value="items" data-key="id" striped-rows>
       <Column field="title" :header="t('admin.news.col_title')">
         <template #body="{ data }">
           <div class="font-medium text-surface-900 dark:text-surface-100">{{ data.title }}</div>
@@ -542,11 +683,9 @@ onMounted(() => {
           </div>
         </template>
       </Column>
-      <template #empty>
-        <div class="py-10 text-center text-muted-color">{{ t('admin.news.empty') }}</div>
-      </template>
       </DataTable>
-    </div>
+      </div>
+    </AdminDataState>
 
     <Dialog
       :visible="showForm"
@@ -735,6 +874,26 @@ onMounted(() => {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  color: var(--p-text-muted-color);
+}
+
+/* Одна внешняя рамка у блока фильтра — убираем дубль у корня Select */
+.news-page :deep(.news-filter-select) {
+  width: 100%;
+}
+.news-page :deep(.news-filter-select .p-select) {
+  border-width: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Явный цвет подписи: без этого в тёмной теме бывает «пустой» триггер (p-emptylabel / placeholder). */
+.news-page :deep(.news-filter-select .p-select-label) {
+  color: var(--p-text-color);
+}
+
+.news-page :deep(.news-filter-select .p-select-label.p-placeholder),
+.news-page :deep(.news-filter-select .p-select-label.p-select-label-empty) {
   color: var(--p-text-muted-color);
 }
 </style>

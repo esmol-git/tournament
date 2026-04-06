@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { useAutoAnimate } from '@formkit/auto-animate/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import { PUBLIC_AUTO_ANIMATE } from '~/constants/publicMotion'
 import { usePublicTournamentSidebarTopStatsStore } from '~/composables/usePublicTournamentSidebarTopStatsStore'
 
@@ -47,15 +46,14 @@ const props = defineProps<{
   unifiedBottom?: boolean
   sticky?: boolean
   showNewsLink?: boolean
+  /** Скрыть блок топ-статистики в сайдбаре (из `tenantMeta.publicSettings.publicShowTopStats`). */
+  showTopStatsInSidebar?: boolean
 }>()
 
 const route = useRoute()
-const { fetchTenantMeta } = usePublicTournamentFetch()
 const { read: readTopStats } = usePublicTournamentSidebarTopStatsStore()
 const TEAM_PLACEHOLDER_SRC = '/placeholders/team.svg'
 const extraSectionsOpen = ref(true)
-const autoShowNewsLink = ref(true)
-const autoShowTopStats = ref(true)
 const [extraLinksWrapEl] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
 const [socialLinksWrapEl] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
 const [topStatsRowsEl] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
@@ -130,32 +128,9 @@ const activeTab = computed(() => {
 const visibleExtraNavLinks = computed(() =>
   extraNavLinks.filter((link) => {
     if (link.key !== 'news') return true
-    const effective = props.showNewsLink ?? autoShowNewsLink.value
-    return effective !== false
+    return props.showNewsLink !== false
   }),
 )
-
-async function loadSidebarSettings() {
-  try {
-    const meta = await fetchTenantMeta(props.tenant)
-    autoShowNewsLink.value = meta?.publicSettings?.publicShowNewsInSidebar !== false
-    autoShowTopStats.value = meta?.publicSettings?.publicShowTopStats !== false
-  } catch {
-    autoShowNewsLink.value = true
-    autoShowTopStats.value = true
-  }
-}
-
-watch(
-  () => props.tenant,
-  () => {
-    void loadSidebarSettings()
-  },
-)
-
-onMounted(() => {
-  void loadSidebarSettings()
-})
 
 function normalizeMediaTab(value: string | undefined): 'news' | 'photo' | 'video' | '' {
   const raw = String(value ?? '').trim().toLowerCase()
@@ -271,13 +246,6 @@ function resolveTeamLogo(url: string | null | undefined) {
   return normalized.length ? normalized : TEAM_PLACEHOLDER_SRC
 }
 
-function handleTeamLogoError(event: Event) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(TEAM_PLACEHOLDER_SRC)) return
-  target.src = TEAM_PLACEHOLDER_SRC
-}
-
 function formatGoalDiff(value: number | null | undefined): string {
   const n = Number(value ?? 0)
   if (n > 0) return `+${n}`
@@ -299,10 +267,7 @@ const topStatsSlides = computed(() => {
   return readTopStats(t, tid).slides ?? []
 })
 
-const showTopStats = computed(() => {
-  const effective = autoShowTopStats.value
-  return effective !== false
-})
+const showTopStats = computed(() => props.showTopStatsInSidebar !== false)
 
 const showTopStatsCard = computed(() => showTopStats.value && topStatsSlides.value.length > 0)
 
@@ -427,7 +392,10 @@ onBeforeUnmount(() => {
                     'canonicalTo' in link && typeof link.canonicalTo === 'function'
                       ? link.canonicalTo(tenant)
                       : link.to(tenant),
-                  query: { ...baseQuery, ...(link.query ? link.query() : {}) },
+                  query: {
+                    ...baseQuery,
+                    ...('query' in link && typeof link.query === 'function' ? link.query() : {}),
+                  },
                 }"
                 class="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c80a48]/30"
                 :class="
@@ -495,12 +463,12 @@ onBeforeUnmount(() => {
               >
                 {{ idx + 1 }}
               </span>
-              <img
+              <RemoteImage
                 :src="resolveTeamLogo(row.logoUrl)"
                 :alt="row.teamName"
-                class="h-5 w-5 rounded-full object-cover"
-                loading="lazy"
-                @error="handleTeamLogoError"
+                placeholder-icon="users"
+                icon-class="text-[0.55rem]"
+                class="h-5 w-5 shrink-0 rounded-full"
               />
               <span class="sb-standings-team truncate">{{ row.teamName }}</span>
               <span class="sb-standings-num">{{ row.played ?? 0 }}</span>

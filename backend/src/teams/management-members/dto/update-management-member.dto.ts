@@ -32,7 +32,9 @@ export class UpdateManagementMemberDto {
   phone?: string;
 
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsEmail()
   @MaxLength(320)
   email?: string;

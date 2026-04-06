@@ -21,6 +21,10 @@ import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.gu
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { TenantAdminStaffGuard } from '../auth/tenant-admin-staff.guard';
+import {
+  ModeratorForbiddenStaffGuard,
+  ModeratorReadOnlyStaffGuard,
+} from '../auth/moderator-staff-scope.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreatePlayerDto } from './dto/create-player.dto';
 import { PlayersFilterQueryDto } from './dto/players-filter-query.dto';
@@ -34,6 +38,7 @@ import { PlayersService } from './players.service';
   TenantParamConsistencyGuard,
   TenantZoneGuard,
   TenantAdminStaffGuard,
+  ModeratorReadOnlyStaffGuard,
 )
 @Controller()
 export class PlayersController {
@@ -59,6 +64,7 @@ export class PlayersController {
   }
 
   @Get('tenants/:tenantId/players/export/xlsx')
+  @UseGuards(ModeratorForbiddenStaffGuard)
   async exportXlsx(
     @Param('tenantId') tenantId: string,
     @Req() req: { user: JwtPayload },

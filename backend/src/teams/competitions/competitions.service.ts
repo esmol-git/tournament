@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
 import { UpdateCompetitionDto } from './dto/update-competition.dto';
 
 @Injectable()
 export class CompetitionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
+  ) {}
 
   list(tenantId: string) {
     return this.prisma.competition.findMany({
@@ -49,6 +53,7 @@ export class CompetitionsService {
       where: { id, tenantId },
     });
     if (!row) throw new NotFoundException('Competition not found');
+    await this.tournamentTemplates.assertCanDeleteCompetition(tenantId, id);
     await this.prisma.competition.delete({ where: { id } });
     return { success: true };
   }

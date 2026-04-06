@@ -1,4 +1,12 @@
-import { IsOptional, IsString, ValidateIf } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 
 export class UpdateStadiumDto {
   @IsOptional()
@@ -17,6 +25,26 @@ export class UpdateStadiumDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsString()
   regionId?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  @MaxLength(200)
+  surface?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pitchCount?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  capacity?: number | null;
 
   @IsOptional()
   @IsString()

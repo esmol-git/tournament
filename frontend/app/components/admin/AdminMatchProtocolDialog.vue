@@ -8,8 +8,9 @@ import type { TeamPlayerRow } from '~/types/admin/team'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDateTimeFields'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
-import { isMatchEditLocked, statusOptions } from '~/utils/tournamentAdminUi'
-import { computed, reactive, ref, watch } from 'vue'
+import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
+import { isMatchEditLocked } from '~/utils/tournamentAdminUi'
+import { computed, reactive, ref, useId, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -35,6 +36,8 @@ const { token, user, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
 const toast = useToast()
+const { t } = useI18n()
+const matchStatusSelectOptions = useMatchStatusSelectOptions()
 
 const {
   loadRefs,
@@ -56,14 +59,51 @@ const awayTeamLabel = computed(() => {
   return playoffSlotLabels(props.match)?.away ?? props.match.awayTeam.name
 })
 
-const canOverrideLockedProtocol = computed(
-  () => user.value?.role === 'TENANT_ADMIN',
-)
+type SessionUser = { id?: string; role?: string }
+
+const authUser = computed(() => (user.value ?? null) as SessionUser | null)
+
+/** Модератор турнира (запись в tournament members), не глобальная роль MODERATOR без турнира */
+const isAssignedTournamentModerator = computed(() => {
+  const u = authUser.value
+  if (!u?.id || u.role !== 'MODERATOR') return false
+  if (props.standalone || !props.tournamentId) return false
+  const members = props.tournament?.members
+  if (members?.length) {
+    return members.some((m) => m.userId === u.id && m.role === 'MODERATOR')
+  }
+  // Нет members в payload (например, список матчей по тенанту) — UI открыт; сервер проверит членство
+  return true
+})
+
+const canOverrideLockedProtocol = computed(() => {
+  const r = authUser.value?.role
+  if (r === 'TENANT_ADMIN' || r === 'TOURNAMENT_ADMIN' || r === 'SUPER_ADMIN') {
+    return true
+  }
+  return isAssignedTournamentModerator.value
+})
+
 const protocolLocked = computed(
   () =>
     !!props.match &&
     isMatchEditLocked(props.match.status) &&
     !canOverrideLockedProtocol.value,
+)
+
+const showTenantEmergencyProtocolBanner = computed(
+  () =>
+    !!props.match &&
+    isMatchEditLocked(props.match.status) &&
+    canOverrideLockedProtocol.value &&
+    authUser.value?.role === 'TENANT_ADMIN',
+)
+
+const showModeratorFinishedProtocolBanner = computed(
+  () =>
+    !!props.match &&
+    isMatchEditLocked(props.match.status) &&
+    isAssignedTournamentModerator.value,
 )
 
 const protocolSaving = ref(false)
@@ -196,7 +236,7 @@ watch(
     if (!open || !m) return
     protocolSubmitAttempted.value = false
     if (token.value) {
-      await loadRefs(authFetch, apiUrl, token.value, tenantId.value)
+      await loadRefs()
     }
     protocolForm.schedulePostponeReasonId = ''
     protocolForm.scheduleCancelReasonId = ''
@@ -220,17 +260,17 @@ watch(
       const metaType = typeof payload?.metaType === 'string' ? payload.metaType : null
       if (metaType === EXTRA_TIME_META) {
         protocolForm.extraTimeHomeScore =
-          typeof payload.homeScore === 'number' ? payload.homeScore : null
+          typeof payload?.homeScore === 'number' ? payload.homeScore : null
         protocolForm.extraTimeAwayScore =
-          typeof payload.awayScore === 'number' ? payload.awayScore : null
+          typeof payload?.awayScore === 'number' ? payload.awayScore : null
         showExtraTimeFields.value = true
         continue
       }
       if (metaType === PENALTIES_META) {
         protocolForm.penaltiesHomeScore =
-          typeof payload.homeScore === 'number' ? payload.homeScore : null
+          typeof payload?.homeScore === 'number' ? payload.homeScore : null
         protocolForm.penaltiesAwayScore =
-          typeof payload.awayScore === 'number' ? payload.awayScore : null
+          typeof payload?.awayScore === 'number' ? payload.awayScore : null
         showPenaltyFields.value = true
         continue
       }
@@ -666,7 +706,7 @@ const saveProtocol = async () => {
     toast.add({
       severity: 'error',
       summary: 'Не удалось сохранить протокол',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -679,6 +719,57 @@ const finishProtocol = async () => {
   if (protocolForm.status !== 'FINISHED') protocolForm.status = 'FINISHED'
   await saveProtocol()
 }
+
+const protocolA11yId = useId()
+const protocolMatchSummaryId = `${protocolA11yId}-match-summary`
+const protocolHomeScoreId = `${protocolA11yId}-home-score`
+const protocolAwayScoreId = `${protocolA11yId}-away-score`
+const protocolEtHomeId = `${protocolA11yId}-et-home`
+const protocolEtAwayId = `${protocolA11yId}-et-away`
+const protocolEtHintId = `${protocolA11yId}-et-hint`
+const protocolPenHomeId = `${protocolA11yId}-pen-home`
+const protocolPenAwayId = `${protocolA11yId}-pen-away`
+const protocolPenHintId = `${protocolA11yId}-pen-hint`
+const protocolDateId = `${protocolA11yId}-date`
+const protocolTimeId = `${protocolA11yId}-time`
+const protocolPostponeId = `${protocolA11yId}-postpone`
+const protocolStatusId = `${protocolA11yId}-status`
+const protocolCancelReasonId = `${protocolA11yId}-cancel-reason`
+const protocolCancelReasonErrId = `${protocolA11yId}-cancel-reason-err`
+
+const protocolEtInputsPt = computed(() =>
+  isPlayoffMatch.value && showExtraTimeFields.value
+    ? { pcInputText: { root: { 'aria-describedby': protocolEtHintId } } }
+    : undefined,
+)
+const protocolPenInputsPt = computed(() =>
+  isPlayoffMatch.value && showPenaltyFields.value
+    ? { pcInputText: { root: { 'aria-describedby': protocolPenHintId } } }
+    : undefined,
+)
+
+const protocolDialogRootPt = computed(() =>
+  props.match
+    ? {
+        root: {
+          'aria-describedby': protocolMatchSummaryId,
+        },
+      }
+    : undefined,
+)
+
+/** `autofocus` на внутреннем input — чтобы `Dialog` нашёл фокус в default slot (см. PrimeVue `findFocusableElement`). */
+const protocolHomeScoreInputPt = computed(() =>
+  protocolLocked.value
+    ? undefined
+    : {
+        pcInputText: {
+          root: {
+            autofocus: true,
+          },
+        },
+      },
+)
 </script>
 
 <template>
@@ -686,6 +777,8 @@ const finishProtocol = async () => {
     :visible="visible"
     @update:visible="(v) => (visible = v)"
     modal
+    block-scroll
+    :pt="protocolDialogRootPt"
     :header="protocolLocked ? 'Протокол матча (только просмотр)' : 'Протокол матча'"
     :style="{ width: '44rem', maxWidth: '96vw' }"
   >
@@ -697,12 +790,24 @@ const finishProtocol = async () => {
         Завершённый матч нельзя редактировать.
       </p>
       <p
-        v-else-if="match && isMatchEditLocked(match.status) && canOverrideLockedProtocol"
+        v-else-if="showModeratorFinishedProtocolBanner"
+        class="text-sm text-sky-800 dark:text-sky-200 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 px-3 py-2"
+      >
+        Завершённый матч: как модератор турнира вы можете обновить протокол и события.
+      </p>
+      <p
+        v-else-if="showTenantEmergencyProtocolBanner"
         class="text-sm text-amber-700 dark:text-amber-300 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2"
       >
         Экстренный режим: администратор арендатора может изменить протокол завершённого матча.
       </p>
-      <div class="text-sm">
+      <p
+        v-else-if="match && isMatchEditLocked(match.status) && canOverrideLockedProtocol"
+        class="text-sm text-amber-700 dark:text-amber-300 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2"
+      >
+        Завершённый матч: доступна правка протокола с вашими правами администратора.
+      </p>
+      <div :id="protocolMatchSummaryId" class="text-sm">
         <span class="font-medium">
           {{ playoffSlotLabels(match)?.home ?? match.homeTeam.name }}
         </span>
@@ -719,17 +824,20 @@ const finishProtocol = async () => {
 
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-sm block mb-1">Счёт (хозяева)</label>
+          <label class="text-sm block mb-1" :for="protocolHomeScoreId">Счёт (хозяева)</label>
           <InputNumber
+            :input-id="protocolHomeScoreId"
             v-model="protocolForm.homeScore"
             class="w-full"
             :min="0"
             :disabled="protocolLocked"
+            :pt="protocolHomeScoreInputPt"
           />
         </div>
         <div>
-          <label class="text-sm block mb-1">Счёт (гости)</label>
+          <label class="text-sm block mb-1" :for="protocolAwayScoreId">Счёт (гости)</label>
           <InputNumber
+            :input-id="protocolAwayScoreId"
             v-model="protocolForm.awayScore"
             class="w-full"
             :min="0"
@@ -743,6 +851,7 @@ const finishProtocol = async () => {
           <label class="text-sm font-medium">Дополнительное время</label>
           <Button
             v-if="!showExtraTimeFields"
+            type="button"
             label="Добавить"
             icon="pi pi-plus"
             text
@@ -752,6 +861,7 @@ const finishProtocol = async () => {
           />
           <Button
             v-else
+            type="button"
             label="Скрыть"
             icon="pi pi-times"
             text
@@ -768,26 +878,31 @@ const finishProtocol = async () => {
       </div>
       <div v-if="isPlayoffMatch && showExtraTimeFields" class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-sm block mb-1">Доп. время (хозяева)</label>
+          <label class="text-sm block mb-1" :for="protocolEtHomeId">Доп. время (хозяева)</label>
           <InputNumber
+            :input-id="protocolEtHomeId"
             v-model="protocolForm.extraTimeHomeScore"
             class="w-full"
             :min="0"
             :disabled="protocolLocked"
+            :pt="protocolEtInputsPt"
           />
         </div>
         <div>
-          <label class="text-sm block mb-1">Доп. время (гости)</label>
+          <label class="text-sm block mb-1" :for="protocolEtAwayId">Доп. время (гости)</label>
           <InputNumber
+            :input-id="protocolEtAwayId"
             v-model="protocolForm.extraTimeAwayScore"
             class="w-full"
             :min="0"
             :disabled="protocolLocked"
+            :pt="protocolEtInputsPt"
           />
         </div>
       </div>
       <p
         v-if="isPlayoffMatch && showExtraTimeFields"
+        :id="protocolEtHintId"
         class="text-[11px] leading-4 text-muted-color"
       >
         Указывайте только голы, забитые в доп. время (например: итог 2:1 и доп. время 1:0).
@@ -798,6 +913,7 @@ const finishProtocol = async () => {
           <label class="text-sm font-medium">Серия пенальти</label>
           <Button
             v-if="!showPenaltyFields"
+            type="button"
             label="Добавить"
             icon="pi pi-plus"
             text
@@ -807,6 +923,7 @@ const finishProtocol = async () => {
           />
           <Button
             v-else
+            type="button"
             label="Скрыть"
             icon="pi pi-times"
             text
@@ -823,26 +940,31 @@ const finishProtocol = async () => {
       </div>
       <div v-if="isPlayoffMatch && showPenaltyFields" class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-sm block mb-1">Пенальти (хозяева)</label>
+          <label class="text-sm block mb-1" :for="protocolPenHomeId">Пенальти (хозяева)</label>
           <InputNumber
+            :input-id="protocolPenHomeId"
             v-model="protocolForm.penaltiesHomeScore"
             class="w-full"
             :min="0"
             :disabled="protocolLocked"
+            :pt="protocolPenInputsPt"
           />
         </div>
         <div>
-          <label class="text-sm block mb-1">Пенальти (гости)</label>
+          <label class="text-sm block mb-1" :for="protocolPenAwayId">Пенальти (гости)</label>
           <InputNumber
+            :input-id="protocolPenAwayId"
             v-model="protocolForm.penaltiesAwayScore"
             class="w-full"
             :min="0"
             :disabled="protocolLocked"
+            :pt="protocolPenInputsPt"
           />
         </div>
       </div>
       <p
         v-if="isPlayoffMatch && showPenaltyFields"
+        :id="protocolPenHintId"
         class="text-[11px] leading-4 text-muted-color"
       >
         Для серии после 5 ударов обычно итоговая разница остаётся в 1 мяч (например 6:5).
@@ -857,8 +979,9 @@ const finishProtocol = async () => {
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label class="text-sm block mb-1">Дата матча</label>
+          <label class="text-sm block mb-1" :for="protocolDateId">Дата матча</label>
           <DatePicker
+            :input-id="protocolDateId"
             v-model="protocolDate"
             class="w-full"
             dateFormat="dd.mm.yy"
@@ -867,8 +990,9 @@ const finishProtocol = async () => {
           />
         </div>
         <div>
-          <label class="text-sm block mb-1">Время матча</label>
+          <label class="text-sm block mb-1" :for="protocolTimeId">Время матча</label>
           <DatePicker
+            :input-id="protocolTimeId"
             v-model="protocolTime"
             class="w-full"
             timeOnly
@@ -887,8 +1011,9 @@ const finishProtocol = async () => {
           Время начала изменено — при необходимости укажите причину переноса (из справочника).
         </p>
         <div>
-          <label class="text-sm block mb-1">Причина переноса</label>
+          <label class="text-sm block mb-1" :for="protocolPostponeId">Причина переноса</label>
           <Select
+            :input-id="protocolPostponeId"
             v-model="protocolForm.schedulePostponeReasonId"
             :options="postponeReasonOptions"
             option-label="label"
@@ -901,10 +1026,11 @@ const finishProtocol = async () => {
       </div>
 
       <div>
-        <label class="text-sm block mb-1">Статус</label>
+        <label class="text-sm block mb-1" :for="protocolStatusId">Статус</label>
         <Select
+          :input-id="protocolStatusId"
           v-model="protocolForm.status"
-          :options="statusOptions"
+          :options="matchStatusSelectOptions"
           option-label="label"
           option-value="value"
           class="w-full"
@@ -920,8 +1046,9 @@ const finishProtocol = async () => {
           Матч переводится в «Отменён» — можно указать причину из справочника.
         </p>
         <div>
-          <label class="text-sm block mb-1">Причина отмены</label>
+          <label class="text-sm block mb-1" :for="protocolCancelReasonId">Причина отмены</label>
           <Select
+            :input-id="protocolCancelReasonId"
             v-model="protocolForm.scheduleCancelReasonId"
             :options="cancelReasonOptions"
             option-label="label"
@@ -930,9 +1057,16 @@ const finishProtocol = async () => {
             placeholder="Не выбрано"
             class="w-full"
             :invalid="protocolSubmitAttempted && !!protocolFormErrors.scheduleCancelReasonId"
+            :pt="
+              protocolSubmitAttempted && protocolFormErrors.scheduleCancelReasonId
+                ? { label: { 'aria-describedby': protocolCancelReasonErrId } }
+                : undefined
+            "
           />
           <p
             v-if="protocolSubmitAttempted && protocolFormErrors.scheduleCancelReasonId"
+            :id="protocolCancelReasonErrId"
+            role="alert"
             class="mt-0 text-[11px] leading-3 text-red-500"
           >
             {{ protocolFormErrors.scheduleCancelReasonId }}
@@ -945,6 +1079,7 @@ const finishProtocol = async () => {
           <label class="text-sm font-medium">События</label>
           <div class="flex flex-wrap items-center gap-1.5">
             <Button
+              type="button"
               :label="presetGoalHomeLabel"
               size="small"
               outlined
@@ -954,6 +1089,7 @@ const finishProtocol = async () => {
               @click="addEventPreset('GOAL_HOME')"
             />
             <Button
+              type="button"
               :label="presetGoalAwayLabel"
               size="small"
               outlined
@@ -963,7 +1099,9 @@ const finishProtocol = async () => {
               @click="addEventPreset('GOAL_AWAY')"
             />
             <Button
+              type="button"
               label="ЖК"
+              aria-label="Жёлтая карточка"
               size="small"
               outlined
               severity="secondary"
@@ -972,7 +1110,9 @@ const finishProtocol = async () => {
               @click="addEventPreset('YELLOW_CARD')"
             />
             <Button
+              type="button"
               label="КК"
+              aria-label="Красная карточка"
               size="small"
               outlined
               severity="secondary"
@@ -981,6 +1121,7 @@ const finishProtocol = async () => {
               @click="addEventPreset('RED_CARD')"
             />
             <Button
+              type="button"
               label="Замена"
               size="small"
               outlined
@@ -990,6 +1131,7 @@ const finishProtocol = async () => {
               @click="addEventPreset('SUBSTITUTION')"
             />
             <Button
+              type="button"
               label="Другое"
               size="small"
               outlined
@@ -999,6 +1141,7 @@ const finishProtocol = async () => {
               @click="addEventPreset('CUSTOM')"
             />
             <Button
+              type="button"
               label="Добавить"
               icon="pi pi-plus"
               text
@@ -1024,6 +1167,7 @@ const finishProtocol = async () => {
           </span>
           <Button
             v-if="scoreVsGoalEventsMismatch && !protocolLocked"
+            type="button"
             label="Принять счёт из голов"
             text
             size="small"
@@ -1046,7 +1190,9 @@ const finishProtocol = async () => {
               <span>Событие #{{ idx + 1 }}</span>
               <div class="flex items-center gap-1">
                 <Button
+                  type="button"
                   label="-1'"
+                  aria-label="Уменьшить минуту события на 1"
                   text
                   size="small"
                   class="!px-1.5 !py-0.5 !text-[11px]"
@@ -1054,7 +1200,9 @@ const finishProtocol = async () => {
                   @click="bumpEventMinute(e, -1)"
                 />
                 <Button
+                  type="button"
                   label="+1'"
+                  aria-label="Увеличить минуту события на 1"
                   text
                   size="small"
                   class="!px-1.5 !py-0.5 !text-[11px]"
@@ -1062,7 +1210,9 @@ const finishProtocol = async () => {
                   @click="bumpEventMinute(e, 1)"
                 />
                 <Button
+                  type="button"
                   label="+5'"
+                  aria-label="Увеличить минуту события на 5"
                   text
                   size="small"
                   class="!px-1.5 !py-0.5 !text-[11px]"
@@ -1073,47 +1223,76 @@ const finishProtocol = async () => {
             </div>
             <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
               <div>
-                <label class="text-xs block mb-1 text-muted-color">Тип события</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-kind`"
+                  >Тип события</label
+                >
                 <Select
+                  :input-id="`${protocolA11yId}-evt-${idx}-kind`"
                   :model-value="safeEventKindKey(e)"
                   :options="eventKindOptions"
                   option-label="label"
                   option-value="value"
                   class="w-full"
                   :disabled="protocolLocked"
+                  :pt="
+                    protocolSubmitAttempted && protocolEventErrors[idx]
+                      ? { label: { 'aria-describedby': `${protocolA11yId}-evt-${idx}-err` } }
+                      : undefined
+                  "
                   @update:model-value="(v) => onProtocolEventKindChange(e, v)"
                 />
               </div>
               <div>
-                <label class="text-xs block mb-1 text-muted-color">Команда</label>
-                <div class="grid grid-cols-2 gap-2">
+                <label class="text-xs block mb-1 text-muted-color" :id="`${protocolA11yId}-evt-${idx}-team-lbl`"
+                  >Команда</label
+                >
+                <div
+                  class="grid grid-cols-2 gap-2"
+                  role="group"
+                  :aria-labelledby="`${protocolA11yId}-evt-${idx}-team-lbl`"
+                >
                   <Button
+                    type="button"
                     :label="homeTeamLabel"
                     size="small"
                     :outlined="e.teamSide !== 'HOME'"
                     :severity="e.teamSide === 'HOME' ? 'primary' : 'secondary'"
                     class="!justify-center"
                     :disabled="protocolLocked"
+                    :aria-pressed="e.teamSide === 'HOME'"
                     @click="setProtocolEventTeamSide(e, 'HOME')"
                   />
                   <Button
+                    type="button"
                     :label="awayTeamLabel"
                     size="small"
                     :outlined="e.teamSide !== 'AWAY'"
                     :severity="e.teamSide === 'AWAY' ? 'primary' : 'secondary'"
                     class="!justify-center"
                     :disabled="protocolLocked"
+                    :aria-pressed="e.teamSide === 'AWAY'"
                     @click="setProtocolEventTeamSide(e, 'AWAY')"
                   />
                 </div>
               </div>
               <div>
-                <label class="text-xs block mb-1 text-muted-color">Минута</label>
-                <InputNumber v-model="e.minute" class="w-full" :min="0" :disabled="protocolLocked" />
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-minute`"
+                  >Минута</label
+                >
+                <InputNumber
+                  :input-id="`${protocolA11yId}-evt-${idx}-minute`"
+                  v-model="e.minute"
+                  class="w-full"
+                  :min="0"
+                  :disabled="protocolLocked"
+                />
               </div>
               <div>
-                <label class="text-xs block mb-1 text-muted-color">Игрок</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-player`"
+                  >Игрок</label
+                >
                 <Select
+                  :input-id="`${protocolA11yId}-evt-${idx}-player`"
                   v-model="e.playerId"
                   :options="protocolPlayerOptions"
                   option-label="label"
@@ -1126,8 +1305,11 @@ const finishProtocol = async () => {
                 />
               </div>
               <div v-if="e.type === 'GOAL'">
-                <label class="text-xs block mb-1 text-muted-color">Ассист</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-assist`"
+                  >Ассист</label
+                >
                 <Select
+                  :input-id="`${protocolA11yId}-evt-${idx}-assist`"
                   v-model="e.assistPlayerId"
                   :options="assistPlayerOptions(e)"
                   option-label="label"
@@ -1140,10 +1322,13 @@ const finishProtocol = async () => {
                 />
               </div>
               <div v-if="e.type === 'CARD'">
-                <label class="text-xs block mb-1 text-muted-color">Тип карточки</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-card`"
+                  >Тип карточки</label
+                >
                 <Select
+                  :input-id="`${protocolA11yId}-evt-${idx}-card`"
                   v-model="e.cardType"
-                  :options="cardTypeOptions"
+                  :options="[...cardTypeOptions]"
                   option-label="label"
                   option-value="value"
                   class="w-full"
@@ -1151,8 +1336,11 @@ const finishProtocol = async () => {
                 />
               </div>
               <div v-if="e.type === 'SUBSTITUTION'">
-                <label class="text-xs block mb-1 text-muted-color">Игрок на замену</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-subin`"
+                  >Игрок на замену</label
+                >
                 <Select
+                  :input-id="`${protocolA11yId}-evt-${idx}-subin`"
                   v-model="e.substitutePlayerInId"
                   :options="sidePlayerOptions(e.teamSide)"
                   option-label="label"
@@ -1164,8 +1352,11 @@ const finishProtocol = async () => {
                 />
               </div>
               <div v-if="e.type === 'CUSTOM'" class="md:col-span-2">
-                <label class="text-xs block mb-1 text-muted-color">Комментарий</label>
+                <label class="text-xs block mb-1 text-muted-color" :for="`${protocolA11yId}-evt-${idx}-note`"
+                  >Комментарий</label
+                >
                 <InputText
+                  :id="`${protocolA11yId}-evt-${idx}-note`"
                   v-model="e.note"
                   class="w-full"
                   placeholder="Например: травма, спорный эпизод, тех. пометка"
@@ -1175,6 +1366,8 @@ const finishProtocol = async () => {
             </div>
             <p
               v-if="protocolSubmitAttempted && protocolEventErrors[idx]"
+              :id="`${protocolA11yId}-evt-${idx}-err`"
+              role="alert"
               class="mt-2 text-[11px] leading-4 text-red-500"
             >
               {{ protocolEventErrors[idx] }}
@@ -1184,6 +1377,7 @@ const finishProtocol = async () => {
             </p>
             <div class="mt-2 flex justify-end">
               <Button
+                type="button"
                 label="Удалить"
                 icon="pi pi-trash"
                 text
@@ -1200,9 +1394,10 @@ const finishProtocol = async () => {
 
     <template #footer>
       <div class="flex justify-end gap-2">
-        <Button label="Закрыть" text @click="visible = false" />
+        <Button type="button" label="Закрыть" text @click="visible = false" />
         <Button
           v-if="!protocolLocked"
+          type="button"
           label="Сохранить"
           icon="pi pi-check"
           :loading="protocolSaving"
@@ -1211,6 +1406,7 @@ const finishProtocol = async () => {
         />
         <Button
           v-if="!protocolLocked"
+          type="button"
           label="Завершить"
           icon="pi pi-check-circle"
           severity="success"

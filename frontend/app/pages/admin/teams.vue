@@ -3,20 +3,33 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
+import { useAdminOrgModeratorReadOnly } from '~/composables/useAdminOrgModeratorReadOnly'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import { useTenantTeamLogo } from '~/composables/useTenantTeamLogo'
 import { PLAYER_POSITION_OPTIONS } from '~/constants/playerPositions'
 import type { AgeGroupRow } from '~/types/admin/age-group'
 import type { RegionRow } from '~/types/admin/region'
+import type { TeamCategoryRow } from '~/types/admin/team-category'
 import type { TeamPlayerRow, TeamRow } from '~/types/admin/team'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { toYmdLocal as toYmd } from '~/utils/dateYmd'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
+import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { slugifyFromTitle } from '~/utils/slugify'
-import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
+import {
+  hasSubscriptionFeature,
+  tenantPlanLimitsFromAuthUser,
+} from '~/utils/subscriptionFeatures'
+import { useQueryClient } from '@tanstack/vue-query'
+import { invalidateAdminTenantTeamsQueries } from '~/composables/admin/adminTenantQueryKeys'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  /** Глобальный MODERATOR — org read-only; реестр путей в `adminModeratorOrgPolicy`. */
+  adminOrgModeratorReadOnly: true,
+})
 
 const router = useRouter()
 const { token, user, syncWithStorage, loggedIn, authFetch } = useAuth()
@@ -24,20 +37,44 @@ const { apiUrl } = useApiUrl()
 const toast = useToast()
 const { t } = useI18n()
 const tenantId = useTenantId()
+const queryClient = useQueryClient()
+
+const isModeratorReadOnly = useAdminOrgModeratorReadOnly()
 
 const subscriptionPlan = computed(() => {
   const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
   return u?.tenantSubscription?.plan ?? null
 })
 
+const planLimitsSnapshot = computed(() => tenantPlanLimitsFromAuthUser(user.value))
+
+const teamsPerTenantMax = computed(() => planLimitsSnapshot.value?.teamsPerTenant ?? null)
+
+/** Без активного поиска `totalTeams` — число всех команд тенанта (для лимита). */
+const teamsLimitReached = computed(
+  () =>
+    !searchQuery.value.trim() &&
+    teamsPerTenantMax.value !== null &&
+    totalTeams.value >= teamsPerTenantMax.value,
+)
+
 /** true до первого завершённого запроса — иначе при F5 один кадр с пустым списком и «Нет команд». */
-const loading = ref(true)
+const {
+  items: teams,
+  loading,
+  error,
+  run,
+  retry,
+} = useAdminAsyncListState<TeamRow>({
+  initialLoading: true,
+  clearItemsOnError: true,
+  minLoadingMs: MIN_SKELETON_DISPLAY_MS,
+})
 /** Скелетон совпадает по числу строк с дефолтным pageSize. */
 const TEAMS_TABLE_SKELETON_ROWS = 10
 const skeletonTeamRows = Array.from({ length: TEAMS_TABLE_SKELETON_ROWS }, (_, i) => ({
   id: `__sk-${i}`,
 }))
-const teams = ref<TeamRow[]>([])
 const pageSize = ref(10)
 const first = ref(0)
 const totalTeams = ref(0)
@@ -47,8 +84,10 @@ const sortField = ref<string | null>(null)
 const sortOrder = ref<number | null>(null)
 const ageGroupsList = ref<AgeGroupRow[]>([])
 const regionsList = ref<RegionRow[]>([])
+const teamCategoriesList = ref<TeamCategoryRow[]>([])
 const ageGroupsLoading = ref(false)
 const regionsLoading = ref(false)
+const teamCategoriesLoading = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const showForm = ref(false)
@@ -67,6 +106,7 @@ const form = reactive({
   contactPhone: '',
   description: '',
   ageGroupId: '',
+  teamCategoryId: '',
   regionId: '',
 })
 const submitAttempted = ref(false)
@@ -87,16 +127,20 @@ const teamSlugGenerated = computed(() => slugifyFromTitle(form.name, 'team'))
 
 const showTeamsPaginator = computed(() => totalTeams.value > TEAMS_TABLE_SKELETON_ROWS)
 
+const teamsEmptyDescription = computed(() =>
+  isModeratorReadOnly.value
+    ? 'По заданным условиям записей нет. Измените поиск.'
+    : 'По заданным условиям записей нет. Измените поиск или создайте команду кнопкой «Создать».',
+)
+
 const fetchTeams = async (page: number = 1, size: number = pageSize.value, nameQuery: string = searchQuery.value) => {
   if (!token.value) {
     loading.value = false
     return
   }
-  const loadStartedAt = Date.now()
-  loading.value = true
   const pageNum = Math.max(1, Math.floor(Number(page) || 1))
   const pageSizeNum = Math.max(1, Math.floor(Number(size) || pageSize.value || 10))
-  try {
+  await run(async () => {
     const res = await authFetch<{ items: TeamRow[]; total: number }>(
       apiUrl(`/tenants/${tenantId.value}/teams`),
       {
@@ -112,10 +156,7 @@ const fetchTeams = async (page: number = 1, size: number = pageSize.value, nameQ
     )
     teams.value = res.items
     totalTeams.value = res.total
-  } finally {
-    await sleepRemainingAfter(MIN_SKELETON_DISPLAY_MS, loadStartedAt)
-    loading.value = false
-  }
+  })
 }
 
 const {
@@ -136,6 +177,7 @@ const {
   toast,
   onAfterPersist: async () => {
     await fetchTeams(currentPage.value, pageSize.value, searchQuery.value)
+    void invalidateAdminTenantTeamsQueries(queryClient, tenantId.value)
   },
 })
 
@@ -147,7 +189,9 @@ async function fetchAgeGroupsAndRegions() {
 
   ageGroupsLoading.value = canBasic
   regionsLoading.value = canStandard
+  teamCategoriesLoading.value = canBasic
   if (!canBasic) ageGroupsList.value = []
+  if (!canBasic) teamCategoriesList.value = []
   if (!canStandard) regionsList.value = []
   try {
     const parts: Promise<void>[] = []
@@ -157,6 +201,13 @@ async function fetchAgeGroupsAndRegions() {
           headers: { Authorization: `Bearer ${token.value}` },
         }).then((ag) => {
           ageGroupsList.value = ag
+        }),
+      )
+      parts.push(
+        authFetch<TeamCategoryRow[]>(apiUrl(`/tenants/${tenantId.value}/team-categories`), {
+          headers: { Authorization: `Bearer ${token.value}` },
+        }).then((rows) => {
+          teamCategoriesList.value = rows
         }),
       )
     }
@@ -172,10 +223,12 @@ async function fetchAgeGroupsAndRegions() {
     if (parts.length) await Promise.all(parts)
   } catch {
     if (canBasic) ageGroupsList.value = []
+    if (canBasic) teamCategoriesList.value = []
     if (canStandard) regionsList.value = []
   } finally {
     ageGroupsLoading.value = false
     regionsLoading.value = false
+    teamCategoriesLoading.value = false
   }
 }
 
@@ -201,6 +254,14 @@ const regionSelectOptions = computed(() => [
     })),
 ])
 
+const teamCategorySelectOptions = computed(() => [
+  { label: 'Не указано', value: '' },
+  ...teamCategoriesList.value
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+    .map((c) => ({ label: c.name, value: c.id })),
+])
+
 const positionOptions = [...PLAYER_POSITION_OPTIONS]
 
 watch(searchQuery, (v) => {
@@ -214,6 +275,15 @@ watch(searchQuery, (v) => {
 })
 
 const openCreate = () => {
+  if (teamsLimitReached.value) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Достигнут лимит команд',
+      detail: `На вашем тарифе не больше ${teamsPerTenantMax.value} команд в организации.`,
+      life: 6000,
+    })
+    return
+  }
   submitAttempted.value = false
   editing.value = null
   form.name = ''
@@ -226,6 +296,7 @@ const openCreate = () => {
   form.contactPhone = ''
   form.description = ''
   form.ageGroupId = ''
+  form.teamCategoryId = ''
   form.regionId = ''
   v$.value.$reset()
   showForm.value = true
@@ -239,6 +310,7 @@ const openEdit = (t: TeamRow) => {
   form.rating = Math.min(5, Math.max(1, Number(t.rating ?? 3)))
   form.logoUrl = t.logoUrl ?? ''
   form.ageGroupId = t.ageGroupId ?? ''
+  form.teamCategoryId = t.teamCategoryId ?? ''
   form.regionId = t.regionId ?? ''
   form.coachName = t.coachName ?? ''
   form.coachPhone = ''
@@ -262,6 +334,7 @@ const saveTeam = async () => {
   try {
     const ag = form.ageGroupId.trim()
     const rg = form.regionId.trim()
+    const tc = form.teamCategoryId.trim()
     const body: any = {
       name: form.name,
       rating: Math.min(5, Math.max(1, Number(form.rating || 3))),
@@ -274,10 +347,15 @@ const saveTeam = async () => {
       contactPhone: form.contactPhone || undefined,
       description: form.description || undefined,
       ...(isEdit.value
-        ? { ageGroupId: ag || null, regionId: rg || null }
+        ? {
+            ageGroupId: ag || null,
+            regionId: rg || null,
+            teamCategoryId: tc || null,
+          }
         : {
             ...(ag ? { ageGroupId: ag } : {}),
             ...(rg ? { regionId: rg } : {}),
+            ...(tc ? { teamCategoryId: tc } : {}),
           }),
     }
 
@@ -297,6 +375,15 @@ const saveTeam = async () => {
 
     showForm.value = false
     await fetchTeams(currentPage.value, pageSize.value, searchQuery.value)
+    void invalidateAdminTenantTeamsQueries(queryClient, tenantId.value)
+  } catch (err: unknown) {
+    const editingTeam = isEdit.value
+    toast.add({
+      severity: 'error',
+      summary: editingTeam ? 'Не удалось сохранить команду' : 'Не удалось создать команду',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
   } finally {
     saving.value = false
   }
@@ -324,6 +411,7 @@ async function confirmDeleteTeam() {
       headers: { Authorization: `Bearer ${token.value}` },
     })
     await fetchTeams(currentPage.value, pageSize.value, searchQuery.value)
+    void invalidateAdminTenantTeamsQueries(queryClient, tenantId.value)
     toast.add({ severity: 'success', summary: 'Команда удалена', life: 2500 })
   } catch (err: unknown) {
     toast.add({
@@ -393,8 +481,8 @@ const rosterPageSize = ref(10)
 const rosterFirst = ref(0)
 const rosterCurrentPage = ref(1)
 
-const rosterSortField = ref<string | null>(null)
-const rosterSortOrder = ref<number | null>(null)
+const rosterSortField = ref<string | undefined>(undefined)
+const rosterSortOrder = ref<number | undefined>(undefined)
 
 /** Как на странице «Игроки»: одно поле имени, селект амплуа, диапазон дат рождения */
 const rosterFilters = reactive({
@@ -546,8 +634,8 @@ const openRoster = async (team: TeamRow) => {
   rosterOpen.value = true
   rosterCurrentPage.value = 1
   rosterFirst.value = 0
-  rosterSortField.value = null
-  rosterSortOrder.value = null
+  rosterSortField.value = undefined
+  rosterSortOrder.value = undefined
   rosterFilters.name = ''
   rosterFilters.position = ''
   rosterFilters.phone = ''
@@ -781,13 +869,13 @@ async function confirmDeleteRosterPlayer() {
 </script>
 
 <template>
-  <section class="p-6 space-y-4">
-    <header class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-surface-900">Команды</h1>
-        <p class="mt-1 text-sm text-muted-color">Справочник команд тенанта.</p>
+  <section class="admin-page">
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h1 class="text-lg font-semibold text-surface-900 sm:text-xl">Команды</h1>
+        <p class="mt-1 text-xs text-muted-color sm:text-sm">Справочник команд тенанта.</p>
       </div>
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="admin-toolbar-responsive flex flex-wrap items-center gap-2">
         <Button
           label="Обновить"
           icon="pi pi-refresh"
@@ -796,15 +884,41 @@ async function confirmDeleteRosterPlayer() {
           :loading="loading"
           @click="fetchTeams(currentPage, pageSize, searchQuery)"
         />
-        <Button label="Создать" icon="pi pi-plus" @click="openCreate" />
+        <Button
+          v-if="!isModeratorReadOnly"
+          label="Создать"
+          icon="pi pi-plus"
+          :disabled="teamsLimitReached"
+          @click="openCreate"
+        />
       </div>
     </header>
 
-    <div class="flex items-center gap-3">
+    <Message v-if="isModeratorReadOnly" severity="info" :closable="false" class="text-sm">
+      Режим просмотра: создание и изменение команд, состава и логотипов недоступны.
+    </Message>
+
+    <Message
+      v-else-if="teamsPerTenantMax !== null"
+      :severity="teamsLimitReached ? 'warn' : 'info'"
+      :closable="false"
+      class="text-sm"
+    >
+      <span v-if="!searchQuery.trim()">
+        Команд в организации: {{ totalTeams }} из {{ teamsPerTenantMax }}.
+        <span v-if="teamsLimitReached"> Чтобы добавить ещё, повысьте тариф.</span>
+      </span>
+      <span v-else>
+        Лимит по тарифу — до {{ teamsPerTenantMax }} команд; при поиске счётчик не фильтруется.
+        Очистите поиск, чтобы увидеть фактическое число команд.
+      </span>
+    </Message>
+
+    <div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
       <InputText
         v-model="searchQuery"
         placeholder="Название команды"
-        class="w-full md:w-72"
+        class="w-full min-w-0 sm:max-w-xs md:w-72"
       />
       <Button
         v-if="searchQuery"
@@ -816,57 +930,85 @@ async function confirmDeleteRosterPlayer() {
       />
     </div>
 
-    <DataTable
-      v-if="loading"
-      :value="skeletonTeamRows"
-      striped-rows
-      data-key="id"
-      class="min-h-[28rem]"
-      aria-busy="true"
+    <AdminDataState
+      :loading="loading"
+      :error="error"
+      :empty="!teams.length"
+      empty-icon="pi pi-shield"
+      empty-title="Нет команд"
+      :empty-description="teamsEmptyDescription"
+      @retry="retry"
     >
-      <Column header="" style="width: 5.5rem">
-        <template #body>
-          <Skeleton width="2.5rem" height="2.5rem" class="rounded" />
-        </template>
-      </Column>
-      <Column header="Название">
-        <template #body>
-          <Skeleton width="70%" height="1rem" class="rounded-md" />
-        </template>
-      </Column>
-      <Column header="Рейтинг" style="width: 7rem">
-        <template #body>
-          <Skeleton width="2rem" height="1rem" class="rounded-md" />
-        </template>
-      </Column>
-      <Column header="Возраст">
-        <template #body>
-          <Skeleton width="40%" height="1rem" class="rounded-md" />
-        </template>
-      </Column>
-      <Column header="Регион">
-        <template #body>
-          <Skeleton width="40%" height="1rem" class="rounded-md" />
-        </template>
-      </Column>
-      <Column header="Игроков">
-        <template #body>
-          <Skeleton width="2rem" height="1rem" class="rounded-md" />
-        </template>
-      </Column>
-      <Column header="Действия" style="width: 16rem">
-        <template #body>
-          <div class="flex justify-end gap-2">
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-            <Skeleton shape="circle" width="2rem" height="2rem" />
-          </div>
-        </template>
-      </Column>
-    </DataTable>
+      <template #loading>
+        <div
+          class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+        >
+          <DataTable
+            :value="skeletonTeamRows"
+            striped-rows
+            data-key="id"
+            class="min-h-[28rem]"
+            aria-busy="true"
+          >
+            <Column header="" style="width: 5.5rem">
+              <template #body>
+                <Skeleton width="2.5rem" height="2.5rem" class="rounded" />
+              </template>
+            </Column>
+            <Column header="Название">
+              <template #body>
+                <Skeleton width="70%" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Рейтинг" style="width: 7rem">
+              <template #body>
+                <Skeleton width="2rem" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Возраст">
+              <template #body>
+                <Skeleton width="40%" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Категория состава" style="min-width: 7rem">
+              <template #body>
+                <Skeleton width="55%" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Регион">
+              <template #body>
+                <Skeleton width="40%" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column header="Игроков">
+              <template #body>
+                <Skeleton width="2rem" height="1rem" class="rounded-md" />
+              </template>
+            </Column>
+            <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 16rem">
+              <template #body>
+                <div class="flex justify-end gap-2">
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                  <Skeleton shape="circle" width="2rem" height="2rem" />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+        </div>
+      </template>
+
+      <template #empty-actions>
+        <Button
+          v-if="!isModeratorReadOnly"
+          label="Создать команду"
+          icon="pi pi-plus"
+          :disabled="teamsLimitReached"
+          @click="openCreate"
+        />
+      </template>
 
     <DataTable
-      v-else
       :value="teams"
       striped-rows
       :paginator="showTeamsPaginator"
@@ -881,28 +1023,15 @@ async function confirmDeleteRosterPlayer() {
       @sort="onTeamsSort"
     >
       <template #empty>
-        <div
-          class="flex flex-col items-center justify-center gap-2 py-14 text-muted-color"
-        >
-          <i class="pi pi-shield text-4xl opacity-40" aria-hidden="true" />
-          <span class="text-sm font-medium text-surface-700 dark:text-surface-200">Нет команд</span>
-          <span class="max-w-sm text-center text-xs">
-            По заданным условиям записей нет. Измените поиск или создайте команду кнопкой «Создать».
-          </span>
-        </div>
+        <span class="sr-only">Пусто</span>
       </template>
       <Column header="" style="width: 5.5rem">
         <template #body="{ data }">
-          <img
-            v-if="data.logoUrl"
+          <RemoteImage
             :src="data.logoUrl"
             alt="Логотип"
-            class="h-10 w-10 rounded object-cover"
-          />
-          <div
-            v-else
-            class="h-10 w-10 rounded border border-surface-200 bg-surface-0 p-1"
-            aria-label="Нет логотипа"
+            placeholder-icon="users"
+            class="h-10 w-10 rounded"
           />
         </template>
       </Column>
@@ -918,6 +1047,12 @@ async function confirmDeleteRosterPlayer() {
           <span v-else class="text-muted-color">—</span>
         </template>
       </Column>
+      <Column header="Категория состава" style="min-width: 7rem">
+        <template #body="{ data }">
+          <span v-if="data.teamCategory?.name" class="text-sm">{{ data.teamCategory.name }}</span>
+          <span v-else class="text-muted-color">—</span>
+        </template>
+      </Column>
       <Column header="Регион" style="min-width: 7rem">
         <template #body="{ data }">
           <span v-if="data.region?.name" class="text-sm">{{ data.region.name }}</span>
@@ -927,10 +1062,11 @@ async function confirmDeleteRosterPlayer() {
       <Column field="playersCount" header="Игроков" sortable>
         <template #body="{ data }">{{ data.playersCount }}</template>
       </Column>
-      <Column header="Действия" style="width: 16rem">
+      <Column header="Действия" :style="{ width: isModeratorReadOnly ? '5rem' : '16rem' }">
         <template #body="{ data }">
           <div class="flex w-full justify-end gap-2">
             <Button
+              v-if="!isModeratorReadOnly"
               icon="pi pi-pencil"
               text
               size="small"
@@ -945,6 +1081,7 @@ async function confirmDeleteRosterPlayer() {
               aria-label="Игроки команды"
             />
             <Button
+              v-if="!isModeratorReadOnly"
               icon="pi pi-trash"
               text
               severity="danger"
@@ -956,6 +1093,7 @@ async function confirmDeleteRosterPlayer() {
         </template>
       </Column>
     </DataTable>
+    </AdminDataState>
 
     <AdminConfirmDialog
       v-model="deleteTeamConfirmOpen"
@@ -985,22 +1123,22 @@ async function confirmDeleteRosterPlayer() {
         <div class="md:col-span-1 flex items-start justify-center md:justify-stretch relative">
           <button
             type="button"
-            class="w-full aspect-square overflow-hidden rounded-xl bg-surface-0 flex items-center justify-center relative leading-none"
+            class="flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl border border-surface-200 bg-surface-100 leading-none dark:border-surface-600 dark:bg-surface-800 relative"
             :class="[
               logoUploading || logoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer',
-              form.logoUrl && !logoUploading && !logoRemoving
-                ? 'border-0'
-                : 'border border-surface-200',
+              form.logoUrl && !logoUploading && !logoRemoving ? 'border-transparent dark:border-transparent' : '',
             ]"
             :disabled="logoUploading || logoRemoving"
             @click="triggerLogoPick"
             aria-label="Загрузить или заменить логотип команды"
           >
-            <img
+            <RemoteImage
               v-if="form.logoUrl && !logoUploading && !logoRemoving"
               :src="form.logoUrl"
               alt="Логотип"
-              class="absolute inset-0 w-full h-full object-cover"
+              placeholder-icon="users"
+              :lazy="false"
+              class="absolute inset-0 z-0 h-full w-full rounded-xl"
             />
             <div
               v-else-if="!logoUploading && !logoRemoving"
@@ -1011,7 +1149,7 @@ async function confirmDeleteRosterPlayer() {
             </div>
             <div
               v-if="logoUploading || logoRemoving"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 text-sm text-surface-700"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-100/90 text-sm text-surface-700 dark:bg-surface-900/90 dark:text-surface-200"
             >
               <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
               <span>{{ logoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
@@ -1025,7 +1163,7 @@ async function confirmDeleteRosterPlayer() {
             rounded
             severity="danger"
             text
-            class="!absolute top-2 right-2 z-10 !h-9 !w-9 !min-w-9 shadow-sm bg-surface-0/90 hover:!bg-surface-0"
+            class="!absolute top-2 right-2 z-10 !h-9 !w-9 !min-w-9 shadow-sm bg-surface-100/90 hover:!bg-surface-200 dark:bg-surface-900/90 dark:hover:!bg-surface-800"
             aria-label="Удалить логотип"
             @click="removeTeamLogo"
           />
@@ -1076,7 +1214,7 @@ async function confirmDeleteRosterPlayer() {
           </FloatLabel>
         </div>
 
-        <div class="md:col-span-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div class="md:col-span-3 grid grid-cols-1 gap-4 md:grid-cols-3">
           <FloatLabel variant="on" class="block">
             <Select
               inputId="team_age_group"
@@ -1091,6 +1229,18 @@ async function confirmDeleteRosterPlayer() {
           </FloatLabel>
           <FloatLabel variant="on" class="block">
             <Select
+              inputId="team_team_category"
+              v-model="form.teamCategoryId"
+              :options="teamCategorySelectOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+              :loading="teamCategoriesLoading"
+            />
+            <label for="team_team_category">Категория состава</label>
+          </FloatLabel>
+          <FloatLabel variant="on" class="block">
+            <Select
               inputId="team_region"
               v-model="form.regionId"
               :options="regionSelectOptions"
@@ -1102,6 +1252,10 @@ async function confirmDeleteRosterPlayer() {
             <label for="team_region">Регион</label>
           </FloatLabel>
         </div>
+        <p class="md:col-span-3 text-xs leading-snug text-muted-color">
+          Возрастная группа — для фильтров и заявки команды в турнир (если у турнира задана группа).
+          Категория состава — правила из справочника «Категории команд»: кого можно добавлять в состав.
+        </p>
 
         <!-- Bottom: description -->
         <div class="md:col-span-3">
@@ -1168,7 +1322,12 @@ async function confirmDeleteRosterPlayer() {
 
           <div class="flex flex-wrap justify-end gap-2 pt-1 sm:col-span-2 xl:col-span-12">
             <Button label="Сбросить фильтры" text severity="secondary" @click="resetRosterFilters" />
-            <Button label="Добавить" icon="pi pi-plus" @click="openAddRosterPlayer" />
+            <Button
+              v-if="!isModeratorReadOnly"
+              label="Добавить"
+              icon="pi pi-plus"
+              @click="openAddRosterPlayer"
+            />
           </div>
         </div>
 
@@ -1212,7 +1371,7 @@ async function confirmDeleteRosterPlayer() {
               <Skeleton width="70%" height="1rem" class="rounded-md" />
             </template>
           </Column>
-          <Column header="Действия" style="width: 8rem">
+          <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">
             <template #body>
               <div class="flex justify-end gap-2">
                 <Skeleton shape="circle" width="2rem" height="2rem" />
@@ -1249,9 +1408,10 @@ async function confirmDeleteRosterPlayer() {
                 <template v-if="hasActiveRosterFilters">
                   Измените фильтры или сбросьте их.
                 </template>
-                <template v-else>
+                <template v-else-if="!isModeratorReadOnly">
                   Добавьте игрока кнопкой «Добавить».
                 </template>
+                <template v-else>Состав команды пуст.</template>
               </span>
             </div>
           </template>
@@ -1269,21 +1429,14 @@ async function confirmDeleteRosterPlayer() {
           <Column field="lastName" header="Игрок" sortable style="min-width: 14rem">
             <template #body="{ data }">
               <div class="flex items-center gap-3 min-w-0">
-                <img
-                  v-if="data.player.photoUrl"
+                <RemoteImage
                   :src="data.player.photoUrl"
                   :alt="`${data.player.firstName} ${data.player.lastName}`"
-                  class="h-10 w-10 shrink-0 rounded-lg object-cover"
+                  placeholder-icon="user"
+                  class="h-10 w-10 rounded-lg"
                 />
-                <div
-                  v-else
-                  class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-surface-200 bg-surface-100 text-muted-color"
-                  aria-hidden="true"
-                >
-                  <i class="pi pi-user text-lg opacity-50" />
-                </div>
                 <div class="min-w-0">
-                  <div class="truncate text-sm font-medium text-surface-900">
+                  <div class="truncate text-sm font-medium text-surface-900 dark:text-surface-0">
                     {{ data.player.firstName }} {{ data.player.lastName }}
                   </div>
                   <div v-if="data.player.birthDate" class="text-xs text-muted-color">
@@ -1312,7 +1465,7 @@ async function confirmDeleteRosterPlayer() {
               <span v-else class="text-muted-color">—</span>
             </template>
           </Column>
-          <Column header="Действия" style="width: 8rem">
+          <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">
             <template #body="{ data }">
               <div class="flex w-full justify-end gap-2">
                 <Button icon="pi pi-pencil" text size="small" @click="openEditRosterPlayer(data)" aria-label="Редактировать" />

@@ -65,7 +65,7 @@ async function main() {
         blocked: false,
       },
     });
-    // eslint-disable-next-line no-console
+
     console.log(`Updated SUPER_ADMIN user: ${username}`);
     return;
   }
@@ -82,13 +82,12 @@ async function main() {
       blocked: false,
     },
   });
-  // eslint-disable-next-line no-console
+
   console.log(`Created SUPER_ADMIN user: ${username}`);
 }
 
 main()
   .catch((err) => {
-    // eslint-disable-next-line no-console
     console.error(err);
     process.exit(1);
   })

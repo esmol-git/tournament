@@ -13,7 +13,9 @@ import {
 } from 'class-validator';
 
 export class ListTenantMatchesQueryDto {
-  @ApiPropertyOptional({ description: 'Фильтр по турниру; без параметра — все матчи с tournamentId' })
+  @ApiPropertyOptional({
+    description: 'Фильтр по турниру; без параметра — все матчи с tournamentId',
+  })
   @IsOptional()
   @IsString()
   tournamentId?: string;
@@ -67,12 +69,17 @@ export class ListTenantMatchesQueryDto {
   @Max(100)
   pageSize?: number = 50;
 
-  @ApiPropertyOptional({ description: 'Начало диапазона по startTime (локальная дата YYYY-MM-DD)' })
+  @ApiPropertyOptional({
+    description: 'Начало диапазона по startTime (локальная дата YYYY-MM-DD)',
+  })
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   dateFrom?: string;
 
-  @ApiPropertyOptional({ description: 'Конец диапазона по startTime (локальная дата YYYY-MM-DD, включительно)' })
+  @ApiPropertyOptional({
+    description:
+      'Конец диапазона по startTime (локальная дата YYYY-MM-DD, включительно)',
+  })
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   dateTo?: string;

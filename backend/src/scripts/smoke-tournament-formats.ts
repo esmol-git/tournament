@@ -138,7 +138,7 @@ async function main() {
             tenantId: tenant.id,
             name: `Smoke Team ${i + 1}`,
             slug: `smoke-formats-team-${i + 1}-${stamp}`,
-            rating: ((i % 5) + 1),
+            rating: (i % 5) + 1,
           },
           select: { id: true },
         }),
@@ -252,15 +252,19 @@ async function main() {
           }
         } else {
           const participantsForManual = participants;
-          await matchesService.createMatch(tournament.id, UserRole.TENANT_ADMIN, {
-            homeTeamId: participantsForManual[0].id,
-            awayTeamId: participantsForManual[1].id,
-            startTime: new Date('2026-04-05T10:00:00.000Z').toISOString(),
-            stage: MatchStage.GROUP,
-            roundNumber: 1,
-            groupId: null,
-            playoffRound: null,
-          });
+          await matchesService.createMatch(
+            tournament.id,
+            UserRole.TENANT_ADMIN,
+            {
+              homeTeamId: participantsForManual[0].id,
+              awayTeamId: participantsForManual[1].id,
+              startTime: new Date('2026-04-05T10:00:00.000Z').toISOString(),
+              stage: MatchStage.GROUP,
+              roundNumber: 1,
+              groupId: null,
+              playoffRound: null,
+            },
+          );
 
           const manualMatch = await prisma.match.findFirst({
             where: { tournamentId: tournament.id },
@@ -309,11 +313,14 @@ async function main() {
 
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0) {
-      throw new Error(`Formats failed: ${failed.map((x) => x.format).join(', ')}`);
+      throw new Error(
+        `Formats failed: ${failed.map((x) => x.format).join(', ')}`,
+      );
     }
 
-    console.log(`SMOKE_FORMATS_ALL_OK total=${timeLabel(Date.now() - startedAt)}`);
-
+    console.log(
+      `SMOKE_FORMATS_ALL_OK total=${timeLabel(Date.now() - startedAt)}`,
+    );
   } finally {
     if (tenantIdToCleanup) {
       try {

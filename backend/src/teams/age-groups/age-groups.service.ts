@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateAgeGroupDto } from './dto/create-age-group.dto';
 import { UpdateAgeGroupDto } from './dto/update-age-group.dto';
 
 @Injectable()
 export class AgeGroupsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
+  ) {}
 
   list(tenantId: string) {
     return this.prisma.ageGroup.findMany({
@@ -53,6 +57,7 @@ export class AgeGroupsService {
       where: { id, tenantId },
     });
     if (!row) throw new NotFoundException('Age group not found');
+    await this.tournamentTemplates.assertCanDeleteAgeGroup(tenantId, id);
     await this.prisma.ageGroup.delete({ where: { id } });
     return { success: true };
   }

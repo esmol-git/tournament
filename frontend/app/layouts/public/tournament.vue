@@ -117,6 +117,11 @@ const showNewsInSidebar = computed(() => {
   return v !== false
 })
 
+const showTopStatsInSidebar = computed(() => {
+  const v = tenantMeta.value?.publicSettings?.publicShowTopStats
+  return v !== false
+})
+
 provide(publicTournamentWorkspaceKey, {
   ...selection,
   tenant,
@@ -159,7 +164,7 @@ watch(
 
       <div :class="[layoutGridClass, 'flex-1 min-h-0']">
         <div class="min-w-0 space-y-4 flex flex-col min-h-0">
-          <div class="public-stage flex flex-col flex-1 min-h-0">
+          <div class="public-stage flex flex-col flex-1 min-h-0 gap-6">
             <PublicTournamentContextCard
               v-model="selectedTournamentId"
               :options="tournaments"
@@ -185,6 +190,7 @@ watch(
             :standings-group-preview="sidebarGroups"
             :loading="sidebarLoading"
             :show-news-link="showNewsInSidebar"
+            :show-top-stats-in-sidebar="showTopStatsInSidebar"
             :active="sidebarActive"
             :unified-bottom="sidebarUnifiedBottom"
             :sticky="false"

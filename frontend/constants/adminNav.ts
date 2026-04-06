@@ -8,6 +8,16 @@ export type TenantNavRole =
   | 'TEAM_ADMIN'
   | 'MODERATOR'
 
+/**
+ * Справочники, новости/медиа организации, общий календарь матчей — не показываем MODERATOR
+ * (у модератора: дашборд, турниры, команды/игроки только просмотр, профиль).
+ */
+export const ADMIN_NAV_DIRECTORY_STAFF_ROLES: readonly TenantNavRole[] = [
+  'TENANT_ADMIN',
+  'TOURNAMENT_ADMIN',
+  'TEAM_ADMIN',
+]
+
 /** Один пункт-ссылка в меню (подписи через i18n: `labelKey`) */
 export interface AdminNavLinkItem {
   to: string
@@ -127,6 +137,13 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     requiredTenantRoles: ['TENANT_ADMIN'],
   },
   {
+    to: '/admin/audit-log',
+    labelKey: 'admin.nav.audit_log',
+    icon: 'pi pi-history',
+    requiredFeature: 'admin_audit_log',
+    requiredTenantRoles: ['TENANT_ADMIN'],
+  },
+  {
     id: 'people',
     labelKey: 'admin.nav.group_people',
     icon: 'pi pi-users',
@@ -145,84 +162,98 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
         labelKey: 'admin.nav.ref_competitions',
         icon: 'pi pi-flag',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/seasons',
         labelKey: 'admin.nav.seasons',
         icon: 'pi pi-calendar',
         requiredFeature: 'reference_directory_basic',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/age-groups',
         labelKey: 'admin.nav.age_groups',
         icon: 'pi pi-chart-bar',
         requiredFeature: 'reference_directory_basic',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/team-categories',
         labelKey: 'admin.nav.team_categories',
         icon: 'pi pi-th-large',
         requiredFeature: 'reference_directory_basic',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/regions',
         labelKey: 'admin.nav.regions',
         icon: 'pi pi-map-marker',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/documents',
         labelKey: 'admin.nav.documents',
         icon: 'pi pi-file',
         requiredFeature: 'reference_directory_advanced',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/referees',
         labelKey: 'admin.nav.referees',
         icon: 'pi pi-user',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/referee-categories',
         labelKey: 'admin.nav.referee_categories',
         icon: 'pi pi-bookmark',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/referee-positions',
         labelKey: 'admin.nav.referee_positions',
         icon: 'pi pi-briefcase',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/stadiums',
         labelKey: 'admin.nav.stadiums',
         icon: 'pi pi-building',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/management',
         labelKey: 'admin.nav.management',
         icon: 'pi pi-users',
         requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/protocol-event-types',
         labelKey: 'admin.nav.protocol_event_types',
         icon: 'pi pi-list',
         requiredFeature: 'reference_directory_advanced',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/match-schedule-reasons',
         labelKey: 'admin.nav.match_schedule_reasons',
         icon: 'pi pi-calendar-times',
         requiredFeature: 'reference_directory_advanced',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/references/news-tags',
         labelKey: 'admin.nav.news_tags',
         icon: 'pi pi-tags',
         requiredFeature: 'news_and_media',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
     ],
   },
@@ -237,19 +268,27 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
         labelKey: 'admin.nav.news',
         icon: 'pi pi-megaphone',
         requiredFeature: 'news_and_media',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
       {
         to: '/admin/gallery',
         labelKey: 'admin.nav.gallery',
         icon: 'pi pi-images',
         requiredFeature: 'news_and_media',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
-      { to: '/admin/matches', labelKey: 'admin.nav.matches', icon: 'pi pi-calendar' },
+      {
+        to: '/admin/matches',
+        labelKey: 'admin.nav.matches',
+        icon: 'pi pi-calendar',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
+      },
       {
         to: '/admin/calendar',
         labelKey: 'admin.nav.calendar',
         icon: 'pi pi-calendar-clock',
         requiredFeature: 'org_wide_calendar',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
       },
     ],
   },

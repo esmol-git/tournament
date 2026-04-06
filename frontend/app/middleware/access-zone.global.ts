@@ -1,11 +1,6 @@
 import { useAuthStore } from '~/stores/auth'
 import { isTenantAdminExcludedRole } from '~/constants/tenantAdminStaff'
-
-function readRole(user: unknown): string | null {
-  if (!user || typeof user !== 'object') return null
-  const role = (user as { role?: unknown }).role
-  return typeof role === 'string' ? role : null
-}
+import { readTenantStaffRole } from '~/utils/tenantStaffRole'
 
 function tenantFromHost(hostname: string): string | null {
   const host = hostname.toLowerCase()
@@ -29,12 +24,13 @@ function isLocalHost(hostname: string): boolean {
   return host === 'localhost' || host === '127.0.0.1'
 }
 
-export default defineNuxtRouteMiddleware((to) => {
+export default defineNuxtRouteMiddleware(async (to) => {
   if (!process.client) return
   const auth = useAuthStore()
   auth.syncWithStorage()
+  await auth.restoreSessionViaRefreshCookieIfNeeded()
 
-  const role = readRole(auth.user)
+  const role = readTenantStaffRole(auth.user)
   const isLoggedIn = auth.loggedIn
   const isPlatformRoute = to.path.startsWith('/platform')
   const isAdminRoute = to.path.startsWith('/admin')

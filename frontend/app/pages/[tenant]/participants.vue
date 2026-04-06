@@ -18,8 +18,46 @@ const errorText = ref('')
 const loadingRoster = ref(false)
 const isInitializing = ref(true)
 const roster = ref<PublicRosterTeam[]>([])
+const rosterDialogTeam = ref<PublicRosterTeam | null>(null)
+/** Голов в публичном roster нет — сортировка: алфавит или номер в заявке. */
+const rosterSortMode = ref<'alpha' | 'jersey'>('alpha')
+const ROSTER_PREVIEW = 3
 const TEAM_PLACEHOLDER_SRC = '/placeholders/team.svg'
 const PLAYER_PLACEHOLDER_SRC = '/placeholders/player.svg'
+
+function sortedPlayers(players: PublicRosterTeam['players']) {
+  const arr = players.slice()
+  if (rosterSortMode.value === 'alpha') {
+    arr.sort((a, b) => {
+      const ln = a.lastName.localeCompare(b.lastName, 'ru')
+      if (ln !== 0) return ln
+      return a.firstName.localeCompare(b.firstName, 'ru')
+    })
+  } else {
+    arr.sort((a, b) => {
+      const an = a.jerseyNumber ?? 10_000
+      const bn = b.jerseyNumber ?? 10_000
+      if (an !== bn) return an - bn
+      const ln = a.lastName.localeCompare(b.lastName, 'ru')
+      if (ln !== 0) return ln
+      return a.firstName.localeCompare(b.firstName, 'ru')
+    })
+  }
+  return arr
+}
+
+function previewPlayers(team: PublicRosterTeam) {
+  const s = sortedPlayers(team.players)
+  return team.players.length > ROSTER_PREVIEW ? s.slice(0, ROSTER_PREVIEW) : s
+}
+
+function openRosterDialog(team: PublicRosterTeam) {
+  rosterDialogTeam.value = team
+}
+
+function closeRosterDialog() {
+  rosterDialogTeam.value = null
+}
 
 const showWorkspaceBootSkeleton = computed(() => !workspaceReady.value || loading.value)
 const showRosterSkeleton = computed(() => loadingRoster.value && !!selectedTournamentId.value && !roster.value.length)
@@ -28,13 +66,6 @@ function resolveImageUrl(url: string | null | undefined, fallback: string) {
   if (typeof url !== 'string') return fallback
   const normalized = url.trim()
   return normalized.length > 0 ? normalized : fallback
-}
-
-function handleImageError(event: Event, fallback: string) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(fallback)) return
-  target.src = fallback
 }
 
 async function fetchParticipants() {
@@ -126,29 +157,52 @@ onMounted(() => {
             В выбранном турнире пока нет команд.
           </div>
 
-          <div v-else class="grid grid-cols-1 gap-3 md:grid-cols-2 public-stagger-appear">
-            <article v-for="team in roster" :key="team.teamId" class="public-card">
-              <div class="flex items-start justify-between gap-3">
-                <div class="flex min-w-0 items-start gap-3">
-                  <div class="h-12 w-12 shrink-0 overflow-hidden rounded-full">
-                    <img
-                      :src="resolveImageUrl(team.logoUrl, TEAM_PLACEHOLDER_SRC)"
-                      :alt="team.teamName"
-                      class="h-full w-full object-cover"
-                      loading="lazy"
-                      @error="(e) => handleImageError(e, TEAM_PLACEHOLDER_SRC)"
-                    />
-                  </div>
-                  <div class="min-w-0">
-                    <h2 class="truncate text-base font-semibold text-[#123c67]">{{ team.teamName }}</h2>
-                    <p class="mt-1 text-xs text-[#4f6b8c]">
-                      {{ team.category || 'Категория не указана' }}
-                    </p>
-                  </div>
+          <template v-else>
+          <div class="public-card !p-3 flex flex-wrap items-center justify-between gap-3">
+            <span class="text-sm font-medium text-[#4f6b8c]">Порядок в составах</span>
+            <div class="inline-flex rounded-xl border border-[#d6e0ee] bg-[#f8fbff] p-1">
+              <button
+                type="button"
+                class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors sm:text-sm"
+                :class="
+                  rosterSortMode === 'alpha'
+                    ? 'bg-white text-[#123c67] shadow-sm'
+                    : 'text-[#4f6b8c] hover:bg-white/80'
+                "
+                @click="rosterSortMode = 'alpha'"
+              >
+                По фамилии
+              </button>
+              <button
+                type="button"
+                class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors sm:text-sm"
+                :class="
+                  rosterSortMode === 'jersey'
+                    ? 'bg-white text-[#123c67] shadow-sm'
+                    : 'text-[#4f6b8c] hover:bg-white/80'
+                "
+                @click="rosterSortMode = 'jersey'"
+              >
+                По номеру
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2 public-stagger-appear">
+            <article v-for="team in roster" :key="team.teamId" class="public-card flex flex-col">
+              <div class="flex items-start gap-3">
+                <RemoteImage
+                  :src="resolveImageUrl(team.logoUrl, TEAM_PLACEHOLDER_SRC)"
+                  :alt="team.teamName"
+                  placeholder-icon="users"
+                  class="h-12 w-12 shrink-0 rounded-full"
+                />
+                <div class="min-w-0">
+                  <h2 class="truncate text-base font-semibold text-[#123c67]">{{ team.teamName }}</h2>
+                  <p class="mt-1 text-xs text-[#4f6b8c]">
+                    {{ team.category || 'Категория не указана' }}
+                  </p>
                 </div>
-                <span class="rounded-full bg-[#f4f7fc] px-2 py-1 text-xs font-semibold text-[#123c67]">
-                  Игроков: {{ team.players.length }}
-                </span>
               </div>
               <p v-if="team.coachName" class="mt-3 text-sm text-[#4f6b8c]">
                 Тренер: <span class="font-medium text-[#123c67]">{{ team.coachName }}</span>
@@ -157,20 +211,18 @@ onMounted(() => {
               <div v-if="team.players.length" class="mt-3 rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2">
                 <ul class="space-y-2">
                   <li
-                    v-for="player in team.players"
+                    v-for="player in previewPlayers(team)"
                     :key="player.id"
                     class="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
                   >
                     <div class="flex min-w-0 items-center gap-2">
-                      <div class="h-8 w-8 shrink-0 overflow-hidden rounded-full">
-                        <img
-                          :src="resolveImageUrl(player.photoUrl, PLAYER_PLACEHOLDER_SRC)"
-                          :alt="`${player.lastName} ${player.firstName}`"
-                          class="h-full w-full object-cover"
-                          loading="lazy"
-                          @error="(e) => handleImageError(e, PLAYER_PLACEHOLDER_SRC)"
-                        />
-                      </div>
+                      <RemoteImage
+                        :src="resolveImageUrl(player.photoUrl, PLAYER_PLACEHOLDER_SRC)"
+                        :alt="`${player.lastName} ${player.firstName}`"
+                        placeholder-icon="user"
+                        icon-class="text-sm"
+                        class="h-8 w-8 shrink-0 rounded-full"
+                      />
                       <span class="truncate text-sm text-[#123c67]">
                         {{ player.lastName }} {{ player.firstName }}
                       </span>
@@ -182,10 +234,75 @@ onMounted(() => {
                   </li>
                 </ul>
               </div>
+
+              <div v-if="team.players.length > ROSTER_PREVIEW" class="mt-4">
+                <Button
+                  type="button"
+                  size="small"
+                  outlined
+                  icon="pi pi-users"
+                  :label="`Все игроки (${team.players.length})`"
+                  class="!border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#c80a48]/35 hover:!text-[#c80a48]"
+                  :aria-label="`Полный состав команды ${team.teamName}`"
+                  @click="openRosterDialog(team)"
+                />
+              </div>
             </article>
           </div>
+          </template>
         </template>
       </div>
     </Transition>
+
+    <Dialog
+      :visible="rosterDialogTeam !== null"
+      modal
+      :draggable="false"
+      :dismissable-mask="true"
+      :style="{ width: 'min(32rem, 96vw)' }"
+      :header="rosterDialogTeam?.teamName ?? 'Состав'"
+      class="public-roster-dialog"
+      @update:visible="(v) => !v && closeRosterDialog()"
+    >
+      <div v-if="rosterDialogTeam" class="space-y-3">
+        <p v-if="rosterDialogTeam.category" class="text-sm text-[#4f6b8c]">
+          {{ rosterDialogTeam.category }}
+        </p>
+        <p v-if="rosterDialogTeam.coachName" class="text-sm text-[#4f6b8c]">
+          Тренер:
+          <span class="font-medium text-[#123c67]">{{ rosterDialogTeam.coachName }}</span>
+        </p>
+        <div
+          v-if="rosterDialogTeam.players.length"
+          class="max-h-[min(28rem,70vh)] overflow-y-auto rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2"
+        >
+          <ul class="space-y-2">
+            <li
+              v-for="player in sortedPlayers(rosterDialogTeam.players)"
+              :key="player.id"
+              class="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <RemoteImage
+                  :src="resolveImageUrl(player.photoUrl, PLAYER_PLACEHOLDER_SRC)"
+                  :alt="`${player.lastName} ${player.firstName}`"
+                  placeholder-icon="user"
+                  icon-class="text-sm"
+                  class="h-8 w-8 shrink-0 rounded-full"
+                />
+                <span class="truncate text-sm text-[#123c67]">
+                  {{ player.lastName }} {{ player.firstName }}
+                </span>
+              </div>
+              <span class="shrink-0 text-xs text-[#4f6b8c]">
+                <template v-if="player.jerseyNumber !== null">#{{ player.jerseyNumber }}</template>
+                <template v-if="player.position"> · {{ player.position }}</template>
+              </span>
+            </li>
+          </ul>
+        </div>
+        <p v-else class="text-sm text-[#4f6b8c]">В заявке пока нет игроков.</p>
+      </div>
+    </Dialog>
   </div>
 </template>

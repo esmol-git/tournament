@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { assertPlayerFitsTeamCategory } from '../teams/team-category-player.assert';
 import { CreatePlayerDto } from './dto/create-player.dto';
 import { PlayersFilterQueryDto } from './dto/players-filter-query.dto';
 import { UpdatePlayerDto } from './dto/update-player.dto';
@@ -45,18 +46,6 @@ export class PlayersService {
     }
   }
 
-  private async assertPlayerMatchesTeamCategoryTx(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    teamId: string,
-    playerId: string,
-  ): Promise<void> {
-    void tx;
-    void tenantId;
-    void teamId;
-    void playerId;
-  }
-
   /** Одна команда на игрока: сбросить состав и при необходимости добавить в команду. */
   private async setPlayerTeamTx(
     tx: Prisma.TransactionClient,
@@ -70,7 +59,18 @@ export class PlayersService {
     if (!teamId?.trim()) return;
     const tid = teamId.trim();
     await this.assertCanAssignTeamTx(tx, tenantId, tid, actorUserId, actorRole);
-    await this.assertPlayerMatchesTeamCategoryTx(tx, tenantId, tid, playerId);
+    const teamRow = await tx.team.findFirst({
+      where: { id: tid, tenantId },
+      select: { teamCategoryId: true },
+    });
+    if (teamRow?.teamCategoryId) {
+      await assertPlayerFitsTeamCategory(
+        tx,
+        tenantId,
+        teamRow.teamCategoryId,
+        playerId,
+      );
+    }
     await tx.teamPlayer.create({
       data: { teamId: tid, playerId },
     });
@@ -253,24 +253,26 @@ export class PlayersService {
   private isImportFieldKey(
     value: string,
   ): value is (typeof PlayersService.IMPORT_FIELD_KEYS)[number] {
-    return (
-      PlayersService.IMPORT_FIELD_KEYS as readonly string[]
-    ).includes(value);
+    return (PlayersService.IMPORT_FIELD_KEYS as readonly string[]).includes(
+      value,
+    );
   }
 
-  private toXlsxRows(players: Array<{
-    id: string;
-    lastName: string;
-    firstName: string;
-    birthDate: Date | null;
-    gender: string | null;
-    position: string | null;
-    phone: string | null;
-    bioNumber: string | null;
-    biography: string | null;
-    photoUrl: string | null;
-    teamPlayers: Array<{ team: { id: string; name: string } | null }>;
-  }>): Record<string, string>[] {
+  private toXlsxRows(
+    players: Array<{
+      id: string;
+      lastName: string;
+      firstName: string;
+      birthDate: Date | null;
+      gender: string | null;
+      position: string | null;
+      phone: string | null;
+      bioNumber: string | null;
+      biography: string | null;
+      photoUrl: string | null;
+      teamPlayers: Array<{ team: { id: string; name: string } | null }>;
+    }>,
+  ): Record<string, string>[] {
     return players.map((p) => {
       const team = p.teamPlayers[0]?.team;
       return {
@@ -505,7 +507,9 @@ export class PlayersService {
    * - createOnly — создавать только строки без id; строки с id пропускаются;
    * - updateOnly — обновлять только строки с id, если игрок есть; остальное пропускается.
    */
-  private parseImportMode(raw?: string): 'upsert' | 'createOnly' | 'updateOnly' {
+  private parseImportMode(
+    raw?: string,
+  ): 'upsert' | 'createOnly' | 'updateOnly' {
     const t = raw?.trim();
     if (t === 'createOnly') return 'createOnly';
     if (t === 'updateOnly') return 'updateOnly';
@@ -548,13 +552,16 @@ export class PlayersService {
   private normalizeImportCellValue(value: unknown): string {
     if (value == null) return '';
     if (value instanceof Date) return this.formatBirthDateCsv(value);
-    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+    if (typeof value === 'number')
+      return Number.isFinite(value) ? String(value) : '';
     if (typeof value === 'boolean') return value ? 'true' : 'false';
     return String(value).trim();
   }
 
   private toStringMatrix(rows: unknown[][]): string[][] {
-    return rows.map((row) => row.map((cell) => this.normalizeImportCellValue(cell)));
+    return rows.map((row) =>
+      row.map((cell) => this.normalizeImportCellValue(cell)),
+    );
   }
 
   private buildImportError(
@@ -893,7 +900,10 @@ export class PlayersService {
       throw new BadRequestException('XLSX: не найден лист с данными');
     }
     const ws = wb.Sheets[firstSheetName];
-    const rowsRaw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as unknown[][];
+    const rowsRaw = XLSX.utils.sheet_to_json(ws, {
+      header: 1,
+      raw: true,
+    }) as unknown[][];
     const rows = this.toStringMatrix(rowsRaw);
     return this.importRows(
       tenantId,

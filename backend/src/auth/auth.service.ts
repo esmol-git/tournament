@@ -13,11 +13,21 @@ import { LoginDto } from './dto/login.dto';
 import { PlatformLoginDto } from './dto/platform-login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './jwt.strategy';
-import { Prisma, SubscriptionPlan, SubscriptionStatus, UserRole } from '@prisma/client';
+import {
+  Prisma,
+  SubscriptionPlan,
+  SubscriptionStatus,
+  UserRole,
+} from '@prisma/client';
 import {
   assertSubscriptionNotExpired,
   isTenantSubscriptionActive,
 } from './subscription-access.util';
+import {
+  canonicalSubscriptionPlan,
+  type TenantSubscriptionLimits,
+  tenantSubscriptionLimits,
+} from './subscription-plan-features.util';
 import {
   normalizeAdminUiSettings,
   type NormalizedAdminUiSettings,
@@ -84,23 +94,31 @@ export class AuthService {
   }
 
   /** Как в `me()` — чтобы после login/refresh фронт сразу видел тариф (лимиты, фичи). */
-  private tenantSubscriptionForSession(tenant: {
-    subscriptionPlan: SubscriptionPlan;
-    subscriptionStatus: SubscriptionStatus;
-    subscriptionEndsAt: Date | null;
-    blocked: boolean;
-  } | null): {
+  private tenantSubscriptionForSession(
+    tenant: {
+      subscriptionPlan: SubscriptionPlan;
+      subscriptionStatus: SubscriptionStatus;
+      subscriptionEndsAt: Date | null;
+      blocked: boolean;
+      allowUserDeletion: boolean;
+    } | null,
+  ): {
     plan: SubscriptionPlan;
     status: SubscriptionStatus;
     endsAt: Date | null;
     active: boolean;
+    limits: TenantSubscriptionLimits;
+    allowUserDeletion: boolean;
   } | null {
     if (!tenant) return null;
+    const plan = canonicalSubscriptionPlan(tenant.subscriptionPlan);
     return {
       plan: tenant.subscriptionPlan,
       status: tenant.subscriptionStatus,
       endsAt: tenant.subscriptionEndsAt,
       active: isTenantSubscriptionActive(tenant),
+      limits: tenantSubscriptionLimits(plan),
+      allowUserDeletion: tenant.allowUserDeletion,
     };
   }
 
@@ -119,6 +137,7 @@ export class AuthService {
       subscriptionStatus: SubscriptionStatus;
       subscriptionEndsAt: Date | null;
       blocked: boolean;
+      allowUserDeletion: boolean;
     } | null,
   ) {
     return {
@@ -146,7 +165,9 @@ export class AuthService {
   private async ensureUniqueTenantSlug(base: string): Promise<string> {
     let candidate = base;
     let i = 2;
-    while (await this.prisma.tenant.findUnique({ where: { slug: candidate } })) {
+    while (
+      await this.prisma.tenant.findUnique({ where: { slug: candidate } })
+    ) {
       candidate = `${base}-${i++}`;
     }
     return candidate;
@@ -199,7 +220,10 @@ export class AuthService {
       tenant = created.tenant;
       user = created.user;
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
         const target = (e.meta?.target as string[]) ?? [];
         if (target.includes('email')) {
           throw new ConflictException({
@@ -325,55 +349,56 @@ export class AuthService {
   }
 
   private tenantSlugFromHost(hostname?: string): string | null {
-    if (!hostname) return null
+    if (!hostname) return null;
 
-    const host = hostname.split(':')[0]?.toLowerCase()
-    if (!host) return null
+    const host = hostname.split(':')[0]?.toLowerCase();
+    if (!host) return null;
 
     // Dev: localhost (без subdomain) не даёт tenantSlug.
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return null
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1')
+      return null;
 
     // Dev: tenant.localhost -> tenant
     if (host.endsWith('.localhost')) {
-      const parts = host.split('.')
+      const parts = host.split('.');
       // [tenant, localhost]
-      return parts.length === 2 ? parts[0]! : null
+      return parts.length === 2 ? parts[0] : null;
     }
 
-    const parts = host.split('.')
-    if (parts.length < 3) return null
+    const parts = host.split('.');
+    if (parts.length < 3) return null;
 
-    const sub = parts[0]!
-    if (!sub || sub === 'www') return null
-    return sub
+    const sub = parts[0];
+    if (!sub || sub === 'www') return null;
+    return sub;
   }
 
   async resolveTenantFromHost(hostname?: string): Promise<{
-    tenantSlug: string | null
-    blocked: boolean
+    tenantSlug: string | null;
+    blocked: boolean;
     /** Общие настройки админ-UI организации (для экрана входа без JWT). */
-    uiSettings?: NormalizedAdminUiSettings
+    uiSettings?: NormalizedAdminUiSettings;
   }> {
-    const slug = this.tenantSlugFromHost(hostname)
-    if (!slug) return { tenantSlug: null, blocked: false }
+    const slug = this.tenantSlugFromHost(hostname);
+    if (!slug) return { tenantSlug: null, blocked: false };
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { slug },
       select: { slug: true, blocked: true, adminUiSettings: true },
-    })
+    });
 
-    if (!tenant) return { tenantSlug: null, blocked: false }
+    if (!tenant) return { tenantSlug: null, blocked: false };
     return {
       tenantSlug: tenant.slug,
       blocked: tenant.blocked,
       uiSettings: normalizeAdminUiSettings(tenant.adminUiSettings ?? null),
-    }
+    };
   }
 
   async loginFromHost(dto: LoginDto, hostname?: string) {
-    const dtoTenantSlug = dto.tenantSlug?.trim()
-    const hostResolved = await this.resolveTenantFromHost(hostname)
-    const tenantSlug = dtoTenantSlug || hostResolved.tenantSlug
+    const dtoTenantSlug = dto.tenantSlug?.trim();
+    const hostResolved = await this.resolveTenantFromHost(hostname);
+    const tenantSlug = dtoTenantSlug || hostResolved.tenantSlug;
 
     if (!tenantSlug) {
       throw new BadRequestException({
@@ -388,7 +413,7 @@ export class AuthService {
       });
     }
 
-    return this.login({ ...dto, tenantSlug })
+    return this.login({ ...dto, tenantSlug });
   }
 
   async platformLogin(dto: PlatformLoginDto) {
@@ -463,6 +488,7 @@ export class AuthService {
             subscriptionStatus: true,
             subscriptionEndsAt: true,
             blocked: true,
+            allowUserDeletion: true,
           },
         },
       },
@@ -549,11 +575,19 @@ export class AuthService {
     return { success: true };
   }
 
+  private jwtSecretOrThrow(): string {
+    const secret = this.configService.get<string>('JWT_SECRET')?.trim();
+    if (!secret) {
+      throw new Error('JWT_SECRET is not configured');
+    }
+    return secret;
+  }
+
   private async signToken(payload: JwtPayload): Promise<string> {
-    const secret = this.configService.get<string>('JWT_SECRET') ?? 'dev-secret';
     return this.jwtService.signAsync(payload, {
-      secret,
+      secret: this.jwtSecretOrThrow(),
       expiresIn: '7d',
+      algorithm: 'HS256',
     });
   }
 }

@@ -5,6 +5,7 @@ import {
   ParseFilePipe,
   Post,
   Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -21,7 +22,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'node:crypto';
 import { extname } from 'node:path';
+import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtPayload } from '../auth/jwt.strategy';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
@@ -31,7 +34,10 @@ import { StorageService } from './storage.service';
 
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-/** Префикс ключа в бакете: media, docs, tournaments, teams, players, news, gallery, tenant-branding */
+/**
+ * Логическая папка внутри префикса организации: `tenants/{tenantId}/{folder}/...`.
+ * Значения: media, docs, tournaments, teams, players, news, gallery, tenant-branding.
+ */
 const UPLOAD_FOLDERS = [
   'media',
   'docs',
@@ -103,7 +109,7 @@ export class StorageController {
     required: false,
     enum: UPLOAD_FOLDERS,
     description:
-      'Префикс пути: media (default), docs, tournaments, teams, players, news, gallery, tenant-branding',
+      'Папка внутри каталога организации в бакете: media (default), docs, tournaments, teams, players, news, gallery, tenant-branding',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -116,13 +122,14 @@ export class StorageController {
           type: 'string',
           enum: [...UPLOAD_FOLDERS],
           description:
-            'Префикс пути в бакете: media | docs | tournaments | teams | players | news | gallery | tenant-branding',
+            'Папка внутри tenants/{tenantId}/: media | docs | tournaments | teams | players | news | gallery | tenant-branding',
         },
       },
     },
   })
   @UseInterceptors(FileInterceptor('file'))
   async upload(
+    @Req() req: Request & { user?: JwtPayload },
     @Query('folder') folderQuery: string | undefined,
     @UploadedFile(
       new ParseFilePipe({
@@ -131,6 +138,13 @@ export class StorageController {
     )
     file: Express.Multer.File,
   ) {
+    const tenantId = req.user?.tenantId?.trim();
+    if (!tenantId) {
+      throw new BadRequestException(
+        'Для загрузки файлов нужна сессия с привязкой к организации',
+      );
+    }
+
     const folder = resolveUploadFolder(folderQuery);
     const mimeRaw = file.mimetype || 'application/octet-stream';
     const mime = mimeRaw.toLowerCase().split(';')[0].trim();
@@ -149,7 +163,7 @@ export class StorageController {
     }
 
     const shortId = randomBytes(4).toString('hex');
-    const key = `${folder}/${Date.now()}-${shortId}${ext}`;
+    const key = `tenants/${tenantId}/${folder}/${Date.now()}-${shortId}${ext}`;
 
     const url = await this.storage.upload(key, uploadBuffer, contentType);
 

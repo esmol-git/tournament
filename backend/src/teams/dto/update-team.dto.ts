@@ -23,6 +23,16 @@ export class UpdateTeamDto {
   @IsString()
   ageGroupId?: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Категория команды из справочника; null — снять привязку к категории',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  teamCategoryId?: string | null;
+
   @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @ValidateIf((_, v) => v !== null && v !== undefined)
@@ -67,5 +77,4 @@ export class UpdateTeamDto {
   @IsOptional()
   @IsString()
   description?: string;
-
 }

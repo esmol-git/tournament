@@ -1,3 +1,6 @@
+import { TENANT_PLAN_LIMITS_BY_PLAN } from '~/constants/tenantPlanLimits'
+import type { TenantPlanLimitsSnapshot } from '~/constants/tenantPlanLimits'
+
 /**
  * Тарифы и доступный функционал (до появления реального биллинга — ручной выбор в настройках).
  * Порядок: FREE < AMATEUR < PREMIER < CHAMPIONS < WORLD_CUP.
@@ -61,6 +64,8 @@ export type SubscriptionFeature =
   | 'data_import_export'
   /** Редактор публичного бренда в админке (вкладка «Публичные страницы» в настройках). */
   | 'public_site_admin_settings'
+  /** Журнал аудита админ-API — только тариф «Чемпионат мира». */
+  | 'admin_audit_log'
 
 /** Минимальный индекс тарифа в SUBSCRIPTION_PLANS, с которого доступна возможность. */
 const FEATURE_MIN_PLAN_INDEX: Record<SubscriptionFeature, number> = {
@@ -83,6 +88,7 @@ const FEATURE_MIN_PLAN_INDEX: Record<SubscriptionFeature, number> = {
   tournament_automation: 2,
   data_import_export: 3,
   public_site_admin_settings: 2,
+  admin_audit_log: 4,
 }
 
 /**
@@ -117,6 +123,31 @@ export function hasSubscriptionFeature(
   return subscriptionPlanIndex(plan) >= FEATURE_MIN_PLAN_INDEX[feature]
 }
 
+/** Лимиты тарифа из сессии (`tenantSubscription.limits`) или по коду плана. */
+export function tenantPlanLimitsFromAuthUser(user: unknown): TenantPlanLimitsSnapshot | null {
+  if (!user || typeof user !== 'object') return null
+  const o = user as Record<string, unknown>
+  const ts = o.tenantSubscription
+  if (ts && typeof ts === 'object') {
+    const lim = (ts as { limits?: unknown }).limits
+    if (lim && typeof lim === 'object') {
+      const L = lim as Record<string, unknown>
+      const numOrNull = (v: unknown): number | null =>
+        v === null || v === undefined ? null : typeof v === 'number' && Number.isFinite(v) ? v : null
+      return {
+        tournaments: numOrNull(L.tournaments),
+        teamsPerTournament: numOrNull(L.teamsPerTournament),
+        teamsPerTenant: numOrNull(L.teamsPerTenant),
+        users: numOrNull(L.users),
+        newsPerTournament: numOrNull(L.newsPerTournament),
+      }
+    }
+  }
+  const plan = subscriptionPlanFromAuthUser(user)
+  if (!plan) return null
+  return TENANT_PLAN_LIMITS_BY_PLAN[normalizeSubscriptionPlanCode(plan)]
+}
+
 export function allSubscriptionFeatures(): SubscriptionFeature[] {
   return Object.keys(FEATURE_MIN_PLAN_INDEX) as SubscriptionFeature[]
 }
@@ -125,5 +156,6 @@ export function allSubscriptionFeatures(): SubscriptionFeature[] {
 export function maxTournamentsForSubscriptionPlan(plan: string | null | undefined): number | null {
   const idx = subscriptionPlanIndex(plan)
   const limits: (number | null)[] = [1, 3, 10, 50, null]
-  return limits[idx] ?? 1
+  if (idx < 0 || idx >= limits.length) return 1
+  return limits[idx]!
 }

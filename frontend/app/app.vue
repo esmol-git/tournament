@@ -48,15 +48,18 @@ function parseSettings(raw: string | null | undefined): AdminSettingsPersisted {
 }
 
 const cookieSettings = computed(() => parseSettings(adminSettingsCookie.value))
-const isAdminRoute = computed(() => route.path.startsWith('/admin'))
+/** Та же тема/акцент, что в админке: вход организации, платформенный суперадмин. */
+const usesPersistedAdminChrome = computed(
+  () => route.path.startsWith('/admin') || route.path.startsWith('/platform'),
+)
 const adminHtmlClass = computed(() =>
-  isAdminRoute.value && cookieSettings.value.themeMode === 'dark' ? 'dark-mode' : undefined,
+  usesPersistedAdminChrome.value && cookieSettings.value.themeMode === 'dark' ? 'dark-mode' : undefined,
 )
 const adminAccent = computed(() =>
-  isAdminRoute.value ? cookieSettings.value.accent : undefined,
+  usesPersistedAdminChrome.value ? cookieSettings.value.accent : undefined,
 )
 const adminAccentInlineStyle = computed(() => {
-  if (!isAdminRoute.value) return undefined
+  if (!usesPersistedAdminChrome.value) return undefined
   const v = accentPrimaryVars[cookieSettings.value.accent]
   return `html[data-accent="${cookieSettings.value.accent}"]{--p-primary-color:${v.color};--p-primary-hover-color:${v.hover};--p-primary-active-color:${v.active};--p-primary-contrast-color:${v.contrast};}`
 })

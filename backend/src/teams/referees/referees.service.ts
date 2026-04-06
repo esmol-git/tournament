@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateRefereeDto } from './dto/create-referee.dto';
 import { UpdateRefereeDto } from './dto/update-referee.dto';
 
@@ -18,7 +19,10 @@ const refereeInclude = {
 
 @Injectable()
 export class RefereesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
+  ) {}
 
   list(tenantId: string) {
     return this.prisma.referee.findMany({
@@ -99,8 +103,12 @@ export class RefereesService {
         ...(dto.firstName !== undefined
           ? { firstName: dto.firstName.trim() }
           : {}),
-        ...(dto.lastName !== undefined ? { lastName: dto.lastName.trim() } : {}),
-        ...(dto.phone !== undefined ? { phone: dto.phone?.trim() || null } : {}),
+        ...(dto.lastName !== undefined
+          ? { lastName: dto.lastName.trim() }
+          : {}),
+        ...(dto.phone !== undefined
+          ? { phone: dto.phone?.trim() || null }
+          : {}),
         ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
         ...(refereeCategoryId !== undefined ? { refereeCategoryId } : {}),
         ...(refereePositionId !== undefined ? { refereePositionId } : {}),
@@ -114,6 +122,7 @@ export class RefereesService {
       where: { id, tenantId },
     });
     if (!row) throw new NotFoundException('Referee not found');
+    await this.tournamentTemplates.assertCanDeleteReferee(tenantId, id);
     await this.prisma.referee.delete({ where: { id } });
     return { success: true };
   }

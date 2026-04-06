@@ -10,7 +10,11 @@ export class ManagementMembersService {
   list(tenantId: string) {
     return this.prisma.managementMember.findMany({
       where: { tenantId },
-      orderBy: [{ sortOrder: 'asc' }, { lastName: 'asc' }, { firstName: 'asc' }],
+      orderBy: [
+        { sortOrder: 'asc' },
+        { lastName: 'asc' },
+        { firstName: 'asc' },
+      ],
     });
   }
 
@@ -38,10 +42,16 @@ export class ManagementMembersService {
     return this.prisma.managementMember.update({
       where: { id },
       data: {
-        ...(dto.lastName !== undefined ? { lastName: dto.lastName.trim() } : {}),
-        ...(dto.firstName !== undefined ? { firstName: dto.firstName.trim() } : {}),
+        ...(dto.lastName !== undefined
+          ? { lastName: dto.lastName.trim() }
+          : {}),
+        ...(dto.firstName !== undefined
+          ? { firstName: dto.firstName.trim() }
+          : {}),
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
-        ...(dto.phone !== undefined ? { phone: dto.phone?.trim() || null } : {}),
+        ...(dto.phone !== undefined
+          ? { phone: dto.phone?.trim() || null }
+          : {}),
         ...(dto.email !== undefined
           ? { email: dto.email?.trim().toLowerCase() || null }
           : {}),

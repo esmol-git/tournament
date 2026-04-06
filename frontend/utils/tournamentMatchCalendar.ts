@@ -9,6 +9,20 @@ import type {
 type TournamentGroup = TournamentDetails['groups'][number]
 type PlayoffTitleOptions = { totalPlayoffTeams?: number }
 
+/** Дата для заголовков тура в календаре: день недели + число (ru-RU). */
+export function formatPublicCalendarDateLabel(isoDateKey: string): string {
+  if (isoDateKey === 'unknown') return 'Дата не задана'
+  const d = new Date(`${isoDateKey}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return 'Дата не задана'
+  const s = new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(d)
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 function playoffRoundDisplayRank(round?: MatchRow['playoffRound']) {
   switch (round) {
     case 'ROUND_OF_16':
@@ -97,11 +111,18 @@ export function buildTourSectionsFromMatches(
     ).sort()
     let dateLabel = 'Дата не задана'
     if (dateKeys.length === 1) {
-      dateLabel = new Date(`${dateKeys[0]}T00:00:00`).toLocaleDateString()
+      const only = dateKeys[0]
+      if (only) dateLabel = formatPublicCalendarDateLabel(only)
     } else if (dateKeys.length > 1) {
-      const from = new Date(`${dateKeys[0]}T00:00:00`).toLocaleDateString()
-      const to = new Date(`${dateKeys[dateKeys.length - 1]}T00:00:00`).toLocaleDateString()
-      dateLabel = `${from} - ${to}`
+      const fromKey = dateKeys[0]
+      const toKey = dateKeys[dateKeys.length - 1]
+      if (!fromKey || !toKey) {
+        dateLabel = 'Дата не задана'
+      } else {
+        const from = formatPublicCalendarDateLabel(fromKey)
+        const to = formatPublicCalendarDateLabel(toKey)
+        dateLabel = `${from} — ${to}`
+      }
     }
 
     let title = ''
@@ -134,8 +155,10 @@ export function buildTourSectionsFromMatches(
   }
 
   return sections.sort((a, b) => {
-    const ta = a.matches.length ? new Date(a.matches[0].startTime).getTime() : 0
-    const tb = b.matches.length ? new Date(b.matches[0].startTime).getTime() : 0
+    const a0 = a.matches[0]
+    const b0 = b.matches[0]
+    const ta = a0 ? new Date(a0.startTime).getTime() : 0
+    const tb = b0 ? new Date(b0.startTime).getTime() : 0
     if (ta !== tb) return ta - tb
 
     const aSample = a.matches[0]
@@ -172,8 +195,9 @@ export function getDisplayedRoundTitle(
 ): string {
   if (opts.calendarViewMode !== 'grouped') return r.title
   if (!opts.calendarFiltersActive) return r.title
-  if (!r.matches.length) return r.title
-  const stage = r.matches[0].stage ?? 'UNKNOWN'
+  const firstMatch = r.matches[0]
+  if (!firstMatch) return r.title
+  const stage = firstMatch.stage ?? 'UNKNOWN'
   if (stage !== 'PLAYOFF') return r.title
   return resolvePlayoffTitleByVisibleMatches(r.matches)
 }
@@ -271,10 +295,7 @@ export function buildCalendarRoundsFromMatches(
     return {
       round: idx + 1,
       dateKey,
-      dateLabel:
-        dateKey === 'unknown'
-          ? 'Дата не задана'
-          : new Date(`${dateKey}T00:00:00`).toLocaleDateString(),
+      dateLabel: dateKey === 'unknown' ? 'Дата не задана' : formatPublicCalendarDateLabel(dateKey),
       title: resolveTitle(bucket),
       matches: matches.slice().sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id)),
     }

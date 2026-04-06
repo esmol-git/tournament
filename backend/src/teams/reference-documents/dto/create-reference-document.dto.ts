@@ -13,7 +13,9 @@ import {
 
 export class CreateReferenceDocumentDto {
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsString()
   tournamentId?: string | null;
 
@@ -28,7 +30,9 @@ export class CreateReferenceDocumentDto {
   code?: string;
 
   @IsOptional()
-  @ValidateIf((_, v) => v !== null && v !== undefined && String(v).trim() !== '')
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
   @IsUrl({ require_protocol: true })
   @MaxLength(2000)
   url?: string;

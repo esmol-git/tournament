@@ -8,7 +8,7 @@ import { adminRouteRequiredFeature } from '~/utils/adminSubscriptionRouteGate'
 /**
  * Блокирует прямой заход на страницы, скрытые в меню из‑за тарифа организации.
  */
-export default defineNuxtRouteMiddleware((to) => {
+export default defineNuxtRouteMiddleware(async (to) => {
   if (!process.client) return
   const p = to.path
   if (!p.startsWith('/admin')) return
@@ -25,6 +25,7 @@ export default defineNuxtRouteMiddleware((to) => {
 
   const auth = useAuthStore()
   auth.syncWithStorage()
+  await auth.restoreSessionViaRefreshCookieIfNeeded()
   if (!auth.loggedIn) return
 
   const plan = subscriptionPlanFromAuthUser(auth.user)

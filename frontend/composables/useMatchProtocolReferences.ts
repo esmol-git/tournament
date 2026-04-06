@@ -1,7 +1,16 @@
-import { computed, ref } from 'vue'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useI18n } from '#imports'
+import { computed } from 'vue'
+import {
+  adminTenantQueryKeys,
+  ADMIN_TENANT_QUERY_STALE_MS,
+} from '~/composables/admin/adminTenantQueryKeys'
+import { useApiUrl } from '~/composables/useApiUrl'
+import { useAuth } from '~/composables/useAuth'
+import { useTenantId } from '~/composables/useTenantId'
 import type { MatchScheduleReasonRow } from '~/types/admin/match-schedule-reason'
 import type { ProtocolEventTypeRow } from '~/types/admin/protocol-event-type'
-import { eventTypeOptions } from '~/utils/tournamentAdminUi'
+import { BUILTIN_EVENT_TYPE_VALUES } from '~/utils/tournamentAdminUi'
 
 export type EventKindOption = {
   value: string
@@ -11,35 +20,92 @@ export type EventKindOption = {
 }
 
 export function useMatchProtocolReferences() {
-  const protocolEventTypes = ref<ProtocolEventTypeRow[]>([])
-  const scheduleReasons = ref<MatchScheduleReasonRow[]>([])
+  const { t, locale } = useI18n()
+  const { token, authFetch } = useAuth()
+  const { apiUrl } = useApiUrl()
+  const tenantId = useTenantId()
+  const queryClient = useQueryClient()
 
-  async function loadRefs(
-    authFetch: <T>(url: string, opts?: Record<string, unknown>) => Promise<T>,
-    apiUrl: (path: string) => string,
-    token: string,
-    tenantId: string,
-  ) {
-    try {
-      const [t, r] = await Promise.all([
-        authFetch<ProtocolEventTypeRow[]>(
-          apiUrl(`/tenants/${tenantId}/protocol-event-types`),
-          { headers: { Authorization: `Bearer ${token}` } },
-        ),
-        authFetch<MatchScheduleReasonRow[]>(
-          apiUrl(`/tenants/${tenantId}/match-schedule-reasons`),
-          { headers: { Authorization: `Bearer ${token}` } },
-        ),
-      ])
-      protocolEventTypes.value = t
-      scheduleReasons.value = r
-    } catch {
-      protocolEventTypes.value = []
-      scheduleReasons.value = []
-    }
+  const refsEnabled = computed(() => !!token.value && !!tenantId.value)
+
+  const authHeader = () => ({
+    headers: { Authorization: `Bearer ${token.value!}` },
+  })
+
+  const protocolQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.protocolEventTypes(tenantId.value)),
+    enabled: refsEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<ProtocolEventTypeRow[]> => {
+      try {
+        return await authFetch<ProtocolEventTypeRow[]>(
+          apiUrl(`/tenants/${tenantId.value}/protocol-event-types`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
+  const scheduleReasonsQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.matchScheduleReasons(tenantId.value)),
+    enabled: refsEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<MatchScheduleReasonRow[]> => {
+      try {
+        return await authFetch<MatchScheduleReasonRow[]>(
+          apiUrl(`/tenants/${tenantId.value}/match-schedule-reasons`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
+  const protocolEventTypes = computed(() => protocolQuery.data.value ?? [])
+  const scheduleReasons = computed(() => scheduleReasonsQuery.data.value ?? [])
+
+  /** Явная подгрузка (как раньше loadRefs); с устаревшим кэшем не дублирует запросы. */
+  async function loadRefs() {
+    if (!token.value || !tenantId.value) return
+    const tid = tenantId.value
+    const h = authHeader()
+    await Promise.all([
+      queryClient.fetchQuery({
+        queryKey: adminTenantQueryKeys.protocolEventTypes(tid),
+        staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+        queryFn: async () => {
+          try {
+            return await authFetch<ProtocolEventTypeRow[]>(
+              apiUrl(`/tenants/${tid}/protocol-event-types`),
+              h,
+            )
+          } catch {
+            return []
+          }
+        },
+      }),
+      queryClient.fetchQuery({
+        queryKey: adminTenantQueryKeys.matchScheduleReasons(tid),
+        staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+        queryFn: async () => {
+          try {
+            return await authFetch<MatchScheduleReasonRow[]>(
+              apiUrl(`/tenants/${tid}/match-schedule-reasons`),
+              h,
+            )
+          } catch {
+            return []
+          }
+        },
+      }),
+    ])
   }
 
   const eventKindOptions = computed<EventKindOption[]>(() => {
+    void locale.value
     const customs = protocolEventTypes.value
       .filter((p) => p.active)
       .map((p) => ({
@@ -48,10 +114,10 @@ export function useMatchProtocolReferences() {
         type: p.mapsToType,
         protocolEventTypeId: p.id,
       }))
-    const builtins = eventTypeOptions.map((o) => ({
-      value: `builtin:${o.value}`,
-      label: o.label,
-      type: o.value,
+    const builtins = BUILTIN_EVENT_TYPE_VALUES.map((value) => ({
+      value: `builtin:${value}`,
+      label: t(`admin.tournament_page.builtin_event_${value}`),
+      type: value,
       protocolEventTypeId: null as string | null,
     }))
     return [...customs, ...builtins]

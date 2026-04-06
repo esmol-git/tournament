@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import Card from 'primevue/card'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import Skeleton from 'primevue/skeleton'
 import {
   adminAccentOptions,
@@ -17,10 +16,12 @@ import { useAdminSettingsStore } from '~/stores/adminSettings'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { getApiErrorMessage } from '~/utils/apiError'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
 
 definePageMeta({
   layout: 'admin',
+  adminOrgModeratorReadOnly: false,
 })
 
 const { t } = useI18n()
@@ -81,6 +82,12 @@ const tournamentTabOptions = computed(() => [
   { label: 'Прогресс', value: 'progress' as const },
   { label: 'Плей-офф', value: 'playoff' as const },
 ])
+
+/** Публичные флаги отображения — выпадающий список вместо переключателя (удобнее на узком экране). */
+const publicShowHideSelectOptions = [
+  { label: 'Показывать', value: true },
+  { label: 'Скрыть', value: false },
+]
 
 function parseTabOrder(raw: string | null | undefined): Array<'table' | 'chessboard' | 'progress' | 'playoff'> {
   const values = String(raw ?? '')
@@ -413,20 +420,20 @@ watch(
 </script>
 
 <template>
-  <section class="p-6 space-y-6 max-w-3xl">
-    <div>
-      <h1 class="text-2xl font-semibold text-surface-900 dark:text-surface-0">
+  <section class="admin-page mx-auto max-w-3xl space-y-4 sm:space-y-6">
+    <div class="min-w-0">
+      <h1 class="text-lg font-semibold text-surface-900 dark:text-surface-0 sm:text-2xl">
         {{ t('admin.settings.title') }}
       </h1>
-      <p class="mt-1 text-sm text-muted-color">
+      <p class="mt-1 text-xs text-muted-color sm:text-sm">
         {{ t('admin.settings.intro') }}
       </p>
     </div>
 
-    <div class="inline-flex rounded-xl border border-surface-200 bg-surface-0 p-1 dark:border-surface-700 dark:bg-surface-900">
+    <div class="inline-flex max-w-full flex-wrap rounded-xl border border-surface-200 bg-surface-0 p-1 dark:border-surface-700 dark:bg-surface-900">
       <button
         type="button"
-        class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+        class="rounded-lg px-2 py-1.5 text-xs font-medium transition-colors sm:px-3 sm:text-sm"
         :class="activeTab === 'admin' ? 'bg-primary/15 text-primary' : 'text-muted-color hover:bg-surface-100 dark:hover:bg-surface-800'"
         @click="activeTab = 'admin'"
       >
@@ -435,7 +442,7 @@ watch(
       <button
         v-if="canEditPublicSiteSettings"
         type="button"
-        class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
+        class="rounded-lg px-2 py-1.5 text-xs font-medium transition-colors sm:px-3 sm:text-sm"
         :class="activeTab === 'public' ? 'bg-primary/15 text-primary' : 'text-muted-color hover:bg-surface-100 dark:hover:bg-surface-800'"
         @click="activeTab = 'public'"
       >
@@ -480,11 +487,13 @@ watch(
         <p class="text-sm text-muted-color mb-4">
           {{ t('admin.settings.theme.hint') }}
         </p>
-        <SelectButton
+        <Select
           v-model="themeModel"
           :options="themeOptions"
           option-label="label"
           option-value="value"
+          class="w-full max-w-md"
+          input-id="admin-theme-mode"
         />
       </template>
     </Card>
@@ -572,14 +581,20 @@ watch(
           <span class="text-base font-semibold">Бренд и тема публичного сайта</span>
         </template>
         <template #content>
-          <div v-if="publicLoading" class="space-y-3">
-            <Skeleton v-for="i in 5" :key="`public-settings-sk-${i}`" height="2.6rem" width="100%" />
-          </div>
-          <Message v-else-if="publicForbidden" severity="warn" :closable="false">
+          <AdminDataState
+            :loading="publicLoading"
+            :error="publicLoadError.trim() ? publicLoadError : null"
+            :empty="false"
+            :content-card="false"
+            @retry="loadPublicSettings"
+          >
+            <template #loading>
+              <div class="space-y-3">
+                <Skeleton v-for="i in 5" :key="`public-settings-sk-${i}`" height="2.6rem" width="100%" />
+              </div>
+            </template>
+          <Message v-if="publicForbidden" severity="warn" :closable="false">
             Изменять публичные настройки может только администратор организации.
-          </Message>
-          <Message v-else-if="publicLoadError" severity="error" :closable="false">
-            {{ publicLoadError }}
           </Message>
           <div v-else class="space-y-4">
             <div>
@@ -654,12 +669,14 @@ watch(
             </div>
 
             <div>
-              <label class="mb-2 block text-sm font-medium">Режим темы</label>
-              <SelectButton
+              <label class="mb-2 block text-sm font-medium" for="public-theme-mode">Режим темы</label>
+              <Select
+                input-id="public-theme-mode"
                 v-model="publicSettings.publicThemeMode"
                 :options="publicThemeOptions"
                 option-label="label"
                 option-value="value"
+                class="w-full min-w-0"
               />
             </div>
 
@@ -729,12 +746,16 @@ watch(
             </div>
 
             <div>
-              <label class="mb-2 block text-sm font-medium">Раздел по умолчанию (клик по лого)</label>
-              <SelectButton
+              <label class="mb-2 block text-sm font-medium" for="public-default-landing">
+                Раздел по умолчанию (клик по лого)
+              </label>
+              <Select
+                input-id="public-default-landing"
                 v-model="publicSettings.publicDefaultLanding"
                 :options="publicLandingOptions"
                 option-label="label"
                 option-value="value"
+                class="w-full min-w-0"
               />
             </div>
 
@@ -757,18 +778,56 @@ watch(
               </p>
             </div>
 
-            <div class="space-y-2 rounded-xl border border-surface-200 p-3 dark:border-surface-700">
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-sm">Показывать “Лидер/Победитель” в фактах турнира</span>
-                <ToggleSwitch v-model="publicSettings.publicShowLeaderInFacts" />
+            <div
+              class="divide-y divide-surface-200 rounded-xl border border-surface-200 dark:divide-surface-700 dark:border-surface-700"
+            >
+              <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <span
+                  id="label-public-leader-facts"
+                  class="min-w-0 text-sm leading-snug text-surface-800 dark:text-surface-100"
+                >
+                  Показывать “Лидер/Победитель” в фактах турнира
+                </span>
+                <Select
+                  v-model="publicSettings.publicShowLeaderInFacts"
+                  :options="publicShowHideSelectOptions"
+                  option-label="label"
+                  option-value="value"
+                  class="w-full shrink-0 sm:w-44"
+                  aria-labelledby="label-public-leader-facts"
+                />
               </div>
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-sm">Показывать блок “Топ-3” в правой колонке</span>
-                <ToggleSwitch v-model="publicSettings.publicShowTopStats" />
+              <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <span
+                  id="label-public-top-stats"
+                  class="min-w-0 text-sm leading-snug text-surface-800 dark:text-surface-100"
+                >
+                  Показывать блок “Топ-3” в правой колонке
+                </span>
+                <Select
+                  v-model="publicSettings.publicShowTopStats"
+                  :options="publicShowHideSelectOptions"
+                  option-label="label"
+                  option-value="value"
+                  class="w-full shrink-0 sm:w-44"
+                  aria-labelledby="label-public-top-stats"
+                />
               </div>
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-sm">Показывать пункт “Новости” в боковом меню турнира</span>
-                <ToggleSwitch v-model="publicSettings.publicShowNewsInSidebar" />
+              <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <span
+                  id="label-public-news-sidebar"
+                  class="min-w-0 text-sm leading-snug text-surface-800 dark:text-surface-100"
+                >
+                  Показывать пункт “Новости” в боковом меню турнира
+                </span>
+                <Select
+                  v-model="publicSettings.publicShowNewsInSidebar"
+                  :options="publicShowHideSelectOptions"
+                  option-label="label"
+                  option-value="value"
+                  class="w-full shrink-0 sm:w-44"
+                  aria-labelledby="label-public-news-sidebar"
+                />
               </div>
             </div>
 
@@ -779,7 +838,7 @@ watch(
 
             <div class="flex justify-end pt-1">
               <Button
-                label="Сохранить публичные настройки"
+                label="Сохранить"
                 icon="pi pi-save"
                 :loading="publicSaving"
                 :disabled="publicSaving || hasPublicErrors"
@@ -801,6 +860,7 @@ watch(
               </div>
             </Message>
           </div>
+          </AdminDataState>
         </template>
       </Card>
     </template>

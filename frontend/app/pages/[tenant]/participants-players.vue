@@ -81,13 +81,6 @@ function resolveImageUrl(url: string | null | undefined, fallback: string) {
   return normalized.length ? normalized : fallback
 }
 
-function handleImageError(event: Event, fallback: string) {
-  const target = event.target
-  if (!(target instanceof HTMLImageElement)) return
-  if (target.src.endsWith(fallback)) return
-  target.src = fallback
-}
-
 function toggleSort(next: SortKey) {
   if (sortKey.value === next) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
@@ -495,15 +488,12 @@ onMounted(async () => {
                 <tbody ref="playersTbodyRef">
                   <tr v-for="row in pagedRows" :key="row.playerId">
                     <td>
-                      <div class="h-9 w-9 overflow-hidden rounded-full">
-                        <img
-                          :src="resolveImageUrl(row.playerPhotoUrl, PLAYER_PLACEHOLDER_SRC)"
-                          :alt="`${row.lastName} ${row.firstName}`"
-                          class="h-full w-full object-cover"
-                          loading="lazy"
-                          @error="(e) => handleImageError(e, PLAYER_PLACEHOLDER_SRC)"
-                        />
-                      </div>
+                      <RemoteImage
+                        :src="resolveImageUrl(row.playerPhotoUrl, PLAYER_PLACEHOLDER_SRC)"
+                        :alt="`${row.lastName} ${row.firstName}`"
+                        placeholder-icon="user"
+                        class="h-9 w-9 shrink-0 rounded-full"
+                      />
                     </td>
                     <td class="players-table-cell-player font-medium">
                       <span
@@ -515,12 +505,12 @@ onMounted(async () => {
                     </td>
                     <td class="players-table-cell-team">
                       <div class="flex items-center gap-2">
-                        <img
+                        <RemoteImage
                           :src="resolveImageUrl(row.teamLogoUrl, TEAM_PLACEHOLDER_SRC)"
                           :alt="row.teamName ?? 'Команда'"
-                          class="h-5 w-5 rounded-full object-cover"
-                          loading="lazy"
-                          @error="(e) => handleImageError(e, TEAM_PLACEHOLDER_SRC)"
+                          placeholder-icon="users"
+                          icon-class="text-[0.55rem]"
+                          class="h-5 w-5 shrink-0 rounded-full"
                         />
                         <span class="team-name-clamp" :title="row.teamName || '—'">{{ row.teamName || '—' }}</span>
                       </div>

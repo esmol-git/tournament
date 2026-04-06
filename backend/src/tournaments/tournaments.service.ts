@@ -16,14 +16,15 @@ import {
   UserRole,
 } from '@prisma/client';
 import {
+  maxNewsPerTournament,
   maxTournamentsForPlan,
   tenantHasSubscriptionPlanFeature,
 } from '../auth/subscription-plan-features.util';
+import { throwTournamentNotFound } from '../common/api-exceptions';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
-import { GenerateFromTemplateDto } from './dto/generate-from-template.dto';
 import { ReorderRoundDto } from './dto/reorder-round.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
 import { MatchesFilterQueryDto } from './dto/matches-filter-query.dto';
@@ -36,13 +37,83 @@ import { UpdateGalleryImageDto } from './dto/update-gallery-image.dto';
 import { ReorderGalleryDto } from './dto/reorder-gallery.dto';
 import { CreateNewsTagDto } from './dto/create-news-tag.dto';
 import { UpdateNewsTagDto } from './dto/update-news-tag.dto';
+import { TournamentTemplatesService } from '../tournament-templates/tournament-templates.service';
 
 @Injectable()
 export class TournamentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly tournamentTemplates: TournamentTemplatesService,
   ) {}
+
+  private async resolveMergedCreateTournamentDto(
+    tenantId: string,
+    raw: CreateTournamentDto,
+  ): Promise<CreateTournamentDto> {
+    if (!raw.templateId?.trim()) {
+      const { templateId: _, ...rest } = raw as CreateTournamentDto & {
+        templateId?: string;
+      };
+      return rest as CreateTournamentDto;
+    }
+    return this.tournamentTemplates.mergeCreatePayload(
+      tenantId,
+      raw.templateId.trim(),
+      raw,
+    );
+  }
+
+  /** Уникальные id стадионов в порядке запроса (для основной площадки и списка). */
+  private dedupeOrderedStadiumIds(ids: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of ids) {
+      const id = String(raw ?? '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+
+  private async assertStadiumIdsBelongToTenant(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    ids: string[],
+  ) {
+    if (!ids.length) return;
+    const found = await tx.stadium.findMany({
+      where: { tenantId, id: { in: ids } },
+      select: { id: true },
+    });
+    if (found.length !== ids.length) {
+      throw new BadRequestException('Один или несколько стадионов не найдены');
+    }
+  }
+
+  private async assertModeratorUsersForTenant(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    userIds: string[],
+  ) {
+    if (!userIds.length) return;
+    const users = await tx.user.findMany({
+      where: { id: { in: userIds }, tenantId },
+      select: { id: true, role: true },
+    });
+    if (users.length !== userIds.length) {
+      throw new BadRequestException(
+        'Один или несколько пользователей не найдены в организации',
+      );
+    }
+    const bad = users.find((u) => u.role !== UserRole.MODERATOR);
+    if (bad) {
+      throw new BadRequestException(
+        'В модераторы турнира можно добавлять только пользователей с ролью «Модератор»',
+      );
+    }
+  }
 
   private async assertTournamentAutomationAllowed(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
@@ -50,7 +121,12 @@ export class TournamentsService {
       select: { subscriptionPlan: true },
     });
     if (!tenant) throw new BadRequestException('Tenant not found');
-    if (!tenantHasSubscriptionPlanFeature(tenant.subscriptionPlan, 'tournament_automation')) {
+    if (
+      !tenantHasSubscriptionPlanFeature(
+        tenant.subscriptionPlan,
+        'tournament_automation',
+      )
+    ) {
       throw new ForbiddenException({
         message: 'Автогенерация календаря и плей-офф доступна с тарифа Premier',
         code: 'SUBSCRIPTION_PLAN_INSUFFICIENT',
@@ -58,7 +134,10 @@ export class TournamentsService {
     }
   }
 
-  private readonly publicCache = new Map<string, { expiresAt: number; value: unknown }>();
+  private readonly publicCache = new Map<
+    string,
+    { expiresAt: number; value: unknown }
+  >();
   private readonly publicInFlight = new Map<string, Promise<unknown>>();
 
   private stableCacheKeyPart(value: unknown): string {
@@ -106,7 +185,7 @@ export class TournamentsService {
   }
 
   /**
-   * Турниры `MANUAL` — без автогенерации календаря по шаблону.
+   * Турниры `MANUAL` — без автогенерации календаря.
    * Плей-офф из итогов групп (`generatePlayoff` / `generatePlayoffGeneric`) для MANUAL разрешён отдельно.
    */
   private assertNotManualCalendarFormat(format: TournamentFormat) {
@@ -356,23 +435,6 @@ export class TournamentsService {
     );
   }
 
-  private readonly templates = {
-    kids_mini_8: {
-      id: 'kids_mini_8',
-      name: 'Детский мини (8 команд): 2 группы по 4 + плей-офф',
-      groups: 2,
-      teamsPerGroup: 4,
-      days: [
-        { dateOffsetDays: 0, stage: 'GROUP' as const, rounds: 3 },
-        {
-          dateOffsetDays: 7,
-          stage: 'PLAYOFF' as const,
-          includeThirdPlace: true,
-        },
-      ],
-    },
-  } as const;
-
   async listByTenant(
     tenantId: string,
     query?: {
@@ -398,6 +460,16 @@ export class TournamentsService {
       tenantId,
       ...(actor?.role === UserRole.TOURNAMENT_ADMIN
         ? { createdByUserId: actor.userId }
+        : {}),
+      ...(actor?.role === UserRole.MODERATOR && actor?.userId
+        ? {
+            members: {
+              some: {
+                userId: actor.userId,
+                role: TournamentMemberRole.MODERATOR,
+              },
+            },
+          }
         : {}),
       ...(query?.status ? { status: query.status } : {}),
       ...(seasonId ? { seasonId } : {}),
@@ -430,6 +502,45 @@ export class TournamentsService {
         },
       }),
     ]);
+
+    const tournamentIds = tournaments.map((t) => t.id);
+    const galleryPreviewByTournament = new Map<string, string[]>();
+    if (tournamentIds.length > 0) {
+      const galleryRows = await this.prisma.tournamentGalleryImage.findMany({
+        where: { tournamentId: { in: tournamentIds } },
+        select: {
+          tournamentId: true,
+          imageUrl: true,
+          sortOrder: true,
+          createdAt: true,
+        },
+      });
+      const byTournament = new Map<
+        string,
+        { imageUrl: string; sortOrder: number; createdAt: Date }[]
+      >();
+      for (const row of galleryRows) {
+        const list = byTournament.get(row.tournamentId) ?? [];
+        list.push({
+          imageUrl: row.imageUrl,
+          sortOrder: row.sortOrder,
+          createdAt: row.createdAt,
+        });
+        byTournament.set(row.tournamentId, list);
+      }
+      const maxPreview = 3;
+      for (const [tid, list] of byTournament) {
+        list.sort(
+          (a, b) =>
+            a.sortOrder - b.sortOrder ||
+            a.createdAt.getTime() - b.createdAt.getTime(),
+        );
+        galleryPreviewByTournament.set(
+          tid,
+          list.slice(0, maxPreview).map((x) => x.imageUrl),
+        );
+      }
+    }
 
     const items = tournaments.map((t) => ({
       id: t.id,
@@ -465,6 +576,7 @@ export class TournamentsService {
             code: t.ageGroup.code,
           }
         : null,
+      galleryPreviewUrls: galleryPreviewByTournament.get(t.id) ?? [],
     }));
 
     return {
@@ -592,7 +704,11 @@ export class TournamentsService {
         note: true,
         sortOrder: true,
       },
-      orderBy: [{ sortOrder: 'asc' }, { lastName: 'asc' }, { firstName: 'asc' }],
+      orderBy: [
+        { sortOrder: 'asc' },
+        { lastName: 'asc' },
+        { firstName: 'asc' },
+      ],
     });
   }
 
@@ -749,7 +865,7 @@ export class TournamentsService {
       select: { id: true },
     });
     if (!tournament) {
-      throw new NotFoundException('Tournament not found');
+      throwTournamentNotFound();
     }
     return { tenant, tournament };
   }
@@ -820,10 +936,15 @@ export class TournamentsService {
     tournamentId: string,
     filters?: MatchesFilterQueryDto,
   ) {
-    const { tenant } = await this.assertPublicTournament(tenantSlug, tournamentId);
+    const { tenant } = await this.assertPublicTournament(
+      tenantSlug,
+      tournamentId,
+    );
     const detail = await this.getById(tournamentId, filters);
-    if (!detail) throw new NotFoundException('Tournament not found');
-    const { members, ...rest } = detail as typeof detail & { members?: unknown };
+    if (!detail) throwTournamentNotFound();
+    const { members, ...rest } = detail as typeof detail & {
+      members?: unknown;
+    };
     void members;
     const referenceDocuments = await this.listPublicDocumentsByTenantId(
       tenant.id,
@@ -838,7 +959,12 @@ export class TournamentsService {
     filters?: MatchesFilterQueryDto,
   ) {
     return this.rememberPublic(
-      this.publicCacheKey('public-tournament-detail', tenantSlug, tournamentId, filters ?? {}),
+      this.publicCacheKey(
+        'public-tournament-detail',
+        tenantSlug,
+        tournamentId,
+        filters ?? {},
+      ),
       20_000,
       () => this.getPublicById(tenantSlug, tournamentId, filters),
     );
@@ -872,7 +998,8 @@ export class TournamentsService {
         String(limit ?? 0),
       ),
       20_000,
-      () => this.getPublicTable(tenantSlug, tournamentId, groupId, offset, limit),
+      () =>
+        this.getPublicTable(tenantSlug, tournamentId, groupId, offset, limit),
     );
   }
 
@@ -963,13 +1090,14 @@ export class TournamentsService {
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
-    if (!tournaments.length) return [] as Array<{
-      id: string;
-      name: string;
-      logoUrl: string | null;
-      category: string | null;
-      tournaments: string[];
-    }>;
+    if (!tournaments.length)
+      return [] as Array<{
+        id: string;
+        name: string;
+        logoUrl: string | null;
+        category: string | null;
+        tournaments: string[];
+      }>;
 
     const tournamentIds = tournaments.map((t) => t.id);
     const tournamentNameById = new Map(tournaments.map((t) => [t.id, t.name]));
@@ -1039,9 +1167,7 @@ export class TournamentsService {
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? (payload as Record<string, unknown>)
         : {};
-    const direct = String(
-      data.cardType ?? data.color ?? data.cardColor ?? '',
-    )
+    const direct = String(data.cardType ?? data.color ?? data.cardColor ?? '')
       .trim()
       .toLowerCase();
     if (
@@ -1120,7 +1246,10 @@ export class TournamentsService {
       take: 20,
     });
     if (!tournaments.length) {
-      return { tournaments: [] as Array<{ id: string; name: string }>, rows: [] };
+      return {
+        tournaments: [] as Array<{ id: string; name: string }>,
+        rows: [],
+      };
     }
 
     const tournamentIds = tournaments.map((t) => t.id);
@@ -1185,7 +1314,8 @@ export class TournamentsService {
     };
     const rowByTournamentAndPlayer = new Map<string, PublicPlayerStatsRow>();
     for (const tt of tournamentTeams) {
-      const tournamentName = tournamentNameById.get(tt.tournamentId) ?? 'Турнир';
+      const tournamentName =
+        tournamentNameById.get(tt.tournamentId) ?? 'Турнир';
       const teamPlayers = playersByTeamId.get(tt.teamId) ?? [];
       for (const tp of teamPlayers) {
         const key = `${tt.tournamentId}:${tp.player.id}`;
@@ -1283,7 +1413,9 @@ export class TournamentsService {
         select: { id: true },
       });
       if (clash) {
-        throw new BadRequestException('News slug already exists for this tournament');
+        throw new BadRequestException(
+          'News slug already exists for this tournament',
+        );
       }
     } else {
       const clash = await this.prisma.tournamentNews.findFirst({
@@ -1291,7 +1423,9 @@ export class TournamentsService {
         select: { id: true },
       });
       if (clash) {
-        throw new BadRequestException('News slug already exists for draft items');
+        throw new BadRequestException(
+          'News slug already exists for draft items',
+        );
       }
     }
   }
@@ -1301,7 +1435,9 @@ export class TournamentsService {
     tagIds?: string[] | null,
   ): Promise<string[] | undefined> {
     if (tagIds === undefined || tagIds === null) return undefined;
-    const normalized = [...new Set(tagIds.map((x) => String(x).trim()).filter(Boolean))];
+    const normalized = [
+      ...new Set(tagIds.map((x) => String(x).trim()).filter(Boolean)),
+    ];
     if (!normalized.length) return [];
     const rows = await this.prisma.newsTag.findMany({
       where: { tenantId, id: { in: normalized } },
@@ -1338,7 +1474,11 @@ export class TournamentsService {
     });
   }
 
-  async updateNewsTagByTenant(tenantId: string, tagId: string, dto: UpdateNewsTagDto) {
+  async updateNewsTagByTenant(
+    tenantId: string,
+    tagId: string,
+    dto: UpdateNewsTagDto,
+  ) {
     const row = await this.prisma.newsTag.findFirst({
       where: { id: tagId, tenantId },
       select: { id: true, slug: true },
@@ -1385,11 +1525,17 @@ export class TournamentsService {
       include: {
         tournament: { select: { id: true, name: true } },
         newsTags: {
-          include: { tag: { select: { id: true, name: true, slug: true, active: true } } },
+          include: {
+            tag: { select: { id: true, name: true, slug: true, active: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
-      orderBy: [{ sortOrder: 'asc' }, { publishedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { sortOrder: 'asc' },
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
   }
 
@@ -1398,7 +1544,7 @@ export class TournamentsService {
       where: { id: tournamentId },
       select: { id: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     return this.prisma.tournamentNews.findMany({
       where: {
@@ -1410,11 +1556,17 @@ export class TournamentsService {
       include: {
         tournament: { select: { id: true, name: true } },
         newsTags: {
-          include: { tag: { select: { id: true, name: true, slug: true, active: true } } },
+          include: {
+            tag: { select: { id: true, name: true, slug: true, active: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
-      orderBy: [{ sortOrder: 'asc' }, { publishedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { sortOrder: 'asc' },
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
   }
 
@@ -1433,11 +1585,17 @@ export class TournamentsService {
       },
       include: {
         newsTags: {
-          include: { tag: { select: { id: true, name: true, slug: true, active: true } } },
+          include: {
+            tag: { select: { id: true, name: true, slug: true, active: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
-      orderBy: [{ sortOrder: 'asc' }, { publishedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { sortOrder: 'asc' },
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
   }
 
@@ -1447,13 +1605,21 @@ export class TournamentsService {
     query?: ListTournamentNewsQueryDto,
   ) {
     return this.rememberPublic(
-      this.publicCacheKey('public-tournament-news', tenantSlug, tournamentId, query ?? {}),
+      this.publicCacheKey(
+        'public-tournament-news',
+        tenantSlug,
+        tournamentId,
+        query ?? {},
+      ),
       20_000,
       () => this.listPublicNews(tenantSlug, tournamentId, query),
     );
   }
 
-  private listPublicDocumentsByTenantId(tenantId: string, tournamentId: string) {
+  private listPublicDocumentsByTenantId(
+    tenantId: string,
+    tournamentId: string,
+  ) {
     return this.prisma.referenceDocument.findMany({
       where: {
         tenantId,
@@ -1474,13 +1640,20 @@ export class TournamentsService {
   }
 
   async listPublicDocuments(tenantSlug: string, tournamentId: string) {
-    const { tenant } = await this.assertPublicTournament(tenantSlug, tournamentId);
+    const { tenant } = await this.assertPublicTournament(
+      tenantSlug,
+      tournamentId,
+    );
     return this.listPublicDocumentsByTenantId(tenant.id, tournamentId);
   }
 
   async listPublicDocumentsCached(tenantSlug: string, tournamentId: string) {
     return this.rememberPublic(
-      this.publicCacheKey('public-tournament-documents', tenantSlug, tournamentId),
+      this.publicCacheKey(
+        'public-tournament-documents',
+        tenantSlug,
+        tournamentId,
+      ),
       20_000,
       () => this.listPublicDocuments(tenantSlug, tournamentId),
     );
@@ -1491,9 +1664,26 @@ export class TournamentsService {
     if (tournamentId) {
       const t = await this.prisma.tournament.findFirst({
         where: { id: tournamentId, tenantId },
-        select: { id: true },
+        select: {
+          id: true,
+          tenant: { select: { subscriptionPlan: true } },
+        },
       });
-      if (!t) throw new BadRequestException('Tournament not found or access denied');
+      if (!t)
+        throw new BadRequestException('Tournament not found or access denied');
+
+      const maxNews = maxNewsPerTournament(t.tenant.subscriptionPlan);
+      if (maxNews !== null) {
+        const newsCount = await this.prisma.tournamentNews.count({
+          where: { tournamentId },
+        });
+        if (newsCount >= maxNews) {
+          throw new ForbiddenException({
+            message: `Превышен лимит новостей для турнира (${maxNews})`,
+            code: 'TOURNAMENT_NEWS_LIMIT_EXCEEDED',
+          });
+        }
+      }
     }
     const published = dto.published ?? false;
     if (published && !tournamentId) {
@@ -1527,7 +1717,9 @@ export class TournamentsService {
       include: {
         tournament: { select: { id: true, name: true } },
         newsTags: {
-          include: { tag: { select: { id: true, name: true, slug: true, active: true } } },
+          include: {
+            tag: { select: { id: true, name: true, slug: true, active: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1539,7 +1731,7 @@ export class TournamentsService {
       where: { id: tournamentId },
       select: { id: true, tenantId: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
     return this.createNewsByTenant(tournament.tenantId, {
       ...dto,
       tournamentId,
@@ -1567,12 +1759,16 @@ export class TournamentsService {
           where: { id: tid, tenantId },
           select: { id: true },
         });
-        if (!t) throw new BadRequestException('Tournament not found or access denied');
+        if (!t)
+          throw new BadRequestException(
+            'Tournament not found or access denied',
+          );
         nextTournamentId = tid;
       }
     }
 
-    const nextPublished = dto.published !== undefined ? dto.published : row.published;
+    const nextPublished =
+      dto.published !== undefined ? dto.published : row.published;
     if (nextPublished && !nextTournamentId) {
       throw new BadRequestException(
         'Publishing requires linking the news item to a tournament',
@@ -1582,7 +1778,12 @@ export class TournamentsService {
     const nextSlug = dto.slug !== undefined ? dto.slug.trim() : row.slug;
     const resolvedTagIds = await this.resolveNewsTagIds(tenantId, dto.tagIds);
     if (nextSlug !== row.slug || nextTournamentId !== row.tournamentId) {
-      await this.assertNewsSlugFree(tenantId, nextSlug, nextTournamentId, newsId);
+      await this.assertNewsSlugFree(
+        tenantId,
+        nextSlug,
+        nextTournamentId,
+        newsId,
+      );
     }
 
     return this.prisma.tournamentNews.update({
@@ -1590,7 +1791,9 @@ export class TournamentsService {
       data: {
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
         ...(dto.slug !== undefined ? { slug: dto.slug.trim() } : {}),
-        ...(dto.excerpt !== undefined ? { excerpt: dto.excerpt?.trim() || null } : {}),
+        ...(dto.excerpt !== undefined
+          ? { excerpt: dto.excerpt?.trim() || null }
+          : {}),
         ...(dto.content !== undefined ? { content: dto.content ?? null } : {}),
         ...(dto.coverImageUrl !== undefined
           ? { coverImageUrl: dto.coverImageUrl?.trim() || null }
@@ -1601,14 +1804,19 @@ export class TournamentsService {
           ? { publishedAt: dto.publishedAt ? new Date(dto.publishedAt) : null }
           : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
-        ...(dto.tournamentId !== undefined ? { tournamentId: nextTournamentId } : {}),
+        ...(dto.tournamentId !== undefined
+          ? { tournamentId: nextTournamentId }
+          : {}),
         ...(resolvedTagIds !== undefined
           ? {
               newsTags: {
                 deleteMany: {},
                 ...(resolvedTagIds.length
                   ? {
-                      create: resolvedTagIds.map((tagId) => ({ tenantId, tagId })),
+                      create: resolvedTagIds.map((tagId) => ({
+                        tenantId,
+                        tagId,
+                      })),
                     }
                   : {}),
               },
@@ -1618,7 +1826,9 @@ export class TournamentsService {
       include: {
         tournament: { select: { id: true, name: true } },
         newsTags: {
-          include: { tag: { select: { id: true, name: true, slug: true, active: true } } },
+          include: {
+            tag: { select: { id: true, name: true, slug: true, active: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1662,7 +1872,7 @@ export class TournamentsService {
       where: { id: tournamentId },
       select: { id: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
     return this.prisma.tournamentGalleryImage.findMany({
       where: { tournamentId },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -1679,19 +1889,28 @@ export class TournamentsService {
 
   async listPublicGalleryCached(tenantSlug: string, tournamentId: string) {
     return this.rememberPublic(
-      this.publicCacheKey('public-tournament-gallery', tenantSlug, tournamentId),
+      this.publicCacheKey(
+        'public-tournament-gallery',
+        tenantSlug,
+        tournamentId,
+      ),
       20_000,
       () => this.listPublicGallery(tenantSlug, tournamentId),
     );
   }
 
-  async listPublicTenantGallery(tenantSlug: string, limitRaw?: string | number) {
+  async listPublicTenantGallery(
+    tenantSlug: string,
+    limitRaw?: string | number,
+  ) {
     const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
     const parsed =
       typeof limitRaw === 'number'
         ? limitRaw
         : Number.parseInt(String(limitRaw ?? '').trim(), 10);
-    const limit = Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : 120;
+    const limit = Number.isFinite(parsed)
+      ? Math.max(1, Math.min(300, parsed))
+      : 120;
 
     const rows = await this.prisma.tournamentGalleryImage.findMany({
       where: {
@@ -1725,7 +1944,10 @@ export class TournamentsService {
     }));
   }
 
-  async listPublicTenantGalleryCached(tenantSlug: string, limitRaw?: string | number) {
+  async listPublicTenantGalleryCached(
+    tenantSlug: string,
+    limitRaw?: string | number,
+  ) {
     return this.rememberPublic(
       this.publicCacheKey('public-tenant-gallery', tenantSlug, limitRaw ?? ''),
       20_000,
@@ -1739,15 +1961,16 @@ export class TournamentsService {
       typeof limitRaw === 'number'
         ? limitRaw
         : Number.parseInt(String(limitRaw ?? '').trim(), 10);
-    const limit = Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : 120;
+    const limit = Number.isFinite(parsed)
+      ? Math.max(1, Math.min(300, parsed))
+      : 120;
 
     const videoKeywords = ['youtube', 'youtu.be', 'rutube', 'vimeo', 'video'];
-    const textPredicates: Prisma.TournamentNewsWhereInput[] = videoKeywords.flatMap(
-      (keyword) => [
+    const textPredicates: Prisma.TournamentNewsWhereInput[] =
+      videoKeywords.flatMap((keyword) => [
         { content: { contains: keyword, mode: 'insensitive' } },
         { excerpt: { contains: keyword, mode: 'insensitive' } },
-      ],
-    );
+      ]);
 
     const rows = await this.prisma.tournamentNews.findMany({
       where: {
@@ -1791,7 +2014,10 @@ export class TournamentsService {
     }));
   }
 
-  async listPublicTenantVideoCached(tenantSlug: string, limitRaw?: string | number) {
+  async listPublicTenantVideoCached(
+    tenantSlug: string,
+    limitRaw?: string | number,
+  ) {
     return this.rememberPublic(
       this.publicCacheKey('public-tenant-video', tenantSlug, limitRaw ?? ''),
       20_000,
@@ -1804,7 +2030,7 @@ export class TournamentsService {
       where: { id: tournamentId },
       select: { id: true, tenantId: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
     const maxSort = await this.prisma.tournamentGalleryImage.aggregate({
       where: { tournamentId },
       _max: { sortOrder: true },
@@ -1836,7 +2062,9 @@ export class TournamentsService {
     return this.prisma.tournamentGalleryImage.update({
       where: { id: imageId },
       data: {
-        ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl.trim() } : {}),
+        ...(dto.imageUrl !== undefined
+          ? { imageUrl: dto.imageUrl.trim() }
+          : {}),
         ...(dto.caption !== undefined
           ? { caption: dto.caption?.trim() || null }
           : {}),
@@ -1888,13 +2116,27 @@ export class TournamentsService {
     return this.listGallery(tournamentId);
   }
 
-  async create(tenantId: string, dto: CreateTournamentDto, creatorUserId: string) {
+  async create(
+    tenantId: string,
+    rawDto: CreateTournamentDto,
+    creatorUserId: string,
+  ) {
+    const dto = await this.resolveMergedCreateTournamentDto(tenantId, rawDto);
+    if (!dto.format) {
+      throw new BadRequestException(
+        'Укажите формат турнира или шаблон (templateId)',
+      );
+    }
+    const tournamentFormat = dto.format;
+
     const creator = await this.prisma.user.findFirst({
       where: { id: creatorUserId, tenantId },
       select: { id: true },
     });
     if (!creator) {
-      throw new BadRequestException('Создатель турнира не найден в организации');
+      throw new BadRequestException(
+        'Создатель турнира не найден в организации',
+      );
     }
 
     const existing = await this.prisma.tournament.findFirst({
@@ -1925,7 +2167,7 @@ export class TournamentsService {
         tenantRow.subscriptionPlan,
         'tournament_automation',
       ) &&
-      dto.format !== TournamentFormat.MANUAL
+      tournamentFormat !== TournamentFormat.MANUAL
     ) {
       throw new BadRequestException({
         message:
@@ -1959,25 +2201,25 @@ export class TournamentsService {
       }
     }
 
-    this.assertMinTeamsByFormat(dto.format, dto.minTeams ?? 2);
+    this.assertMinTeamsByFormat(tournamentFormat, dto.minTeams ?? 2);
     this.assertGroupedPlayoffBracketBySettings(
-      dto.format,
+      tournamentFormat,
       dto.groupCount ?? 1,
       dto.playoffQualifiersPerGroup ?? 2,
     );
     if (
       this.shouldValidateMinTeamsVsGroupPlayoffQualifiers({
-        format: dto.format,
+        format: tournamentFormat,
         groupCount: dto.groupCount ?? 1,
         playoffQualifiersPerGroup: dto.playoffQualifiersPerGroup,
       })
     ) {
       const k =
-        dto.format === TournamentFormat.MANUAL
+        tournamentFormat === TournamentFormat.MANUAL
           ? (dto.playoffQualifiersPerGroup as number)
           : (dto.playoffQualifiersPerGroup ?? 2);
       this.assertMinTeamsCoverGroupPlayoffQualifiers({
-        format: dto.format,
+        format: tournamentFormat,
         minTeams: dto.minTeams ?? 2,
         groupCount: dto.groupCount ?? 1,
         playoffQualifiersPerGroup: k,
@@ -1993,17 +2235,18 @@ export class TournamentsService {
     }
 
     const tournament = await this.prisma.$transaction(async (tx) => {
-      let stadiumIdToSet: string | undefined = undefined;
-      if (dto.stadiumId) {
-        const st = await tx.stadium.findFirst({
-          where: { id: dto.stadiumId, tenantId },
-          select: { id: true },
-        });
-        if (!st) {
-          throw new BadRequestException('Стадион не найден');
-        }
-        stadiumIdToSet = dto.stadiumId;
-      }
+      const orderedStadiumIds =
+        dto.stadiumIds !== undefined
+          ? this.dedupeOrderedStadiumIds(dto.stadiumIds)
+          : dto.stadiumId?.trim()
+            ? [dto.stadiumId.trim()]
+            : [];
+      await this.assertStadiumIdsBelongToTenant(
+        tx,
+        tenantId,
+        orderedStadiumIds,
+      );
+      const stadiumIdToSet = orderedStadiumIds[0];
 
       let seasonIdToSet: string | undefined = undefined;
       const rawSeason = dto.seasonId?.trim();
@@ -2058,7 +2301,7 @@ export class TournamentsService {
             dto.calendarColor !== undefined
               ? this.normalizeTournamentCalendarColor(dto.calendarColor)
               : undefined,
-          format: dto.format,
+          format: tournamentFormat,
           groupCount: dto.groupCount ?? 1,
           playoffQualifiersPerGroup: dto.playoffQualifiersPerGroup ?? 2,
           status: TournamentStatus.DRAFT,
@@ -2085,6 +2328,17 @@ export class TournamentsService {
         },
       });
 
+      if (orderedStadiumIds.length) {
+        await tx.tournamentStadium.createMany({
+          data: orderedStadiumIds.map((stadiumId, sortOrder) => ({
+            tenantId,
+            tournamentId: created.id,
+            stadiumId,
+            sortOrder,
+          })),
+        });
+      }
+
       if (dto.refereeIds?.length) {
         const refs = await tx.referee.findMany({
           where: { tenantId, id: { in: dto.refereeIds } },
@@ -2110,6 +2364,23 @@ export class TournamentsService {
             tournamentId: created.id,
             userId: a.userId,
             role: a.role ?? TournamentMemberRole.TOURNAMENT_ADMIN,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      if (dto.moderatorIds?.length) {
+        await this.assertModeratorUsersForTenant(
+          tx,
+          tenantId,
+          dto.moderatorIds,
+        );
+        await tx.tournamentMember.createMany({
+          data: dto.moderatorIds.map((userId) => ({
+            tenantId,
+            tournamentId: created.id,
+            userId,
+            role: TournamentMemberRole.MODERATOR,
           })),
           skipDuplicates: true,
         });
@@ -2266,7 +2537,16 @@ export class TournamentsService {
         members: {
           orderBy: { createdAt: 'asc' },
           include: {
-            user: { select: { id: true, email: true, name: true, role: true } },
+            user: {
+              select: {
+                id: true,
+                email: true,
+                username: true,
+                name: true,
+                lastName: true,
+                role: true,
+              },
+            },
           },
         },
         stadium: {
@@ -2275,6 +2555,14 @@ export class TournamentsService {
             name: true,
             city: true,
             address: true,
+          },
+        },
+        tournamentStadiums: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            stadium: {
+              select: { id: true, name: true, city: true, address: true },
+            },
           },
         },
         season: {
@@ -2328,7 +2616,9 @@ export class TournamentsService {
     const matchesTotal = await this.prisma.match.count({ where: matchWhere });
     const matchesOffset = Math.max(0, Number(filters?.matchesOffset ?? 0));
     const matchesLimit =
-      typeof filters?.matchesLimit === 'number' ? filters.matchesLimit : undefined;
+      typeof filters?.matchesLimit === 'number'
+        ? filters.matchesLimit
+        : undefined;
 
     const filteredMatches = await this.prisma.match.findMany({
       where: matchWhere,
@@ -2337,6 +2627,9 @@ export class TournamentsService {
       include: {
         homeTeam: { select: { id: true, name: true } },
         awayTeam: { select: { id: true, name: true } },
+        stadium: {
+          select: { id: true, name: true, city: true, address: true },
+        },
         scheduleChangeReason: {
           select: { id: true, name: true, code: true, scope: true },
         },
@@ -2366,6 +2659,7 @@ export class TournamentsService {
     const matchesPlayedTotal = await this.prisma.match.count({
       where: {
         tournamentId: id,
+        status: { in: [MatchStatus.PLAYED, MatchStatus.FINISHED] },
         homeScore: { not: null },
         awayScore: { not: null },
       },
@@ -2401,7 +2695,12 @@ export class TournamentsService {
           if (payload.metaType !== 'PENALTY_SCORE') continue;
           const pHome = Number(payload.homeScore ?? NaN);
           const pAway = Number(payload.awayScore ?? NaN);
-          if (!Number.isFinite(pHome) || !Number.isFinite(pAway) || pHome === pAway) continue;
+          if (
+            !Number.isFinite(pHome) ||
+            !Number.isFinite(pAway) ||
+            pHome === pAway
+          )
+            continue;
           championTeamName =
             pHome > pAway ? finalMatch.homeTeam.name : finalMatch.awayTeam.name;
           break;
@@ -2443,7 +2742,7 @@ export class TournamentsService {
         published: true,
       },
     });
-    if (!existing) throw new NotFoundException('Tournament not found');
+    if (!existing) throwTournamentNotFound();
 
     if (dto.slug && dto.slug !== existing.slug) {
       const conflict = await this.prisma.tournament.findFirst({
@@ -2562,7 +2861,11 @@ export class TournamentsService {
       }
     }
 
-    if (dto.ageGroupId !== undefined && dto.ageGroupId !== null && dto.ageGroupId !== '') {
+    if (
+      dto.ageGroupId !== undefined &&
+      dto.ageGroupId !== null &&
+      dto.ageGroupId !== ''
+    ) {
       const aid = String(dto.ageGroupId).trim();
       const badTeam = await this.prisma.tournamentTeam.findFirst({
         where: {
@@ -2580,8 +2883,7 @@ export class TournamentsService {
       }
     }
 
-    const nextStatus =
-      dto.status !== undefined ? dto.status : existing.status;
+    const nextStatus = dto.status !== undefined ? dto.status : existing.status;
     const nextPublished =
       dto.published !== undefined ? dto.published : existing.published;
     if (nextPublished && nextStatus === TournamentStatus.DRAFT) {
@@ -2594,9 +2896,22 @@ export class TournamentsService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       let stadiumIdForUpdate: string | null | undefined = undefined;
-      if (dto.stadiumId !== undefined) {
+      let stadiumLinksToReplace:
+        | { stadiumId: string; sortOrder: number }[]
+        | null = null;
+
+      if (dto.stadiumIds !== undefined) {
+        const ordered = this.dedupeOrderedStadiumIds(dto.stadiumIds);
+        await this.assertStadiumIdsBelongToTenant(tx, tenantId, ordered);
+        stadiumIdForUpdate = ordered[0] ?? null;
+        stadiumLinksToReplace = ordered.map((stadiumId, sortOrder) => ({
+          stadiumId,
+          sortOrder,
+        }));
+      } else if (dto.stadiumId !== undefined) {
         if (dto.stadiumId === null || dto.stadiumId === '') {
           stadiumIdForUpdate = null;
+          stadiumLinksToReplace = [];
         } else {
           const st = await tx.stadium.findFirst({
             where: { id: dto.stadiumId, tenantId },
@@ -2606,6 +2921,7 @@ export class TournamentsService {
             throw new BadRequestException('Стадион не найден');
           }
           stadiumIdForUpdate = dto.stadiumId;
+          stadiumLinksToReplace = [{ stadiumId: dto.stadiumId, sortOrder: 0 }];
         }
       }
 
@@ -2713,6 +3029,20 @@ export class TournamentsService {
         },
       });
 
+      if (stadiumLinksToReplace !== null) {
+        await tx.tournamentStadium.deleteMany({ where: { tournamentId: id } });
+        if (stadiumLinksToReplace.length) {
+          await tx.tournamentStadium.createMany({
+            data: stadiumLinksToReplace.map((r) => ({
+              tenantId,
+              tournamentId: id,
+              stadiumId: r.stadiumId,
+              sortOrder: r.sortOrder,
+            })),
+          });
+        }
+      }
+
       if (dto.refereeIds !== undefined) {
         await tx.tournamentReferee.deleteMany({ where: { tournamentId: id } });
         if (dto.refereeIds.length) {
@@ -2721,7 +3051,9 @@ export class TournamentsService {
             select: { id: true },
           });
           if (refs.length !== dto.refereeIds.length) {
-            throw new BadRequestException('Один или несколько судей не найдены');
+            throw new BadRequestException(
+              'Один или несколько судей не найдены',
+            );
           }
           await tx.tournamentReferee.createMany({
             data: dto.refereeIds.map((refereeId, i) => ({
@@ -2735,7 +3067,12 @@ export class TournamentsService {
       }
 
       if (dto.admins) {
-        await tx.tournamentMember.deleteMany({ where: { tournamentId: id } });
+        await tx.tournamentMember.deleteMany({
+          where: {
+            tournamentId: id,
+            role: TournamentMemberRole.TOURNAMENT_ADMIN,
+          },
+        });
         if (dto.admins.length) {
           await tx.tournamentMember.createMany({
             data: dto.admins.map((a) => ({
@@ -2743,6 +3080,31 @@ export class TournamentsService {
               tournamentId: id,
               userId: a.userId,
               role: a.role ?? TournamentMemberRole.TOURNAMENT_ADMIN,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      if (dto.moderatorIds !== undefined) {
+        await tx.tournamentMember.deleteMany({
+          where: {
+            tournamentId: id,
+            role: TournamentMemberRole.MODERATOR,
+          },
+        });
+        if (dto.moderatorIds.length) {
+          await this.assertModeratorUsersForTenant(
+            tx,
+            tenantId,
+            dto.moderatorIds,
+          );
+          await tx.tournamentMember.createMany({
+            data: dto.moderatorIds.map((userId) => ({
+              tenantId,
+              tournamentId: id,
+              userId,
+              role: TournamentMemberRole.MODERATOR,
             })),
             skipDuplicates: true,
           });
@@ -2777,7 +3139,7 @@ export class TournamentsService {
       where: { id },
       select: { id: true, logoUrl: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     const logoToRemove = tournament.logoUrl;
 
@@ -2824,7 +3186,10 @@ export class TournamentsService {
     if (groupId) {
       const t = await this.prisma.tournament.findUnique({
         where: { id: tournamentId },
-        include: {
+        select: {
+          pointsWin: true,
+          pointsDraw: true,
+          pointsLoss: true,
           tournamentTeams: {
             select: {
               teamId: true,
@@ -2833,19 +3198,9 @@ export class TournamentsService {
               team: { select: { id: true, name: true } },
             },
           },
-          matches: {
-            where: { stage: MatchStage.GROUP, groupId },
-            select: {
-              homeTeamId: true,
-              awayTeamId: true,
-              homeScore: true,
-              awayScore: true,
-              status: true,
-            },
-          },
         },
       });
-      if (!t) throw new NotFoundException('Tournament not found');
+      if (!t) throwTournamentNotFound();
 
       const teams = t.tournamentTeams.filter((x) => x.groupId === groupId);
       if (!teams.length) {
@@ -2857,11 +3212,38 @@ export class TournamentsService {
         teams.map((x) => [x.teamId, x.groupSortOrder ?? 0] as const),
       );
 
-      const rows = this.computeStandings(teamIds, t.matches, {
-        win: t.pointsWin,
-        draw: t.pointsDraw,
-        loss: t.pointsLoss,
-      }, seedOrder);
+      const groupMatches = await this.prisma.match.findMany({
+        where: {
+          tournamentId,
+          stage: MatchStage.GROUP,
+          OR: [
+            { groupId },
+            {
+              groupId: null,
+              homeTeamId: { in: teamIds },
+              awayTeamId: { in: teamIds },
+            },
+          ],
+        },
+        select: {
+          homeTeamId: true,
+          awayTeamId: true,
+          homeScore: true,
+          awayScore: true,
+          status: true,
+        },
+      });
+
+      const rows = this.computeStandings(
+        teamIds,
+        groupMatches,
+        {
+          win: t.pointsWin,
+          draw: t.pointsDraw,
+          loss: t.pointsLoss,
+        },
+        seedOrder,
+      );
 
       const mapped = rows.map((r, idx) => ({
         teamId: r.teamId,
@@ -2889,7 +3271,7 @@ export class TournamentsService {
       where: { id: tournamentId },
       select: { id: true },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     await this.recomputeTable(tournamentId);
 
@@ -3175,327 +3557,6 @@ export class TournamentsService {
     });
 
     return { deleted };
-  }
-
-  private dateOnlyLocal(s: string) {
-    return new Date(`${s}T12:00:00`);
-  }
-
-  private getDayStart(
-    t: { dayStartTimeDefault?: string; dayStartTimeOverrides?: any },
-    date: Date,
-  ) {
-    const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
-    const def = t.dayStartTimeDefault ?? '12:00';
-    const overridesRaw = t.dayStartTimeOverrides ?? {};
-    const overrides: Record<number, string> = {};
-    for (const [k, v] of Object.entries(overridesRaw ?? {})) {
-      const day = Number(k);
-      if (!Number.isInteger(day) || day < 0 || day > 6) continue;
-      if (typeof v !== 'string' || !timeRe.test(v)) continue;
-      overrides[day] = v;
-    }
-    const day = date.getDay();
-    const startTimeStr = overrides[day] ?? def;
-    if (!timeRe.test(startTimeStr)) return { hh: 12, mm: 0 };
-    const [hh, mm] = startTimeStr.split(':').map((x) => Number(x));
-    return { hh, mm };
-  }
-
-  private buildRoundRobinRounds(teamIds: string[]) {
-    const list: (string | null)[] = [...teamIds];
-    if (list.length % 2 === 1) list.push(null);
-    const n = list.length;
-    const rounds = n - 1;
-    const half = n / 2;
-    const rotate = (arr: (string | null)[]) => {
-      const fixed = arr[0];
-      const rest = arr.slice(1);
-      rest.unshift(rest.pop()!);
-      return [fixed, ...rest];
-    };
-    const res: Array<Array<[string, string]>> = [];
-    let arr = list;
-    for (let r = 0; r < rounds; r++) {
-      const pairings: Array<[string, string]> = [];
-      for (let i = 0; i < half; i++) {
-        const a = arr[i];
-        const b = arr[n - 1 - i];
-        if (!a || !b) continue;
-        const home = r % 2 === 0 ? a : b;
-        const away = r % 2 === 0 ? b : a;
-        pairings.push([home, away]);
-      }
-      res.push(pairings);
-      arr = rotate(arr);
-    }
-    return res;
-  }
-
-  async generateCalendarFromTemplate(
-    tournamentId: string,
-    dto: GenerateFromTemplateDto,
-  ) {
-    const template = (this.templates as any)[dto.templateId];
-    if (!template) throw new BadRequestException('Unknown templateId');
-
-    const t = await this.prisma.tournament.findUnique({
-      where: { id: tournamentId },
-      include: {
-        groups: { orderBy: { sortOrder: 'asc' } },
-        tournamentTeams: {
-          orderBy: { createdAt: 'asc' },
-          include: { group: { select: { id: true, name: true } } },
-        },
-      },
-    });
-    if (!t) throw new BadRequestException('Tournament not found');
-    await this.assertTournamentAutomationAllowed(t.tenantId);
-    this.assertNotManualCalendarFormat(t.format);
-
-    const teams = t.tournamentTeams.map((x) => x.teamId);
-    if (teams.length !== template.groups * template.teamsPerGroup) {
-      throw new BadRequestException('Teams count does not match template');
-    }
-
-    const start = this.dateOnlyLocal(dto.startDate);
-    if (Number.isNaN(start.getTime()))
-      throw new BadRequestException('Invalid startDate');
-
-    const replaceExisting = dto.replaceExisting !== false;
-    const existingCount = await this.prisma.match.count({
-      where: { tournamentId },
-    });
-    if (existingCount > 0 && !replaceExisting) {
-      throw new BadRequestException(
-        'Calendar already exists. Delete it first or set replaceExisting=true',
-      );
-    }
-
-    const duration = t.matchDurationMinutes ?? 50;
-    const brk = t.matchBreakMinutes ?? 10;
-    const simultaneous = dto.parallelMatches ?? t.simultaneousMatches ?? 1;
-    const slotMinutes = duration + brk;
-
-    // Ensure groups exist (A/B) and teams are assigned (use current assignment).
-    const groupNames = ['Группа A', 'Группа B'].slice(0, template.groups);
-    const byName = new Map(t.groups.map((g) => [g.name, g]));
-    const groups = groupNames
-      .map((n, idx) => byName.get(n) ?? t.groups[idx])
-      .filter(Boolean) as Array<{ id: string; name: string }>;
-    if (groups.length !== template.groups)
-      throw new BadRequestException('Groups not initialized');
-
-    const teamsByGroup: Record<string, string[]> = {};
-    for (const g of groups) teamsByGroup[g.id] = [];
-    const ratingByTeamId: Record<string, number> = Object.fromEntries(
-      t.tournamentTeams.map((tt) => [tt.teamId, (tt as any).rating ?? 3]),
-    );
-    for (const tt of t.tournamentTeams) {
-      const gid = tt.group?.id ?? null;
-      if (!gid || !teamsByGroup[gid]) continue;
-      teamsByGroup[gid].push(tt.teamId);
-    }
-    for (const g of groups) {
-      teamsByGroup[g.id].sort(
-        (a, b) => (ratingByTeamId[b] ?? 3) - (ratingByTeamId[a] ?? 3),
-      );
-      if (teamsByGroup[g.id].length !== template.teamsPerGroup) {
-        throw new BadRequestException(
-          'Groups composition does not match template',
-        );
-      }
-    }
-
-    const matchesToCreate: Prisma.MatchCreateManyInput[] = [];
-
-    // Day 0: group stage rounds
-    const groupDay = template.days.find((d: any) => d.stage === 'GROUP');
-    if (groupDay) {
-      const perGroupRounds = groups.map((g) =>
-        this.buildRoundRobinRounds(teamsByGroup[g.id]),
-      );
-      const maxRounds = Math.min(
-        groupDay.rounds,
-        Math.max(...perGroupRounds.map((x) => x.length)),
-      );
-
-      for (let r = 0; r < maxRounds; r++) {
-        const dayDate = new Date(
-          start.getTime() + groupDay.dateOffsetDays * 24 * 60 * 60 * 1000,
-        );
-        const { hh, mm } = this.getDayStart(t, dayDate);
-        const base = new Date(dayDate);
-        base.setHours(hh, mm, 0, 0);
-
-        // offset for this round within the day so rounds don't overlap
-        let offsetMinutes = 0;
-        for (let prev = 0; prev < r; prev++) {
-          const matchesInPrevRound = groups.reduce(
-            (sum, _g, gi) => sum + (perGroupRounds[gi][prev]?.length ?? 0),
-            0,
-          );
-          const waves = Math.ceil(matchesInPrevRound / simultaneous);
-          offsetMinutes += waves * slotMinutes;
-        }
-
-        const allPairings: Array<{
-          home: string;
-          away: string;
-          groupId: string;
-        }> = [];
-        for (let gi = 0; gi < groups.length; gi++) {
-          const g = groups[gi];
-          for (const [home, away] of perGroupRounds[gi][r] ?? []) {
-            allPairings.push({ home, away, groupId: g.id });
-          }
-        }
-
-        for (let idx = 0; idx < allPairings.length; idx++) {
-          const wave = Math.floor(idx / simultaneous);
-          const startTime = new Date(
-            base.getTime() + (offsetMinutes + wave * slotMinutes) * 60 * 1000,
-          );
-          matchesToCreate.push({
-            tenantId: t.tenantId,
-            tournamentId: t.id,
-            homeTeamId: allPairings[idx].home,
-            awayTeamId: allPairings[idx].away,
-            startTime,
-            stage: MatchStage.GROUP,
-            groupId: allPairings[idx].groupId,
-            roundNumber: r + 1,
-            playoffRound: null,
-          } as any);
-        }
-      }
-    }
-
-    const result = await this.prisma.$transaction(async (tx) => {
-      let deletedMatches = 0;
-      if (existingCount > 0 && replaceExisting) {
-        const ids = await tx.match.findMany({
-          where: { tournamentId },
-          select: { id: true },
-        });
-        const matchIds = ids.map((m) => m.id);
-        if (matchIds.length) {
-          await tx.matchEvent.deleteMany({
-            where: { matchId: { in: matchIds } },
-          });
-        }
-        const del = await tx.match.deleteMany({ where: { tournamentId } });
-        deletedMatches = del.count;
-        await tx.tournamentTableRow.deleteMany({ where: { tournamentId } });
-      }
-
-      const created = await tx.match.createMany({ data: matchesToCreate });
-      return { created: created.count, deleted: deletedMatches };
-    });
-
-    // Day 7: create playoff placeholders immediately (A1-B2 / B1-A2),
-    // and later update them after group results are entered.
-    const playoffDay = template.days.find((d: any) => d.stage === 'PLAYOFF');
-    let playoff = { created: 0, skipped: false };
-    if (
-      playoffDay &&
-      (t.format === TournamentFormat.GROUPS_PLUS_PLAYOFF ||
-        t.format === TournamentFormat.GROUPS_2)
-    ) {
-      const includeThirdPlace = !!playoffDay.includeThirdPlace;
-
-      const gA = groups.find((g) => g.name === 'Группа A') ?? groups[0];
-      const gB = groups.find((g) => g.name === 'Группа B') ?? groups[1];
-
-      const teamsA = teamsByGroup[gA.id] ?? [];
-      const teamsB = teamsByGroup[gB.id] ?? [];
-      if (teamsA.length < 2 || teamsB.length < 2) {
-        throw new BadRequestException(
-          'Not enough teams to build playoff placeholders',
-        );
-      }
-
-      // Placeholder seeding (will be replaced later with real standings)
-      const A1 = teamsA[0];
-      const A2 = teamsA[1];
-      const B1 = teamsB[0];
-      const B2 = teamsB[1];
-
-      const playoffDate = new Date(
-        start.getTime() + playoffDay.dateOffsetDays * 24 * 60 * 60 * 1000,
-      );
-      const { hh, mm } = this.getDayStart(t, playoffDate);
-      const base = new Date(playoffDate);
-      base.setHours(hh, mm, 0, 0);
-
-      const playoffMatches: Prisma.MatchCreateManyInput[] = [];
-      const ids: Array<{
-        home: string;
-        away: string;
-        roundNumber: number;
-        playoffRound: PlayoffRound;
-      }> = [
-        {
-          home: A1,
-          away: B2,
-          roundNumber: 1,
-          playoffRound: PlayoffRound.SEMIFINAL,
-        },
-        {
-          home: B1,
-          away: A2,
-          roundNumber: 1,
-          playoffRound: PlayoffRound.SEMIFINAL,
-        },
-        {
-          home: A1,
-          away: B1,
-          roundNumber: 2,
-          playoffRound: PlayoffRound.FINAL,
-        },
-      ];
-      if (includeThirdPlace) {
-        ids.push({
-          home: A2,
-          away: B2,
-          roundNumber: 2,
-          playoffRound: PlayoffRound.THIRD_PLACE,
-        });
-      }
-
-      // Keep same timing model as group stage: allow parallel matches.
-      for (let idx = 0; idx < ids.length; idx++) {
-        const wave = Math.floor(idx / simultaneous);
-        const startTime = new Date(
-          base.getTime() + wave * slotMinutes * 60 * 1000,
-        );
-        playoffMatches.push({
-          tenantId: t.tenantId,
-          tournamentId: t.id,
-          homeTeamId: ids[idx].home,
-          awayTeamId: ids[idx].away,
-          stage: MatchStage.PLAYOFF,
-          roundNumber: ids[idx].roundNumber,
-          playoffRound: ids[idx].playoffRound,
-          startTime,
-        });
-      }
-
-      const created = await this.prisma.match.createMany({
-        data: playoffMatches,
-      });
-      playoff = { created: created.count, skipped: false };
-
-      // If groups are already finished, replace placeholders immediately.
-      try {
-        await this.generatePlayoff(tournamentId, { replaceExisting: true });
-      } catch {
-        // Ignore — group results are not ready yet.
-      }
-    }
-
-    await this.syncTournamentLifecycleStatus(tournamentId);
-    return { ...result, templateId: template.id, playoff };
   }
 
   private computeStandings(
@@ -4624,7 +4685,8 @@ export class TournamentsService {
       throw new BadRequestException('roundsPerDay must be >= 1');
     }
 
-    const roundRobinCycles = dto.roundRobinCycles ?? tournament.roundRobinCycles ?? 1;
+    const roundRobinCycles =
+      dto.roundRobinCycles ?? tournament.roundRobinCycles ?? 1;
     if (
       !Number.isInteger(roundRobinCycles) ||
       roundRobinCycles < 1 ||
@@ -5250,7 +5312,9 @@ export class TournamentsService {
           let matchIndex = 0;
           for (const m of round.matches) {
             const wave = Math.floor(matchIndex / simultaneousMatches);
-            const startTime = new Date(cursorMs + wave * slotMinutes * 60 * 1000);
+            const startTime = new Date(
+              cursorMs + wave * slotMinutes * 60 * 1000,
+            );
             matchesToCreate.push({
               tenantId: tournament.tenantId,
               tournamentId: tournament.id,
@@ -5265,7 +5329,9 @@ export class TournamentsService {
             lastMatchStart = startTime;
             matchIndex += 1;
           }
-          const waves = Math.ceil((round.matches?.length ?? 0) / simultaneousMatches);
+          const waves = Math.ceil(
+            (round.matches?.length ?? 0) / simultaneousMatches,
+          );
           cursorMs += waves * slotMinutes * 60 * 1000;
         }
         usedMinutes = Math.ceil((cursorMs - roundStartMs) / (60 * 1000));
@@ -5283,10 +5349,7 @@ export class TournamentsService {
         const teamBusyUntil = new Map<string, number>();
         let cursorMs = roundStartMs;
 
-        const pickBestSlotSet = (
-          candidates: typeof pending,
-          limit: number,
-        ) => {
+        const pickBestSlotSet = (candidates: typeof pending, limit: number) => {
           let best: typeof candidates = [];
           const used = new Set<string>();
           const chosen: typeof candidates = [];
@@ -5347,7 +5410,12 @@ export class TournamentsService {
             teamBusyUntil.set(m.awayTeamId, busyUntil);
           }
           if (slotSet.length) {
-            const selectedIds = new Set(slotSet.map((m) => `${m.roundNumber}:${m.homeTeamId}:${m.awayTeamId}:${m.order}`));
+            const selectedIds = new Set(
+              slotSet.map(
+                (m) =>
+                  `${m.roundNumber}:${m.homeTeamId}:${m.awayTeamId}:${m.order}`,
+              ),
+            );
             for (let i = pending.length - 1; i >= 0; i--) {
               const key = `${pending[i].roundNumber}:${pending[i].homeTeamId}:${pending[i].awayTeamId}:${pending[i].order}`;
               if (selectedIds.has(key)) pending.splice(i, 1);
@@ -5423,7 +5491,7 @@ export class TournamentsService {
         tournamentTeams: { select: { teamId: true } },
       },
     });
-    if (!tournament) throw new NotFoundException('Tournament not found');
+    if (!tournament) throwTournamentNotFound();
 
     const teamIds = tournament.tournamentTeams.map((t) => t.teamId);
     if (!teamIds.length) {

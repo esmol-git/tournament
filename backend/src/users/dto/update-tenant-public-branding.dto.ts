@@ -109,7 +109,10 @@ export class UpdateTenantPublicBrandingDto {
   @MaxLength(500)
   publicOgImageUrl?: string | null;
 
-  @ApiPropertyOptional({ enum: ['about', 'tournaments', 'participants', 'media'], example: 'tournaments' })
+  @ApiPropertyOptional({
+    enum: ['about', 'tournaments', 'participants', 'media'],
+    example: 'tournaments',
+  })
   @IsOptional()
   @IsString()
   @IsIn(['about', 'tournaments', 'participants', 'media'])
@@ -121,7 +124,9 @@ export class UpdateTenantPublicBrandingDto {
   })
   @IsOptional()
   @IsString()
-  @Matches(/^(table|chessboard|progress|playoff)(,(table|chessboard|progress|playoff)){3}$/)
+  @Matches(
+    /^(table|chessboard|progress|playoff)(,(table|chessboard|progress|playoff)){3}$/,
+  )
   publicTournamentTabsOrder?: string;
 
   @ApiPropertyOptional()

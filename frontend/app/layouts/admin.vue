@@ -4,6 +4,7 @@ import {
   syncThemeAndAccentFromStore,
 } from '~/composables/useAdminAppearance'
 import { useAuth } from '~/composables/useAuth'
+import { useLocalClock } from '~/composables/useLocalClock'
 import { useAdminSettingsStore } from '~/stores/adminSettings'
 
 const confirmLogout = ref(false)
@@ -14,6 +15,7 @@ const { syncWithStorage, fetchMe, loggedIn } = useAuth()
 const { locale, setLocale, t } = useI18n()
 const nuxtApp = useNuxtApp()
 const showThemeGate = ref(true)
+const { clockIso, clockDateLabel, clockDateCompact, clockTimeLabel } = useLocalClock()
 
 let mobileMenuViewportCleanup: (() => void) | undefined
 
@@ -134,18 +136,18 @@ function onMobileNavLogout() {
         />
       </Drawer>
 
-      <div class="flex min-w-0 flex-1 flex-col">
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
         <header
-          class="sticky top-0 z-10 flex h-16 items-center border-b border-surface-200 bg-surface-0/95 px-4 shadow-[0_6px_16px_rgba(15,23,42,0.06)] backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 dark:shadow-[0_6px_16px_rgba(0,0,0,0.35)] sm:px-6"
+          class="sticky top-0 z-10 flex h-14 items-center gap-2 border-b border-surface-200 bg-surface-0/95 px-3 shadow-[0_6px_16px_rgba(15,23,42,0.06)] backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 dark:shadow-[0_6px_16px_rgba(0,0,0,0.35)] sm:gap-3 sm:px-6 lg:h-16"
         >
-          <div class="flex min-w-0 items-center gap-3">
+          <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <Button
               type="button"
               text
               rounded
               severity="secondary"
               icon="pi pi-bars"
-              class="!h-10 !w-10 !p-0 lg:!hidden"
+              class="!h-10 !w-10 shrink-0 !p-0 lg:!hidden"
               :title="t('admin.sidebar.open_menu')"
               :aria-label="t('admin.sidebar.open_menu')"
               @click="mobileMenuOpen = true"
@@ -163,18 +165,36 @@ function onMobileNavLogout() {
                 class="h-9 w-9 object-contain"
               />
             </NuxtLink>
-            <div class="min-w-0">
+            <!-- Ниже lg навигация в Drawer — тариф и подпись уже там; на lg+ дублируем в шапке -->
+            <div class="hidden min-w-0 flex-1 lg:block">
               <h2 class="truncate text-base font-semibold text-surface-900 dark:text-surface-0">
                 {{ t('admin.layout.header_title') }}
               </h2>
-              <p class="truncate text-xs text-muted-color sm:text-sm">
+              <p class="truncate text-sm text-muted-color">
                 {{ t('admin.layout.header_subtitle') }}
               </p>
             </div>
           </div>
+          <div
+            class="flex min-w-0 max-w-[min(100%,calc(100vw-5rem))] shrink-0 flex-nowrap items-center justify-end gap-x-1 overflow-x-auto text-end sm:max-w-none sm:gap-x-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            aria-live="polite"
+            :title="t('admin.layout.local_time_title')"
+          >
+            <span class="min-w-0 text-[0.7rem] text-muted-color sm:text-xs">
+              <span class="block truncate sm:hidden">{{ clockDateCompact }}</span>
+              <span class="hidden whitespace-nowrap sm:inline">{{ clockDateLabel }}</span>
+            </span>
+            <span class="shrink-0 select-none text-muted-color/45" aria-hidden="true">·</span>
+            <time
+              class="shrink-0 text-xs font-semibold tabular-nums tracking-tight text-surface-900 dark:text-surface-0 sm:text-sm"
+              :datetime="clockIso"
+            >
+              {{ clockTimeLabel }}
+            </time>
+          </div>
         </header>
 
-        <main class="flex-1 min-w-0 overflow-x-auto">
+        <main class="min-h-0 flex-1 min-w-0 overflow-y-auto">
           <slot />
         </main>
       </div>

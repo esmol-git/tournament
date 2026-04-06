@@ -1,17 +1,23 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useApiUrl } from '~/composables/useApiUrl'
+import { serializeAuthUserForCookie } from '~/utils/authUserCookie'
+import { logApiClientFailure } from '~/utils/apiClientErrorLog'
 
 /**
  * Сессия и все авторизованные запросы к API — единая точка через Pinia.
- * В компонентах удобнее по-прежнему вызывать `useAuth()` (обёртка над стором).
+ * Refresh-токен: HttpOnly-кука `tp_refresh_token` (ставит бэкенд), в JS не читается.
+ * Access-токен и полный `auth_user` — в localStorage на текущем origin.
+ * Между поддоменами — компактный `auth_user` в cookie + refresh по HttpOnly при `credentials: 'include'`.
  */
 export const useAuthStore = defineStore('auth', () => {
-  const { apiUrl } = useApiUrl()
+  const { apiUrl, apiBase } = useApiUrl()
 
   const token = ref<string | null>(null)
   const refreshToken = ref<string | null>(null)
   const user = ref<unknown | null>(null)
+  /** Один раз за жизнь страницы пробуем восстановить сессию по HttpOnly refresh (новый поддомен). */
+  const sessionRestoreAttempted = ref(false)
 
   const loggedIn = computed(() => !!token.value)
 
@@ -24,8 +30,6 @@ export const useAuthStore = defineStore('auth', () => {
   function cookieDomainForCurrentHost(hostname?: string): string | undefined {
     if (!process.client) return undefined
     const h = (hostname ?? window.location.hostname).toLowerCase()
-    // cookie Domain подходит для любых поддоменов того же registrable domain.
-    // Например: impuls.lvh.me -> .lvh.me; tenant.localhost -> .localhost
     const parts = h.split('.').filter(Boolean)
     if (parts.length < 2) return undefined
     return `.${parts.slice(-2).join('.')}`
@@ -46,34 +50,58 @@ export const useAuthStore = defineStore('auth', () => {
     document.cookie = `${name}=; Path=/${domainAttr}; SameSite=Lax; Max-Age=0`
   }
 
-  function setSession(accessToken: string, refresh: string, u: unknown) {
+  /** Убрать устаревшие читаемые куки с токенами (миграция на HttpOnly refresh). */
+  function clearLegacyReadableTokenCookies() {
+    clearAuthCookie('auth_token')
+    clearAuthCookie('auth_refresh_token')
+  }
+
+  /**
+   * @param refresh — если `null`, refresh только в HttpOnly-куке; иначе legacy из localStorage.
+   */
+  function setSession(accessToken: string, refresh: string | null, u: unknown) {
     token.value = accessToken
     refreshToken.value = refresh
     user.value = u
     if (process.client) {
       localStorage.setItem('auth_token', accessToken)
-      localStorage.setItem('auth_refresh_token', refresh)
+      if (refresh) localStorage.setItem('auth_refresh_token', refresh)
+      else localStorage.removeItem('auth_refresh_token')
       localStorage.setItem('auth_user', JSON.stringify(u))
 
-      // Чтобы сессия сохранялась при редиректе между поддоменами (root -> tenant.*).
-      // localStorage изолирован по origin, а cookie — может шариться по Domain.
-      setAuthCookie('auth_token', accessToken)
-      setAuthCookie('auth_refresh_token', refresh)
-      setAuthCookie('auth_user', JSON.stringify(u))
+      clearLegacyReadableTokenCookies()
+      const slim = serializeAuthUserForCookie(u)
+      if (slim) setAuthCookie('auth_user', slim)
     }
+  }
+
+  async function clearSessionWithServerLogout() {
+    const t = token.value
+    if (process.client && t) {
+      try {
+        await $fetch(apiUrl('/auth/logout'), {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${t}` },
+          credentials: 'include',
+        })
+      } catch {
+        // игнор: сессия на клиенте всё равно сбрасывается
+      }
+    }
+    clearSession()
   }
 
   function clearSession() {
     token.value = null
     refreshToken.value = null
     user.value = null
+    sessionRestoreAttempted.value = false
     if (process.client) {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_refresh_token')
       localStorage.removeItem('auth_user')
 
-      clearAuthCookie('auth_token')
-      clearAuthCookie('auth_refresh_token')
+      clearLegacyReadableTokenCookies()
       clearAuthCookie('auth_user')
     }
   }
@@ -81,19 +109,27 @@ export const useAuthStore = defineStore('auth', () => {
   function syncWithStorage() {
     if (!process.client) return
 
-    // Предпочитаем cookie (между поддоменами), а localStorage — fallback.
-    const storedToken = getCookie('auth_token') ?? localStorage.getItem('auth_token')
-    const storedRefresh =
-      getCookie('auth_refresh_token') ?? localStorage.getItem('auth_refresh_token')
-    const storedUser = getCookie('auth_user') ?? localStorage.getItem('auth_user')
+    const storedToken = localStorage.getItem('auth_token')
+    const storedRefresh = localStorage.getItem('auth_refresh_token')
+    const fromLs = localStorage.getItem('auth_user')
+    const fromCookie = getCookie('auth_user')
 
     token.value = storedToken || null
     refreshToken.value = storedRefresh || null
-    user.value = storedUser ? JSON.parse(storedUser) : null
+    if (fromLs) user.value = JSON.parse(fromLs)
+    else if (fromCookie) user.value = JSON.parse(fromCookie)
+    else user.value = null
   }
 
-  async function refreshAccessToken() {
-    if (!refreshToken.value) return null
+  /**
+   * Когда access/refresh в LS пусты (другой поддомен), пробуем POST /auth/refresh с HttpOnly-кукой.
+   */
+  async function restoreSessionViaRefreshCookieIfNeeded() {
+    if (!process.client) return
+    if (token.value) return
+    if (refreshToken.value) return
+    if (sessionRestoreAttempted.value) return
+    sessionRestoreAttempted.value = true
     try {
       const res = await $fetch<{
         accessToken: string
@@ -101,12 +137,45 @@ export const useAuthStore = defineStore('auth', () => {
         user: unknown
       }>(apiUrl('/auth/refresh'), {
         method: 'POST',
-        body: { refreshToken: refreshToken.value },
+        body: {},
+        credentials: 'include',
       })
-      setSession(res.accessToken, res.refreshToken, res.user)
-      return res
+      setSession(res.accessToken, null, res.user)
     } catch {
-      clearSession()
+      // нет валидной куки или сессия недоступна
+    }
+  }
+
+  async function refreshAccessToken() {
+    const bodyRefresh = refreshToken.value?.trim()
+    try {
+      const res = await $fetch<{
+        accessToken: string
+        refreshToken: string
+        user: unknown
+      }>(apiUrl('/auth/refresh'), {
+        method: 'POST',
+        body: bodyRefresh ? { refreshToken: bodyRefresh } : {},
+        credentials: 'include',
+      })
+      setSession(res.accessToken, null, res.user)
+      return res
+    } catch (e: unknown) {
+      try {
+        await handleAuthFetchClientForbidden(e)
+      } catch {
+        // 403 с редиректом — сессия уже очищена внутри
+        return null
+      }
+      logApiClientFailure({
+        operation: 'authRefresh',
+        method: 'POST',
+        url: apiUrl('/auth/refresh'),
+        apiBase: apiBase.value,
+        error: e,
+      })
+      if (token.value) await clearSessionWithServerLogout()
+      else clearSession()
       return null
     }
   }
@@ -132,8 +201,7 @@ export const useAuthStore = defineStore('auth', () => {
       response?: { status?: number; _data?: { code?: string } }
     }
     const status = err.statusCode ?? err.response?.status
-    const code =
-      err.data?.code ?? err.response?._data?.code
+    const code = err.data?.code ?? err.response?._data?.code
     return status === 403 && code === 'ADMIN_STAFF_ROLE_REQUIRED'
   }
 
@@ -144,9 +212,31 @@ export const useAuthStore = defineStore('auth', () => {
       response?: { status?: number; _data?: { code?: string } }
     }
     const status = err.statusCode ?? err.response?.status
-    const code =
-      err.data?.code ?? err.response?._data?.code
+    const code = err.data?.code ?? err.response?._data?.code
     return status === 403 && code === 'INSUFFICIENT_ROLE'
+  }
+
+  async function handleAuthFetchClientForbidden(e: unknown): Promise<void> {
+    const block = subscriptionOrTenantBlockFromError(e)
+    if (block && process.client) {
+      await clearSessionWithServerLogout()
+      await navigateTo({
+        path: '/admin/subscription-expired',
+        query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
+      })
+      throw e
+    }
+    if (adminStaffRoleBlockFromError(e) && process.client) {
+      await navigateTo('/admin/access-denied')
+      throw e
+    }
+    if (insufficientRoleBlockFromError(e) && process.client) {
+      await navigateTo({
+        path: '/admin/feature-unavailable',
+        query: { reason: 'tenant_admin_only' },
+      })
+      throw e
+    }
   }
 
   async function authFetch<T = unknown>(
@@ -162,36 +252,34 @@ export const useAuthStore = defineStore('auth', () => {
       ...(options.headers as Record<string, string> | undefined),
       Authorization: `Bearer ${access}`,
     }
+    const method = String(options.method ?? 'GET')
     try {
       return await $fetch<T>(url, { ...options, headers })
     } catch (e: unknown) {
-      const block = subscriptionOrTenantBlockFromError(e)
-      if (block && process.client) {
-        clearSession()
-        await navigateTo({
-          path: '/admin/subscription-expired',
-          query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
-        })
-        throw e
-      }
-      if (adminStaffRoleBlockFromError(e) && process.client) {
-        await navigateTo('/admin/access-denied')
-        throw e
-      }
-      if (insufficientRoleBlockFromError(e) && process.client) {
-        await navigateTo({
-          path: '/admin/feature-unavailable',
-          query: { reason: 'tenant_admin_only' },
-        })
-        throw e
-      }
       const err = e as { response?: { status?: number }; statusCode?: number }
       const status = err?.response?.status ?? err?.statusCode
       if (status === 401 && !retried) {
         const refreshed = await refreshAccessToken()
-        if (!refreshed?.accessToken) throw e
+        if (!refreshed?.accessToken) {
+          logApiClientFailure({
+            operation: 'authFetch',
+            method,
+            url,
+            apiBase: apiBase.value,
+            error: e,
+          })
+          throw e
+        }
         return await authFetch<T>(url, options, true)
       }
+      logApiClientFailure({
+        operation: 'authFetch',
+        method,
+        url,
+        apiBase: apiBase.value,
+        error: e,
+      })
+      await handleAuthFetchClientForbidden(e)
       throw e
     }
   }
@@ -209,6 +297,7 @@ export const useAuthStore = defineStore('auth', () => {
       ...(options.headers as Record<string, string> | undefined),
       Authorization: `Bearer ${access}`,
     }
+    const method = String(options.method ?? 'GET')
     try {
       return await $fetch<Blob>(url, {
         ...options,
@@ -216,33 +305,30 @@ export const useAuthStore = defineStore('auth', () => {
         responseType: 'blob',
       })
     } catch (e: unknown) {
-      const block = subscriptionOrTenantBlockFromError(e)
-      if (block && process.client) {
-        clearSession()
-        await navigateTo({
-          path: '/admin/subscription-expired',
-          query: block === 'TENANT_BLOCKED' ? { reason: 'blocked' } : {},
-        })
-        throw e
-      }
-      if (adminStaffRoleBlockFromError(e) && process.client) {
-        await navigateTo('/admin/access-denied')
-        throw e
-      }
-      if (insufficientRoleBlockFromError(e) && process.client) {
-        await navigateTo({
-          path: '/admin/feature-unavailable',
-          query: { reason: 'tenant_admin_only' },
-        })
-        throw e
-      }
       const err = e as { response?: { status?: number }; statusCode?: number }
       const status = err?.response?.status ?? err?.statusCode
       if (status === 401 && !retried) {
         const refreshed = await refreshAccessToken()
-        if (!refreshed?.accessToken) throw e
+        if (!refreshed?.accessToken) {
+          logApiClientFailure({
+            operation: 'authFetchBlob',
+            method,
+            url,
+            apiBase: apiBase.value,
+            error: e,
+          })
+          throw e
+        }
         return await authFetchBlob(url, options, true)
       }
+      logApiClientFailure({
+        operation: 'authFetchBlob',
+        method,
+        url,
+        apiBase: apiBase.value,
+        error: e,
+      })
+      await handleAuthFetchClientForbidden(e)
       throw e
     }
   }
@@ -257,8 +343,8 @@ export const useAuthStore = defineStore('auth', () => {
       if (process.client) {
         const serialized = JSON.stringify(me)
         localStorage.setItem('auth_user', serialized)
-        // Должно совпадать с setSession: иначе syncWithStorage() возьмёт устаревший auth_user из cookie.
-        setAuthCookie('auth_user', serialized)
+        const slim = serializeAuthUserForCookie(me)
+        if (slim) setAuthCookie('auth_user', slim)
       }
       return me
     } catch (e: unknown) {
@@ -268,6 +354,13 @@ export const useAuthStore = defineStore('auth', () => {
         const refreshed = await refreshAccessToken()
         return (refreshed?.user as unknown) ?? null
       }
+      logApiClientFailure({
+        operation: 'fetchMe',
+        method: 'GET',
+        url: apiUrl('/auth/me'),
+        apiBase: apiBase.value,
+        error: e,
+      })
       throw e
     }
   }
@@ -279,7 +372,9 @@ export const useAuthStore = defineStore('auth', () => {
     loggedIn,
     setSession,
     clearSession,
+    clearSessionWithServerLogout,
     syncWithStorage,
+    restoreSessionViaRefreshCookieIfNeeded,
     fetchMe,
     authFetch,
     authFetchBlob,

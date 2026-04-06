@@ -30,9 +30,10 @@ import { MatchScheduleReasonsService } from './match-schedule-reasons/match-sche
 import { TeamCategoriesController } from './team-categories/team-categories.controller';
 import { TeamCategoriesService } from './team-categories/team-categories.service';
 import { SubscriptionPlanFeatureGuard } from '../auth/subscription-plan-feature.guard';
+import { TournamentTemplatesModule } from '../tournament-templates/tournament-templates.module';
 
 @Module({
-  imports: [PrismaModule, StorageModule],
+  imports: [PrismaModule, StorageModule, TournamentTemplatesModule],
   controllers: [
     TeamsController,
     StadiumsController,

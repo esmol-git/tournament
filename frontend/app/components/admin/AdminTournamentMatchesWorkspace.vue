@@ -4,8 +4,10 @@ import { useApiUrl } from '~/composables/useApiUrl'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useTenantId } from '~/composables/useTenantId'
 import { usePlayoffSlotLabels } from '~/composables/usePlayoffSlotLabels'
+import type { StadiumRow } from '~/types/admin/stadium'
 import type { MatchRow, TournamentDetails } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { toastMatchScheduleCreateApiError } from '~/utils/matchCreateToast'
 import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDateTimeFields'
 import {
   formatDateTimeNoSeconds,
@@ -15,6 +17,8 @@ import {
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
 import { computed, reactive, ref, watch } from 'vue'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
+import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
 
 const props = withDefaults(
   defineProps<{
@@ -40,11 +44,17 @@ const { token, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
 const tenantId = useTenantId()
 const toast = useToast()
+const { t } = useI18n()
 
 const { loadRefs, postponeReasonOptions } = useMatchProtocolReferences()
 
 const localTournament = ref<TournamentDetails | null>(null)
-const loading = ref(false)
+const {
+  loading: matchesWorkspaceLoading,
+  error: matchesWorkspaceError,
+  run: runMatchesWorkspaceLoad,
+  retry: retryMatchesWorkspaceLoad,
+} = useAdminAsyncState({ initialLoading: !props.embedded })
 
 const effectiveTournament = computed<TournamentDetails | null>(() =>
   props.embedded ? props.tournament ?? null : localTournament.value,
@@ -65,6 +75,7 @@ const manualMatchForm = reactive({
   startTime: null as Date | null,
   roundNumber: 1,
   groupId: '' as string,
+  stadiumId: '' as string,
   /** Групповой этап или плей-офф (на вылет). */
   matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
   /** Только для PLAYOFF; пусто — без уточнения раунда. */
@@ -104,9 +115,42 @@ const editMatchForm = reactive({
   startTime: null as Date | null,
   roundNumber: 1,
   groupId: '' as string,
+  stadiumId: '' as string,
   matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
   scheduleChangeReasonId: '' as string,
 })
+
+const tenantStadiumsList = ref<StadiumRow[]>([])
+
+const matchStadiumSelectOptions = computed(() => {
+  const links = effectiveTournament.value?.tournamentStadiums ?? []
+  const base =
+    links.length > 0
+      ? [...links]
+          .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+          .map((l) => ({
+            label: l.stadium.city ? `${l.stadium.name} (${l.stadium.city})` : l.stadium.name,
+            value: l.stadiumId,
+          }))
+      : tenantStadiumsList.value.map((s) => ({
+          label: s.city ? `${s.name} (${s.city})` : s.name,
+          value: s.id,
+        }))
+  return [{ label: 'Не указано', value: '' }, ...base]
+})
+
+async function ensureMatchStadiumOptionsLoaded() {
+  const links = effectiveTournament.value?.tournamentStadiums ?? []
+  if (links.length || !token.value) return
+  try {
+    tenantStadiumsList.value = await authFetch<StadiumRow[]>(
+      apiUrl(`/tenants/${tenantId.value}/stadiums`),
+      { headers: { Authorization: `Bearer ${token.value}` } },
+    )
+  } catch {
+    tenantStadiumsList.value = []
+  }
+}
 
 const groupSelectOptions = computed(() => {
   const gs = (effectiveTournament.value?.groups ?? []).map((g) => ({ label: g.name, value: g.id }))
@@ -157,9 +201,11 @@ const tournamentTeamSelectOptions = computed(() =>
 )
 
 const openManualMatchDialog = () => {
+  void ensureMatchStadiumOptionsLoaded()
   manualMatchSubmitAttempted.value = false
   manualMatchForm.homeTeamId = ''
   manualMatchForm.awayTeamId = ''
+  manualMatchForm.stadiumId = ''
   manualMatchForm.startTime = new Date()
   const sp = splitStartTimeToDateAndTime(manualMatchForm.startTime)
   manualMatchDate.value = sp.date
@@ -201,12 +247,14 @@ const submitManualMatch = async () => {
   if (!token.value || !effectiveTournament.value) return
   manualMatchSubmitAttempted.value = true
   if (!canSubmitManualMatch.value) return
+  const manualStart = manualMatchForm.startTime
+  if (!manualStart) return
   manualMatchSaving.value = true
   try {
     const body: Record<string, unknown> = {
       homeTeamId: manualMatchForm.homeTeamId,
       awayTeamId: manualMatchForm.awayTeamId,
-      startTime: manualMatchForm.startTime.toISOString(),
+      startTime: manualStart.toISOString(),
       roundNumber: manualMatchForm.roundNumber,
     }
     if (manualMatchForm.matchStage === 'PLAYOFF') {
@@ -218,6 +266,9 @@ const submitManualMatch = async () => {
     } else {
       body.stage = 'GROUP'
       if (manualMatchForm.groupId) body.groupId = manualMatchForm.groupId
+    }
+    if (manualMatchForm.stadiumId.trim()) {
+      body.stadiumId = manualMatchForm.stadiumId.trim()
     }
     await authFetch(apiUrl(`/tournaments/${props.tournamentId}/matches`), {
       method: 'POST',
@@ -232,12 +283,7 @@ const submitManualMatch = async () => {
       life: 2500,
     })
   } catch (e: unknown) {
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось создать матч',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
+    toastMatchScheduleCreateApiError((m) => toast.add(m), t, e)
   } finally {
     manualMatchSaving.value = false
   }
@@ -286,7 +332,7 @@ async function confirmDetachManualMatch() {
     toast.add({
       severity: 'error',
       summary: 'Не удалось открепить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -334,7 +380,7 @@ async function confirmDeleteManualMatchWs() {
     toast.add({
       severity: 'error',
       summary: 'Не удалось удалить матч',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -355,6 +401,7 @@ const allMatchesSorted = computed(() => {
 })
 
 const openEditMatchDialog = async (m: MatchRow) => {
+  void ensureMatchStadiumOptionsLoaded()
   if (isMatchEditLocked(m.status)) {
     toast.add({
       severity: 'info',
@@ -365,7 +412,7 @@ const openEditMatchDialog = async (m: MatchRow) => {
     return
   }
   if (token.value) {
-    await loadRefs(authFetch, apiUrl, token.value, tenantId.value)
+    await loadRefs()
   }
   editMatchForm.matchId = m.id
   editMatchForm.homeTeamId = m.homeTeam.id
@@ -378,6 +425,7 @@ const openEditMatchDialog = async (m: MatchRow) => {
   editMatchTime.value = esp.time
   editMatchForm.roundNumber = typeof m.roundNumber === 'number' ? m.roundNumber : 1
   editMatchForm.groupId = m.groupId ?? ''
+  editMatchForm.stadiumId = m.stadiumId ?? ''
   editMatchForm.matchStage = m.stage === 'PLAYOFF' ? 'PLAYOFF' : 'GROUP'
   editMatchSubmitAttempted.value = false
   editMatchDialog.value = true
@@ -423,10 +471,12 @@ const submitEditMatch = async () => {
   if (!token.value || !editMatchForm.matchId) return
   editMatchSubmitAttempted.value = true
   if (!canSubmitEditMatch.value) return
+  const editStart = editMatchForm.startTime
+  if (!editStart) return
   editMatchSaving.value = true
   try {
     const body: Record<string, unknown> = {
-      startTime: editMatchForm.startTime.toISOString(),
+      startTime: editStart.toISOString(),
     }
     if (editMatchStartChanged.value && editMatchForm.scheduleChangeReasonId.trim()) {
       body.scheduleChangeReasonId = editMatchForm.scheduleChangeReasonId.trim()
@@ -437,6 +487,7 @@ const submitEditMatch = async () => {
       body.roundNumber = editMatchForm.roundNumber
       body.groupId = editMatchForm.groupId || null
     }
+    body.stadiumId = editMatchForm.stadiumId.trim() ? editMatchForm.stadiumId.trim() : null
     await authFetch(apiUrl(`/tournaments/${props.tournamentId}/matches/${editMatchForm.matchId}`), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token.value}` },
@@ -453,7 +504,7 @@ const submitEditMatch = async () => {
     toast.add({
       severity: 'error',
       summary: 'Не удалось сохранить',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
   } finally {
@@ -462,24 +513,24 @@ const submitEditMatch = async () => {
 }
 
 const fetchStandalone = async () => {
-  if (!token.value || !props.tournamentId) return
-  loading.value = true
-  try {
-    const res = await authFetch<TournamentDetails>(apiUrl(`/tournaments/${props.tournamentId}`), {
-      headers: { Authorization: `Bearer ${token.value}` },
-    })
-    localTournament.value = res
-  } catch (e: unknown) {
+  if (props.embedded) return
+  if (!token.value || !props.tournamentId) {
+    matchesWorkspaceLoading.value = false
     localTournament.value = null
-    toast.add({
-      severity: 'error',
-      summary: 'Не удалось загрузить турнир',
-      detail: getApiErrorMessage(e, 'Ошибка запроса'),
-      life: 6000,
-    })
-  } finally {
-    loading.value = false
+    return
   }
+  localTournament.value = null
+  await runMatchesWorkspaceLoad(async () => {
+    try {
+      const res = await authFetch<TournamentDetails>(apiUrl(`/tournaments/${props.tournamentId}`), {
+        headers: { Authorization: `Bearer ${token.value}` },
+      })
+      localTournament.value = res
+    } catch (e: unknown) {
+      localTournament.value = null
+      throw e
+    }
+  })
 }
 
 async function afterMutation() {
@@ -520,11 +571,27 @@ defineExpose({
 
 <template>
   <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
-    <div v-if="loading && !embedded" class="text-sm text-muted-color">Загрузка…</div>
+    <AdminDataState
+      v-if="!embedded && (matchesWorkspaceLoading || matchesWorkspaceError)"
+      :loading="matchesWorkspaceLoading"
+      :error="matchesWorkspaceError"
+      :empty="false"
+      :content-card="false"
+      :error-title="t('admin.tournament_page.load_error_title')"
+      @retry="retryMatchesWorkspaceLoad"
+    >
+      <template #loading>
+        <div class="space-y-4 py-2" aria-busy="true">
+          <Skeleton height="0.875rem" width="32%" class="rounded-md" />
+          <Skeleton height="2.75rem" width="100%" class="rounded-lg" />
+          <Skeleton height="14rem" width="100%" class="rounded-lg" />
+        </div>
+      </template>
+    </AdminDataState>
 
     <template v-else-if="effectiveTournament">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+      <div class="admin-toolbar-responsive flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div class="min-w-0">
           <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">Все матчи</h2>
           <p class="mt-1 text-xs text-muted-color">
             Полный список по дате начала. Для MANUAL с несколькими группами группа матча обязательна: таблица и очки
@@ -547,16 +614,21 @@ defineExpose({
         Пока нет матчей.
       </div>
 
+      <div v-else class="admin-datatable-scroll mt-4 min-w-0">
       <DataTable
-        v-else
         :value="allMatchesSorted"
         dataKey="id"
         sortMode="single"
         sortField="startTime"
         :sortOrder="1"
         stripedRows
-        class="mt-4"
+        class="mt-0"
       >
+        <Column header="#" style="width: 2.75rem">
+          <template #body="{ index }">
+            <span class="tabular-nums text-sm text-muted-color">{{ (index ?? 0) + 1 }}</span>
+          </template>
+        </Column>
         <Column field="startTime" header="Начало" sortable style="min-width: 10rem">
           <template #body="{ data }">
             {{ formatDateTimeNoSeconds(data.startTime) }}
@@ -570,6 +642,12 @@ defineExpose({
         <Column header="Гости" style="min-width: 8rem">
           <template #body="{ data }">
             {{ playoffSlotLabels(data)?.away ?? data.awayTeam.name }}
+          </template>
+        </Column>
+        <Column header="Площадка" style="min-width: 7rem">
+          <template #body="{ data }">
+            <span v-if="data.stadium?.name">{{ data.stadium.name }}</span>
+            <span v-else class="text-muted-color">—</span>
           </template>
         </Column>
         <Column v-if="isManualFormat" header="Тур" style="width: 4rem">
@@ -595,34 +673,44 @@ defineExpose({
             <span :class="statusPillClass(data.status)">{{ statusLabel(data.status) }}</span>
           </template>
         </Column>
-        <Column header="Действия" style="min-width: 18rem">
+        <Column
+          header="Действия"
+          style="width: 9rem; min-width: 9rem"
+          header-class="text-right"
+          :header-style="{ textAlign: 'right' }"
+        >
           <template #body="{ data }">
-            <div class="flex flex-wrap items-center justify-end gap-1">
+            <div class="flex flex-wrap items-center justify-end gap-0">
               <Button
-                label="Протокол"
-                icon="pi pi-pencil"
+                icon="pi pi-book"
                 text
+                rounded
                 size="small"
+                class="!w-8 !h-8"
+                v-tooltip.top="'Протокол'"
                 @click="onProtocolClick(data)"
               />
               <Button
                 v-if="canEditMatchSchedule"
-                label="Изменить"
                 icon="pi pi-calendar"
                 text
+                rounded
                 size="small"
+                class="!w-8 !h-8"
                 :disabled="isMatchEditLocked(data.status)"
+                v-tooltip.top="'Дата и время'"
                 @click="openEditMatchDialog(data)"
               />
               <Button
                 v-if="canManageManualMatches"
-                label="Открепить"
                 icon="pi pi-unlock"
                 text
+                rounded
                 size="small"
+                class="!w-8 !h-8"
                 :disabled="isMatchEditLocked(data.status)"
                 :loading="detachingMatchId === data.id"
-                aria-label="Открепить от турнира"
+                v-tooltip.top="'Открепить от турнира'"
                 @click="requestDetachManualMatch(data)"
               />
               <Button
@@ -632,18 +720,28 @@ defineExpose({
                 text
                 rounded
                 size="small"
+                class="!w-8 !h-8"
                 :disabled="isMatchEditLocked(data.status)"
                 :loading="deletingMatchId === data.id"
-                aria-label="Удалить матч"
+                v-tooltip.top="'Удалить'"
                 @click="requestDeleteManualMatchWs(data)"
               />
             </div>
           </template>
         </Column>
       </DataTable>
+      </div>
     </template>
 
-    <div v-else-if="!loading" class="text-sm text-muted-color">Турнир не найден или нет доступа.</div>
+    <div
+      v-else-if="
+        !effectiveTournament &&
+        (embedded || (!matchesWorkspaceLoading && !matchesWorkspaceError))
+      "
+      class="text-sm text-muted-color"
+    >
+      {{ t('admin.tournament_page.matches_workspace_not_found') }}
+    </div>
 
     <AdminConfirmDialog
       v-model="detachManualMatchConfirmOpen"
@@ -714,8 +812,10 @@ defineExpose({
             class="w-full"
             placeholder="Команда"
             :invalid="
-              (manualMatchSubmitAttempted || manualMatchForm.homeTeamId) &&
-              !!manualMatchErrors.homeTeamId
+              !!(
+                (manualMatchSubmitAttempted || manualMatchForm.homeTeamId) &&
+                manualMatchErrors.homeTeamId
+              )
             "
             :disabled="manualMatchSaving"
           />
@@ -736,8 +836,10 @@ defineExpose({
             class="w-full"
             placeholder="Команда"
             :invalid="
-              (manualMatchSubmitAttempted || manualMatchForm.awayTeamId) &&
-              (!!manualMatchErrors.awayTeamId || !!manualMatchErrors.distinctTeams)
+              !!(
+                (manualMatchSubmitAttempted || manualMatchForm.awayTeamId) &&
+                (manualMatchErrors.awayTeamId || manualMatchErrors.distinctTeams)
+              )
             "
             :disabled="manualMatchSaving"
           />
@@ -818,6 +920,22 @@ defineExpose({
             </p>
           </div>
         </div>
+        <div>
+          <label class="text-sm block mb-1">Площадка</label>
+          <Select
+            v-model="manualMatchForm.stadiumId"
+            :options="matchStadiumSelectOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            placeholder="По желанию"
+            show-clear
+            :disabled="manualMatchSaving"
+          />
+          <p class="mt-1 text-[11px] text-muted-color leading-snug">
+            Если у турнира задан список площадок — только из него. Иначе любой стадион организации.
+          </p>
+        </div>
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
@@ -852,8 +970,10 @@ defineExpose({
               class="w-full"
               placeholder="Команда"
               :invalid="
-                (editMatchSubmitAttempted || editMatchForm.homeTeamId) &&
-                !!editMatchErrors.homeTeamId
+                !!(
+                  (editMatchSubmitAttempted || editMatchForm.homeTeamId) &&
+                  editMatchErrors.homeTeamId
+                )
               "
               :disabled="editMatchSaving"
             />
@@ -874,8 +994,10 @@ defineExpose({
               class="w-full"
               placeholder="Команда"
               :invalid="
-                (editMatchSubmitAttempted || editMatchForm.awayTeamId) &&
-                (!!editMatchErrors.awayTeamId || !!editMatchErrors.distinctTeams)
+                !!(
+                  (editMatchSubmitAttempted || editMatchForm.awayTeamId) &&
+                  (editMatchErrors.awayTeamId || editMatchErrors.distinctTeams)
+                )
               "
               :disabled="editMatchSaving"
             />
@@ -927,6 +1049,19 @@ defineExpose({
         >
           {{ editMatchErrors.startTime }}
         </p>
+        <div>
+          <label class="text-sm block mb-1">Площадка</label>
+          <Select
+            v-model="editMatchForm.stadiumId"
+            :options="matchStadiumSelectOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            placeholder="По желанию"
+            show-clear
+            :disabled="editMatchSaving"
+          />
+        </div>
         <div class="space-y-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/50 dark:bg-surface-800/30 p-3">
           <p class="text-xs text-muted-color">
             При переносе времени можно указать причину (справочник «Причины переноса и отмены»).

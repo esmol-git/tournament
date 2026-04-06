@@ -43,9 +43,9 @@ export function usePublicLayoutBranding(tenantMeta: Ref<PublicTenantMeta | null>
 
   useHead({
     link: () => (faviconHref.value ? [{ rel: 'icon', href: faviconHref.value }] : []),
-    htmlAttrs: () => ({
+    htmlAttrs: (() => ({
       'data-public-theme': themeMode.value,
-    }),
+    })) as any,
   })
 
   watchEffect(() => {

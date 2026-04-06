@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch, useId } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
+import { useAdminOrgModeratorReadOnly } from '~/composables/useAdminOrgModeratorReadOnly'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import { PLAYER_POSITION_OPTIONS } from '~/constants/playerPositions'
@@ -12,19 +13,26 @@ import {
 } from '~/composables/useLazyPaginatedTeamsSelect'
 import type { PlayerRow } from '~/types/admin/player'
 import { getApiErrorMessage } from '~/utils/apiError'
-import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
+import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
+import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
 import { toYmdLocal as toYmd } from '~/utils/dateYmd'
 import { formatAgeFromIsoDate } from '~/utils/ageYearsRu'
 import { useRouter } from 'vue-router'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 
-definePageMeta({ layout: 'admin' })
+definePageMeta({
+  layout: 'admin',
+  /** Глобальный MODERATOR — org read-only; реестр путей в `adminModeratorOrgPolicy`. */
+  adminOrgModeratorReadOnly: true,
+})
 
 const router = useRouter()
-const { token, user, syncWithStorage, loggedIn, authFetch, authFetchBlob } = useAuth()
+const { token, syncWithStorage, loggedIn, authFetch, authFetchBlob } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
 const { t } = useI18n()
 const tenantId = useTenantId()
+const isModeratorReadOnly = useAdminOrgModeratorReadOnly()
 
 /** Амплуа в форме — общий справочник `constants/playerPositions` */
 const positionOptions = [...PLAYER_POSITION_OPTIONS]
@@ -80,7 +88,6 @@ const {
   teamsLoaded: listFilterTeamsLoaded,
   selectedTeamCache: listFilterSelectedTeamCache,
   teamsHasMore: listFilterTeamsHasMore,
-  fetchTeamsPage: fetchListFilterTeamsPage,
   onTeamSelectFilter: onListFilterTeamSelectFilter,
   onTeamSelectPanelShow: onListFilterTeamSelectPanelShow,
   onTeamSelectPanelHide: onListFilterTeamSelectPanelHide,
@@ -93,12 +100,21 @@ const {
 })
 
 /** true до первого завершённого запроса — иначе при F5 один кадр с пустым списком и «Нет игроков». */
-const loading = ref(true)
 const PLAYERS_TABLE_SKELETON_ROWS = 10
 const skeletonPlayerRows = Array.from({ length: PLAYERS_TABLE_SKELETON_ROWS }, (_, i) => ({
   id: `__psk-${i}`,
 }))
-const players = ref<PlayerRow[]>([])
+const {
+  items: players,
+  loading,
+  error,
+  run,
+  retry,
+} = useAdminAsyncListState<PlayerRow>({
+  initialLoading: true,
+  clearItemsOnError: true,
+  minLoadingMs: MIN_SKELETON_DISPLAY_MS,
+})
 const totalPlayers = ref(0)
 
 const pageSize = ref(10)
@@ -176,6 +192,8 @@ const transferFormatOptions = [
 const exportFormat = ref<TransferFormat>('xlsx')
 const importFormat = ref<TransferFormat>('xlsx')
 const importDialogVisible = ref(false)
+const playersImportId = useId()
+const playerFormId = useId()
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importFile = ref<File | null>(null)
 const importFileName = computed(() => importFile.value?.name ?? '')
@@ -441,12 +459,10 @@ const fetchPlayers = async () => {
     loading.value = false
     return
   }
-  const loadStartedAt = Date.now()
-  loading.value = true
   const page = Math.max(1, Math.floor(Number(currentPage.value) || 1))
   const pageSizeNum = Math.max(1, Math.floor(Number(pageSize.value) || 10))
 
-  try {
+  await run(async () => {
     const params = buildPlayersQueryParams(page, pageSizeNum)
 
     const res = await authFetch<{ items: PlayerRow[]; total: number }>(
@@ -459,10 +475,7 @@ const fetchPlayers = async () => {
 
     players.value = res.items
     totalPlayers.value = res.total
-  } finally {
-    await sleepRemainingAfter(MIN_SKELETON_DISPLAY_MS, loadStartedAt)
-    loading.value = false
-  }
+  })
 }
 
 const scheduleFilterFetch = () => {
@@ -582,17 +595,6 @@ function normalizeRuPhoneForApi(input: string): string {
   return `+${digits}`
 }
 
-function validatePlayerForm(): string | null {
-  if (!form.lastName.trim()) return t('admin.validation.required_last_name')
-  if (!form.firstName.trim()) return t('admin.validation.required_first_name')
-  if (form.birthDate && form.birthDate.getTime() > Date.now()) {
-    return t('admin.validation.date_not_future')
-  }
-  if (form.phone.trim() && !normalizeRuPhoneForApi(form.phone)) {
-    return t('admin.validation.invalid_phone_ru')
-  }
-  return null
-}
 const playerFormErrors = computed(() => ({
   lastName: form.lastName.trim() ? '' : t('admin.validation.required_last_name'),
   firstName: form.firstName.trim() ? '' : t('admin.validation.required_first_name'),
@@ -921,13 +923,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="p-6 space-y-4">
+  <section class="admin-page">
     <header class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-surface-900">Игроки</h1>
-        <p class="mt-1 text-sm text-muted-color">Справочник игроков тенанта.</p>
+      <div class="min-w-0">
+        <h1 class="text-lg font-semibold text-surface-900 sm:text-xl">Игроки</h1>
+        <p class="mt-1 text-xs text-muted-color sm:text-sm">Справочник игроков тенанта.</p>
       </div>
-      <div class="flex flex-wrap items-center gap-2 justify-end">
+      <div class="admin-toolbar-responsive flex flex-wrap items-center justify-end gap-2">
         <Button
           label="Обновить"
           icon="pi pi-refresh"
@@ -936,11 +938,21 @@ onMounted(() => {
           :loading="loading"
           @click="fetchPlayers()"
         />
-        <Button label="Создать" icon="pi pi-plus" @click="openCreate" />
+        <Button
+          v-if="!isModeratorReadOnly"
+          label="Создать"
+          icon="pi pi-plus"
+          @click="openCreate"
+        />
       </div>
     </header>
 
+    <Message v-if="isModeratorReadOnly" severity="info" :closable="false" class="text-sm">
+      Режим просмотра: создание, изменение, импорт и экспорт игроков недоступны.
+    </Message>
+
     <div
+      v-if="!isModeratorReadOnly"
       class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-3 sm:p-4"
     >
       <div class="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(16rem,20rem)_1fr] xl:items-end">
@@ -955,7 +967,7 @@ onMounted(() => {
           />
           <label>Формат экспорта</label>
         </FloatLabel>
-        <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+        <div class="admin-toolbar-responsive flex flex-wrap items-center gap-2 xl:justify-end">
           <Button
             label="Экспорт"
             icon="pi pi-download"
@@ -967,6 +979,7 @@ onMounted(() => {
             @click="downloadPlayersByFormat"
           />
           <Button
+            v-if="!isModeratorReadOnly"
             label="Импорт"
             icon="pi pi-upload"
             severity="secondary"
@@ -983,8 +996,10 @@ onMounted(() => {
     </div>
 
     <Dialog
+      v-if="!isModeratorReadOnly"
       :visible="importDialogVisible"
       modal
+      block-scroll
       header="Импорт игроков"
       class="w-full max-w-2xl"
       @update:visible="importDialogVisible = $event"
@@ -993,6 +1008,7 @@ onMounted(() => {
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <FloatLabel variant="on">
             <Select
+              :input-id="`${playersImportId}-format`"
               v-model="importFormat"
               :options="transferFormatOptions"
               option-label="label"
@@ -1000,10 +1016,11 @@ onMounted(() => {
               class="w-full"
               :disabled="importBusy"
             />
-            <label>Формат файла</label>
+            <label :for="`${playersImportId}-format`">Формат файла</label>
           </FloatLabel>
           <FloatLabel variant="on">
             <Select
+              :input-id="`${playersImportId}-mode`"
               v-model="csvImportMode"
               :options="csvImportModeOptions"
               option-label="label"
@@ -1011,7 +1028,7 @@ onMounted(() => {
               class="w-full"
               :disabled="importBusy"
             />
-            <label>Режим импорта</label>
+            <label :for="`${playersImportId}-mode`">Режим импорта</label>
           </FloatLabel>
         </div>
 
@@ -1022,6 +1039,7 @@ onMounted(() => {
             </p>
             <Button
               v-if="!allImportFieldsSelected"
+              type="button"
               label="Выбрать все"
               icon="pi pi-check-square"
               text
@@ -1052,6 +1070,8 @@ onMounted(() => {
           </p>
           <p
             v-if="!importModeFieldsValid"
+            :id="`${playersImportId}-fields-hint`"
+            role="alert"
             class="mt-1 text-xs text-red-500"
           >
             Для режимов createOnly/upsert обязательно выберите поля «Фамилия» и «Имя».
@@ -1087,6 +1107,7 @@ onMounted(() => {
 
       <template #footer>
         <Button
+          type="button"
           label="Отмена"
           text
           severity="secondary"
@@ -1094,6 +1115,7 @@ onMounted(() => {
           @click="importDialogVisible = false"
         />
         <Button
+          type="button"
           label="Запустить импорт"
           icon="pi pi-check"
           :loading="importBusy"
@@ -1167,9 +1189,19 @@ onMounted(() => {
       </div>
     </div>
 
-    <DataTable
-      v-if="loading"
-      :value="skeletonPlayerRows"
+    <AdminDataState
+      :loading="loading"
+      :error="error"
+      :empty="false"
+      :content-card="false"
+      @retry="retry"
+    >
+      <template #loading>
+        <div
+          class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+        >
+          <DataTable
+            :value="skeletonPlayerRows"
       striped-rows
       data-key="id"
       class="min-h-[28rem]"
@@ -1207,7 +1239,7 @@ onMounted(() => {
           <Skeleton width="4.5rem" height="1rem" class="rounded-md" />
         </template>
       </Column>
-      <Column header="Действия" style="width: 8rem">
+      <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">
         <template #body>
           <div class="flex justify-end gap-2">
             <Skeleton shape="circle" width="2rem" height="2rem" />
@@ -1215,10 +1247,13 @@ onMounted(() => {
           </div>
         </template>
       </Column>
-    </DataTable>
-
+          </DataTable>
+        </div>
+      </template>
+      <div
+        class="rounded-xl border border-surface-200 bg-surface-0 shadow-sm dark:border-surface-700 dark:bg-surface-900 admin-datatable-scroll"
+      >
     <DataTable
-      v-else
       :value="players"
       striped-rows
       :paginator="showPlayersPaginator"
@@ -1238,7 +1273,8 @@ onMounted(() => {
           <i class="pi pi-inbox text-4xl opacity-40" aria-hidden="true" />
           <span class="text-sm font-medium text-surface-700">Нет игроков</span>
           <span class="text-xs text-center max-w-sm">
-            Измените фильтры или добавьте игрока кнопкой «Создать».
+            <template v-if="isModeratorReadOnly">Измените фильтры.</template>
+            <template v-else>Измените фильтры или добавьте игрока кнопкой «Создать».</template>
           </span>
         </div>
       </template>
@@ -1251,20 +1287,13 @@ onMounted(() => {
             >
               №{{ data.bioNumber }}
             </span>
-            <img
-              v-if="data.photoUrl"
+            <RemoteImage
               :src="data.photoUrl"
               :alt="`${data.firstName} ${data.lastName}`"
-              class="w-10 h-10 shrink-0 rounded-lg object-cover"
+              placeholder-icon="user"
+              class="h-10 w-10 rounded-lg"
             />
-            <div
-              v-else
-              class="w-10 h-10 shrink-0 rounded-lg border border-surface-200 bg-surface-100 flex items-center justify-center text-muted-color"
-              aria-hidden="true"
-            >
-              <i class="pi pi-user text-lg opacity-50" />
-            </div>
-            <span class="font-medium text-surface-900 truncate min-w-0">
+            <span class="min-w-0 truncate font-medium text-surface-900 dark:text-surface-0">
               {{ data.firstName }} {{ data.lastName }}
             </span>
           </div>
@@ -1273,19 +1302,13 @@ onMounted(() => {
       <Column header="Команда" style="min-width: 11rem">
         <template #body="{ data }">
           <div v-if="data.team" class="flex items-center gap-2 min-w-0">
-            <img
-              v-if="data.team.logoUrl"
+            <RemoteImage
               :src="data.team.logoUrl"
               alt=""
-              class="w-8 h-8 shrink-0 rounded-md object-cover"
+              placeholder-icon="users"
+              icon-class="text-sm"
+              class="h-8 w-8 rounded-md"
             />
-            <div
-              v-else
-              class="w-8 h-8 shrink-0 rounded-md border border-surface-200 bg-surface-100 flex items-center justify-center text-muted-color"
-              aria-hidden="true"
-            >
-              <i class="pi pi-users text-sm opacity-50" />
-            </div>
             <span class="text-sm truncate">{{ data.team.name }}</span>
           </div>
           <span v-else class="text-muted-color">—</span>
@@ -1299,7 +1322,9 @@ onMounted(() => {
       </Column>
       <Column header="Возраст" style="min-width: 6.5rem">
         <template #body="{ data }">
-          <span class="tabular-nums text-surface-800">{{ formatAgeFromIsoDate(data.birthDate) }}</span>
+          <span class="tabular-nums text-surface-800 dark:text-surface-100">{{
+            formatAgeFromIsoDate(data.birthDate)
+          }}</span>
         </template>
       </Column>
       <Column field="position" header="Амплуа" sortable>
@@ -1308,15 +1333,32 @@ onMounted(() => {
           <span v-else class="text-muted-color">—</span>
         </template>
       </Column>
-      <Column header="Действия" style="width: 8rem">
+      <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">
         <template #body="{ data }">
           <div class="flex gap-2 justify-end">
-            <Button icon="pi pi-pencil" text size="small" @click="openEdit(data)" aria-label="Редактировать" />
-            <Button icon="pi pi-trash" text severity="danger" size="small" @click="requestDeletePlayer(data)" aria-label="Удалить" />
+            <Button
+              type="button"
+              icon="pi pi-pencil"
+              text
+              size="small"
+              @click="openEdit(data)"
+              aria-label="Редактировать"
+            />
+            <Button
+              type="button"
+              icon="pi pi-trash"
+              text
+              severity="danger"
+              size="small"
+              @click="requestDeletePlayer(data)"
+              aria-label="Удалить"
+            />
           </div>
         </template>
       </Column>
     </DataTable>
+      </div>
+    </AdminDataState>
 
     <AdminConfirmDialog
       v-model="deletePlayerConfirmOpen"
@@ -1329,63 +1371,59 @@ onMounted(() => {
       :visible="showForm"
       @update:visible="(v) => (showForm = v)"
       modal
+      block-scroll
       :header="isEdit ? 'Редактирование игрока' : 'Создание игрока'"
       :style="{ width: '54rem' }"
       :contentStyle="{ paddingTop: '1.75rem' }"
     >
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div class="md:col-span-1 space-y-3">
-          <div
-            class="relative overflow-hidden rounded-xl border border-surface-200 bg-surface-100 dark:border-surface-600 dark:bg-surface-800"
-          >
-            <button
-              type="button"
-              class="relative block aspect-[4/5] w-full"
-              :class="photoUploading || photoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer'"
-              :disabled="photoUploading || photoRemoving"
-              @click="triggerPhotoPick"
-              aria-label="Загрузить или заменить фото игрока"
+      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
+        <div class="md:col-span-1 space-y-3 md:-mt-2">
+          <div class="relative w-full">
+            <div
+              class="relative overflow-hidden rounded-xl border border-surface-200 bg-surface-100 dark:border-surface-600 dark:bg-surface-800"
             >
-              <img
-                v-if="form.photoUrl && !photoUploading && !photoRemoving"
-                :src="form.photoUrl"
-                alt="Фото игрока"
-                class="absolute inset-0 h-full w-full object-cover"
-              />
-              <div
-                v-else-if="!photoUploading && !photoRemoving"
-                class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+              <button
+                type="button"
+                class="relative block h-52 w-full sm:h-60 md:h-[17rem]"
+                :class="photoUploading || photoRemoving ? 'cursor-wait opacity-80' : 'cursor-pointer'"
+                :disabled="photoUploading || photoRemoving"
+                @click="triggerPhotoPick"
+                aria-label="Загрузить или заменить фото игрока"
               >
-                <i class="pi pi-image text-2xl opacity-60" aria-hidden="true" />
-                <span class="text-xs">Нажми, чтобы загрузить фото</span>
-              </div>
-              <div
-                v-if="photoUploading || photoRemoving"
-                class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-0/90 text-sm text-surface-700 dark:bg-surface-900/90 dark:text-surface-200"
-              >
-                <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
-                <span>{{ photoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
-              </div>
-            </button>
-          </div>
+                <RemoteImage
+                  v-if="form.photoUrl && !photoUploading && !photoRemoving"
+                  :src="form.photoUrl"
+                  alt="Фото игрока"
+                  placeholder-icon="user"
+                  :lazy="false"
+                  class="absolute inset-0 z-0 h-full w-full rounded-xl"
+                />
+                <div
+                  v-else-if="!photoUploading && !photoRemoving"
+                  class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center text-muted-color"
+                >
+                  <i class="pi pi-image text-2xl opacity-60" aria-hidden="true" />
+                  <span class="text-xs">Нажми, чтобы загрузить фото</span>
+                </div>
+                <div
+                  v-if="photoUploading || photoRemoving"
+                  class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-100/90 text-sm text-surface-700 dark:bg-surface-900/90 dark:text-surface-200"
+                >
+                  <i class="pi pi-spin pi-spinner text-2xl" aria-hidden="true" />
+                  <span>{{ photoRemoving ? 'Удаление…' : 'Загрузка…' }}</span>
+                </div>
+              </button>
+            </div>
 
-          <div class="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              icon="pi pi-upload"
-              label="Загрузить"
-              severity="secondary"
-              :loading="photoUploading"
-              :disabled="photoUploading || photoRemoving"
-              @click="triggerPhotoPick"
-            />
             <Button
               v-if="form.photoUrl && !photoUploading && !photoRemoving"
               type="button"
               icon="pi pi-trash"
-              label="Убрать"
-              text
+              rounded
               severity="danger"
+              text
+              class="!absolute top-2 right-2 z-10 !h-9 !w-9 !min-w-9 shadow-sm bg-surface-100/90 hover:!bg-surface-200 dark:bg-surface-900/90 dark:hover:!bg-surface-800"
+              aria-label="Убрать фото"
               @click="removePlayerPhoto"
             />
           </div>
@@ -1399,62 +1437,113 @@ onMounted(() => {
           />
         </div>
         <div class="space-y-4 md:col-span-2">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FloatLabel variant="on" class="block">
-              <InputText v-model="form.lastName" class="w-full" :invalid="showLastNameError" />
-              <label>Фамилия</label>
-            </FloatLabel>
-            <FloatLabel variant="on" class="block">
-              <InputText v-model="form.firstName" class="w-full" :invalid="showFirstNameError" />
-              <label>Имя</label>
-            </FloatLabel>
-          </div>
-          <div class="-mt-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <p v-if="showLastNameError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.lastName }}</p>
-            <p v-if="showFirstNameError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.firstName }}</p>
-          </div>
-          <FloatLabel variant="on" class="block">
-            <DatePicker
-              v-model="form.birthDate"
-              class="w-full"
-              dateFormat="yy-mm-dd"
-              showIcon
-              :invalid="showBirthDateError"
-            />
-            <label>Дата рождения</label>
-          </FloatLabel>
-          <p v-if="showBirthDateError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.birthDate }}</p>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <FloatLabel variant="on" class="block">
+                <InputText
+                  :id="`${playerFormId}-firstName`"
+                  v-model="form.firstName"
+                  class="w-full"
+                  :invalid="showFirstNameError"
+                  :pt="
+                    showFirstNameError
+                      ? { root: { 'aria-describedby': `${playerFormId}-err-firstName` } }
+                      : undefined
+                  "
+                />
+                <label :for="`${playerFormId}-firstName`">Имя</label>
+              </FloatLabel>
+              <p
+                v-if="showFirstNameError"
+                :id="`${playerFormId}-err-firstName`"
+                role="alert"
+                class="mt-0 text-[11px] leading-4 text-red-500"
+              >
+                {{ playerFormErrors.firstName }}
+              </p>
+            </div>
+            <div>
+              <FloatLabel variant="on" class="block">
+                <InputText
+                  :id="`${playerFormId}-lastName`"
+                  v-model="form.lastName"
+                  class="w-full"
+                  :invalid="showLastNameError"
+                  :pt="
+                    showLastNameError
+                      ? { root: { 'aria-describedby': `${playerFormId}-err-lastName` } }
+                      : undefined
+                  "
+                />
+                <label :for="`${playerFormId}-lastName`">Фамилия</label>
+              </FloatLabel>
+              <p
+                v-if="showLastNameError"
+                :id="`${playerFormId}-err-lastName`"
+                role="alert"
+                class="mt-0 text-[11px] leading-4 text-red-500"
+              >
+                {{ playerFormErrors.lastName }}
+              </p>
+            </div>
+
+            <div>
+              <FloatLabel variant="on" class="block">
+                <DatePicker
+                  :input-id="`${playerFormId}-birthDate`"
+                  v-model="form.birthDate"
+                  class="w-full"
+                  dateFormat="yy-mm-dd"
+                  showIcon
+                  :invalid="showBirthDateError"
+                  :pt="
+                    showBirthDateError
+                      ? { pcInputText: { root: { 'aria-describedby': `${playerFormId}-err-birthDate` } } }
+                      : undefined
+                  "
+                />
+                <label :for="`${playerFormId}-birthDate`">Дата рождения</label>
+              </FloatLabel>
+              <p
+                v-if="showBirthDateError"
+                :id="`${playerFormId}-err-birthDate`"
+                role="alert"
+                class="mt-0 text-[11px] leading-4 text-red-500"
+              >
+                {{ playerFormErrors.birthDate }}
+              </p>
+            </div>
             <FloatLabel variant="on" class="block">
               <Select
+                :input-id="`${playerFormId}-gender`"
                 v-model="form.gender"
                 :options="genderOptions"
                 option-label="label"
                 option-value="value"
                 class="w-full"
               />
-              <label>Пол</label>
+              <label :for="`${playerFormId}-gender`">Пол</label>
             </FloatLabel>
 
             <FloatLabel variant="on" class="block">
               <Select
+                :input-id="`${playerFormId}-position`"
                 v-model="form.position"
                 :options="positionOptions"
                 option-label="label"
                 option-value="value"
                 class="w-full"
               />
-              <label>Амплуа</label>
+              <label :for="`${playerFormId}-position`">Амплуа</label>
             </FloatLabel>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <FloatLabel variant="on" class="block">
-              <InputText v-model="form.bioNumber" class="w-full" />
-              <label>Номер игрока</label>
+              <InputText :id="`${playerFormId}-bioNumber`" v-model="form.bioNumber" class="w-full" />
+              <label :for="`${playerFormId}-bioNumber`">Номер игрока</label>
             </FloatLabel>
+
             <FloatLabel variant="on" class="block">
               <Select
+                :input-id="`${playerFormId}-team`"
                 v-model="form.teamId"
                 :options="teamSelectOptions"
                 option-label="label"
@@ -1472,29 +1561,47 @@ onMounted(() => {
                 <template #footer>
                   <div
                     v-if="teamsHasMore || teamsLoadingMore"
-                    class="px-2 py-2 border-t border-surface-200 text-center text-xs text-muted-color"
+                    class="border-t border-surface-200 px-2 py-2 text-center text-xs text-muted-color"
                   >
                     <span v-if="teamsLoadingMore">Загрузка…</span>
                     <span v-else>Прокрутите список вниз, чтобы подгрузить ещё</span>
                   </div>
                 </template>
               </Select>
-              <label>Команда</label>
+              <label :for="`${playerFormId}-team`">Команда</label>
             </FloatLabel>
+            <div>
+              <FloatLabel variant="on" class="block">
+                <InputMask
+                  :id="`${playerFormId}-phone`"
+                  v-model="form.phone"
+                  class="w-full"
+                  mask="+7 (999) 999-99-99"
+                  :invalid="showPhoneError"
+                  autoClear
+                  placeholder="+7 (___) ___-__-__"
+                  :pt="
+                    showPhoneError
+                      ? {
+                          root: {
+                            'aria-describedby': `${playerFormId}-err-phone`,
+                          },
+                        }
+                      : undefined
+                  "
+                />
+                <label :for="`${playerFormId}-phone`">Мобильный телефон</label>
+              </FloatLabel>
+              <p
+                v-if="showPhoneError"
+                :id="`${playerFormId}-err-phone`"
+                role="alert"
+                class="mt-0 text-[11px] leading-4 text-red-500"
+              >
+                {{ playerFormErrors.phone }}
+              </p>
+            </div>
           </div>
-
-          <FloatLabel variant="on" class="block">
-            <InputMask
-              v-model="form.phone"
-              class="w-full"
-              mask="+7 (999) 999-99-99"
-              :invalid="showPhoneError"
-              autoClear
-              placeholder="+7 (___) ___-__-__"
-            />
-            <label>Мобильный телефон</label>
-          </FloatLabel>
-          <p v-if="showPhoneError" class="mt-0 text-[11px] leading-4 text-red-500">{{ playerFormErrors.phone }}</p>
         </div>
 
         <div class="md:col-span-3">
@@ -1505,8 +1612,9 @@ onMounted(() => {
 
       <template #footer>
         <div class="flex justify-end gap-2">
-          <Button label="Отмена" text @click="showForm = false" />
+          <Button type="button" label="Отмена" text @click="showForm = false" />
           <Button
+            type="button"
             :label="isEdit ? 'Сохранить' : 'Создать'"
             icon="pi pi-check"
             :loading="saving"

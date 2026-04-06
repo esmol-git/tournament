@@ -494,6 +494,8 @@ const tabBtnClass =
     <Dialog
       v-model:visible="linkDialogVisible"
       modal
+      block-scroll
+      :draggable="false"
       :header="t('admin.markdown.dialog_link_title')"
       :style="{ width: 'min(26rem, calc(100vw - 2rem))' }"
     >
@@ -533,6 +535,8 @@ const tabBtnClass =
     <Dialog
       v-model:visible="imageDialogVisible"
       modal
+      block-scroll
+      :draggable="false"
       :header="t('admin.markdown.dialog_image_title')"
       :style="{ width: 'min(26rem, calc(100vw - 2rem))' }"
     >
