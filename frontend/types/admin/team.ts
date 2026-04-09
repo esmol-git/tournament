@@ -21,6 +21,8 @@ export interface TeamRow {
 export interface TeamPlayerRow {
   playerId: string
   id: string
+  /** Участие в заявке (публичный состав турнира — только активные) */
+  isActive?: boolean
   jerseyNumber: number | null
   position: string | null
   player: {

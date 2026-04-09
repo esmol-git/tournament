@@ -1,14 +1,19 @@
 <template>
   <div class="landing-root bg-white text-slate-900">
     <header class="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
+      <div class="scroll-progress" :style="{ transform: `scaleX(${scrollProgress})` }" />
       <div class="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <div class="flex items-center gap-2">
-          <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 font-bold text-white shadow-lg shadow-slate-400/40">
-            TP
-          </div>
-          <div class="leading-tight">
-            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Tournament</p>
-            <p class="text-lg font-black text-emerald-600">Platform</p>
+        <div class="flex items-center gap-3">
+          <img
+            src="/logo.png"
+            alt="Турнирная платформа"
+            width="36"
+            height="36"
+            class="h-9 w-9 shrink-0 object-contain"
+          />
+          <div class="min-w-0 leading-tight">
+            <p class="landing-brand-tagline">Спортивные лиги и турниры</p>
+            <p class="landing-brand-name">Турнирная платформа</p>
           </div>
         </div>
 
@@ -17,7 +22,9 @@
             v-for="item in navItems"
             :key="item.label"
             :href="item.href"
-            class="text-slate-700 transition hover:text-emerald-600"
+            class="nav-link text-slate-700 transition hover:text-emerald-600"
+            :class="{ 'nav-link-active': activeSection === item.targetId }"
+            @click.prevent="scrollToSection(item.targetId)"
           >
             {{ item.label }}
           </a>
@@ -27,7 +34,7 @@
           <NuxtLink to="/admin/login" class="login-link-btn">
             Войти
           </NuxtLink>
-          <Button label="Демо-доступ" />
+          <Button label="Демо-доступ" @click="scrollToSection('demo-form')" />
         </div>
       </div>
     </header>
@@ -42,7 +49,7 @@
         <div class="float-slow pointer-events-none absolute -right-8 top-8 h-44 w-44 rounded-full bg-violet-500/20 blur-2xl hero-depth-2" />
         <div class="float-fast pointer-events-none absolute bottom-10 right-1/4 h-24 w-24 rounded-full bg-cyan-400/30 blur-xl hero-depth-3" />
         <div class="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,.06)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.06)_1px,transparent_1px)] [background-size:42px_42px]" />
-        <div class="relative mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-28 lg:px-8">
+        <div class="relative mx-auto max-w-7xl px-4 py-16 sm:px-6 sm:py-24 lg:px-8 lg:py-28">
           <div class="max-w-3xl hero-depth-2 reveal">
             <p class="mb-5 inline-flex rounded-full border border-emerald-400/30 bg-emerald-400/10 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">
               Цифровая экосистема для спорта
@@ -56,8 +63,8 @@
               Все ключевые процессы в одном продукте.
             </p>
             <div class="mt-9 flex flex-wrap gap-3">
-              <Button label="Запросить демо" size="large" class="hero-cta shadow-xl shadow-emerald-500/30" />
-              <Button label="Смотреть тарифы" severity="secondary" outlined size="large" class="border-white/30 text-white" />
+              <Button label="Запросить демо" size="large" class="hero-cta shadow-xl shadow-emerald-500/30" @click="scrollToSection('demo-form')" />
+              <Button label="Смотреть тарифы" severity="secondary" outlined size="large" class="border-white/30 text-white" @click="scrollToSection('pricing')" />
             </div>
             <div class="mt-8 grid max-w-2xl grid-cols-2 gap-5 text-sm text-slate-300 sm:grid-cols-4">
               <div v-for="fact in heroFacts" :key="fact.label">
@@ -65,11 +72,22 @@
                 <p class="mt-1">{{ fact.label }}</p>
               </div>
             </div>
+            <div class="mt-7 flex flex-wrap gap-2">
+              <button
+                v-for="link in quickLinks"
+                :key="link.id"
+                type="button"
+                class="hero-pill"
+                @click="scrollToSection(link.id)"
+              >
+                {{ link.label }}
+              </button>
+            </div>
           </div>
         </div>
       </section>
 
-      <section id="benefits" class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24 reveal">
+      <section id="benefits" class="section-anchor mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24 reveal">
         <div class="max-w-2xl reveal">
           <p class="text-sm font-bold uppercase tracking-[0.2em] text-emerald-600">Ваши выгоды</p>
           <h2 class="mt-3 text-3xl font-black leading-tight sm:text-4xl">
@@ -78,12 +96,13 @@
         </div>
         <div class="mt-10 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
           <article
-            v-for="item in benefits"
+            v-for="(item, idx) in benefits"
             :key="item.title"
             class="card-fx reveal rounded-2xl border border-slate-200 bg-white p-6 shadow-md transition hover:-translate-y-1.5"
+            :style="revealDelayStyle(idx)"
           >
-            <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-lg font-bold text-emerald-600">
-              {{ item.icon }}
+            <div class="benefit-icon mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl text-lg font-bold">
+              <i :class="item.icon" />
             </div>
             <h3 class="text-xl font-bold">{{ item.title }}</h3>
             <p class="mt-3 text-slate-600">{{ item.text }}</p>
@@ -94,10 +113,11 @@
       <section class="mx-auto max-w-7xl px-4 pb-6 sm:px-6 lg:px-8 reveal lg:pb-10">
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <article
-            v-for="metric in animatedMetrics"
+            v-for="(metric, idx) in animatedMetrics"
             :key="metric.label"
             ref="metricRefs"
             class="card-fx rounded-2xl border border-slate-200 bg-white p-5 shadow-md"
+            :style="revealDelayStyle(idx)"
           >
             <p class="text-3xl font-black text-slate-900">
               {{ metricDisplay[metric.key] }}<span class="text-emerald-600">{{ metric.suffix }}</span>
@@ -113,16 +133,17 @@
           <div class="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
             <div>
               <p class="text-sm font-bold uppercase tracking-[0.2em] text-emerald-600">Как это работает</p>
-              <h2 class="mt-3 text-3xl font-black sm:text-4xl">Запуск в 4 шага без боли и хаоса</h2>
+              <h2 class="mt-3 text-3xl font-black sm:text-4xl">Запуск в четыре шага</h2>
               <p class="mt-5 text-lg text-slate-600">
-                Готовый процесс внедрения помогает быстро выйти в продакшн и сразу начать получать заявки.
+                Пошаговый онбординг: сначала данные и роли, затем публикация. Сроки зависят от объёма и того, что уже есть в таблицах.
               </p>
             </div>
             <div class="space-y-4">
               <div
-                v-for="step in launchSteps"
+                v-for="(step, idx) in launchSteps"
                 :key="step.title"
                 class="card-fx reveal flex gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-md"
+                :style="revealDelayStyle(idx)"
               >
                 <div class="mt-0.5 h-8 min-w-8 rounded-lg bg-slate-900 text-center text-sm font-bold leading-8 text-white">
                   {{ step.num }}
@@ -137,24 +158,25 @@
         </div>
       </section>
 
-      <section id="features" class="bg-slate-50 reveal">
+      <section id="features" class="section-anchor relative overflow-hidden bg-slate-50 reveal">
+        <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_16%,rgba(16,185,129,0.09),transparent_36%),radial-gradient(circle_at_86%_85%,rgba(99,102,241,0.12),transparent_34%)]" />
         <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24">
           <div class="grid items-start gap-10 lg:grid-cols-2">
             <div>
               <p class="text-sm font-bold uppercase tracking-[0.2em] text-emerald-600">Функциональность</p>
               <h2 class="mt-3 text-3xl font-black leading-tight sm:text-4xl">
-                Новые возможности с крутым футбольным движком
+                Возможности платформы для футбольных лиг
               </h2>
               <p class="mt-5 text-lg text-slate-600">
-                От заявочной кампании и календаря до протоколов матчей и живой статистики. Все модули
-                уже готовы к работе.
+                От заявочной кампании и календаря до протоколов матчей и статистики. Набор модулей зависит от тарифа и настроек организации.
               </p>
             </div>
             <div class="grid gap-4 sm:grid-cols-2">
               <div
-                v-for="feature in featureList"
+                v-for="(feature, idx) in featureList"
                 :key="feature"
                 class="card-fx reveal rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 shadow-sm"
+                :style="revealDelayStyle(idx)"
               >
                 {{ feature }}
               </div>
@@ -171,8 +193,7 @@
               <h2 class="mt-2 text-3xl font-black sm:text-4xl">Подключается к вашей экосистеме</h2>
             </div>
             <p class="max-w-xl text-slate-600">
-              CRM, аналитика, уведомления, платежи и соцсети. Используйте привычные сервисы без ручных
-              костылей и дублирования данных.
+              Подключение внешних сервисов — по договорённости и возможностям тарифа (вебхуки, аналитика, уведомления). Не обещаем «из коробки» все интеграции сразу.
             </p>
           </div>
           <div class="mt-8 grid grid-cols-2 gap-3 text-center sm:grid-cols-3 lg:grid-cols-6">
@@ -206,25 +227,44 @@
             class="card-fx reveal rounded-2xl border border-slate-200 bg-white p-6 shadow-md"
           >
             <h3 class="text-xl font-bold">{{ item.title }}</h3>
-            <div class="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              <span class="font-bold">Было:</span> {{ item.before }}
-            </div>
-            <div class="mt-3 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              <span class="font-bold">Стало:</span> {{ item.after }}
+            <div class="mt-4 overflow-hidden rounded-xl border border-slate-200">
+              <div class="flex">
+                <div
+                  class="bg-rose-50 px-4 py-3 text-sm text-rose-700 transition-all duration-300"
+                  :style="{ width: `${caseSplit[item.title] ?? 50}%` }"
+                >
+                  <span class="font-bold">Было:</span> {{ item.before }}
+                </div>
+                <div
+                  class="bg-emerald-50 px-4 py-3 text-sm text-emerald-700 transition-all duration-300"
+                  :style="{ width: `${100 - (caseSplit[item.title] ?? 50)}%` }"
+                >
+                  <span class="font-bold">Стало:</span> {{ item.after }}
+                </div>
+              </div>
+              <div class="border-t border-slate-200 px-3 py-2">
+                <input
+                  v-model.number="caseSplit[item.title]"
+                  type="range"
+                  min="25"
+                  max="75"
+                  class="w-full accent-emerald-600"
+                >
+              </div>
             </div>
             <p class="mt-4 text-sm font-semibold text-slate-700">{{ item.result }}</p>
           </article>
         </div>
       </section>
 
-      <section id="pricing" class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24 reveal">
+      <section id="pricing" class="section-anchor mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24 reveal">
         <div class="text-center">
           <p class="text-sm font-bold uppercase tracking-[0.2em] text-emerald-600">Тарифы</p>
           <h2 class="mt-3 text-3xl font-black sm:text-4xl">Выберите подходящий тариф</h2>
         </div>
         <div class="mt-10 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
           <article
-            v-for="plan in plans"
+            v-for="(plan, idx) in plans"
             :key="plan.name"
             :class="[
               'card-fx reveal relative flex flex-col rounded-2xl border bg-white p-6 shadow-lg shadow-slate-200/70',
@@ -232,6 +272,7 @@
                 ? 'border-emerald-500 ring-2 ring-emerald-100'
                 : 'border-slate-200',
             ]"
+            :style="revealDelayStyle(idx)"
           >
             <p
               v-if="plan.highlight"
@@ -245,7 +286,7 @@
             <ul class="mt-6 space-y-2 text-sm text-slate-600">
               <li v-for="line in plan.features" :key="line">• {{ line }}</li>
             </ul>
-            <a href="#contacts" class="plan-btn mt-auto inline-flex w-full items-center justify-center rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wide">
+            <a href="#demo-form" class="plan-btn mt-auto inline-flex w-full items-center justify-center rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wide" @click.prevent="requestDemoForPlan(plan.name)">
               Выбрать тариф
             </a>
           </article>
@@ -325,7 +366,7 @@
         </div>
       </section>
 
-      <section id="testimonials" class="bg-slate-50 reveal">
+      <section id="testimonials" class="section-anchor bg-slate-50 reveal">
         <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-24">
           <div class="text-center">
             <p class="text-sm font-bold uppercase tracking-[0.2em] text-emerald-600">Отзывы</p>
@@ -333,9 +374,10 @@
           </div>
           <div class="mt-10 grid gap-6 md:grid-cols-3">
             <article
-              v-for="quote in testimonials"
+              v-for="(quote, idx) in testimonials"
               :key="quote.author"
               class="card-fx reveal rounded-2xl border border-slate-200 bg-white p-6 shadow-md"
+              :style="revealDelayStyle(idx)"
             >
               <p class="text-sm leading-relaxed text-slate-700">"{{ quote.text }}"</p>
               <p class="mt-5 text-base font-bold">{{ quote.author }}</p>
@@ -351,14 +393,14 @@
           <h2 class="mt-3 text-3xl font-black sm:text-4xl">Частые вопросы перед запуском</h2>
         </div>
         <div class="grid gap-4 md:grid-cols-2">
-          <article v-for="faq in faqs" :key="faq.q" class="card-fx reveal rounded-2xl border border-slate-200 bg-white p-6 shadow-md">
+          <article v-for="(faq, idx) in faqs" :key="faq.q" class="card-fx reveal rounded-2xl border border-slate-200 bg-white p-6 shadow-md" :style="revealDelayStyle(idx)">
             <h3 class="text-lg font-bold">{{ faq.q }}</h3>
             <p class="mt-2 text-slate-600">{{ faq.a }}</p>
           </article>
         </div>
       </section>
 
-      <section id="demo-form" class="bg-slate-950">
+      <section id="demo-form" class="section-anchor bg-slate-950">
         <div class="mx-auto max-w-5xl px-4 py-16 text-center sm:px-6 lg:px-8 lg:py-24">
           <h2 class="text-3xl font-black leading-tight text-white sm:text-5xl">
             Создайте персональный футбольный сайт уже сегодня
@@ -367,7 +409,12 @@
             Получите бесплатный демо-доступ и запустите современный сайт лиги с удобной админкой.
           </p>
           <div class="mt-9">
-            <Button label="Запросить демонстрацию" size="large" class="cta-glow shadow-xl shadow-emerald-500/30" />
+            <Button label="Запросить демонстрацию" size="large" class="cta-glow shadow-xl shadow-emerald-500/30" @click="requestDemoForPlan(quizRecommendation.name)" />
+          </div>
+          <div class="mx-auto mt-5 flex max-w-3xl flex-wrap justify-center gap-2">
+            <button type="button" class="quiz-chip" @click="requestDemoWithContext('Запуск лиги с нуля')">Запуск лиги с нуля</button>
+            <button type="button" class="quiz-chip" @click="requestDemoWithContext('Переезд со старого сайта')">Переезд со старого сайта</button>
+            <button type="button" class="quiz-chip" @click="requestDemoWithContext('Интеграция CRM и Telegram')">Интеграция CRM и Telegram</button>
           </div>
           <form
             class="mx-auto mt-10 grid max-w-3xl gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-left backdrop-blur sm:grid-cols-2"
@@ -427,16 +474,19 @@
             <button
               type="submit"
               class="plan-btn form-submit-btn sm:col-span-2"
-              :disabled="demoSubmitAttempted && !canSubmitDemoForm"
+              :disabled="isSubmittingDemo || (demoSubmitAttempted && !canSubmitDemoForm)"
             >
-              Отправить заявку
+              {{ isSubmittingDemo ? 'Отправляем...' : 'Отправить заявку' }}
             </button>
+            <p v-if="demoJustSubmitted" class="sm:col-span-2 mt-1 text-center text-xs font-semibold text-emerald-300">
+              Спасибо! Заявка отправлена, скоро свяжемся.
+            </p>
           </form>
         </div>
       </section>
     </main>
 
-    <footer id="contacts" class="border-t border-slate-200 bg-white">
+    <footer id="contacts" class="section-anchor border-t border-slate-200 bg-white">
       <div class="mx-auto grid max-w-7xl gap-8 px-4 py-14 sm:px-6 md:grid-cols-2 lg:grid-cols-4 lg:px-8">
         <div>
           <p class="text-lg font-bold">Демо-доступ и тарифы</p>
@@ -476,7 +526,7 @@
     </footer>
 
     <div class="mobile-cta fixed inset-x-3 bottom-3 z-40 md:hidden">
-      <a href="#demo-form" class="plan-btn inline-flex w-full items-center justify-center rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wide">
+      <a href="#demo-form" class="plan-btn inline-flex w-full items-center justify-center rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wide" @click.prevent="scrollToSection('demo-form')">
         Запросить демо за 30 секунд
       </a>
     </div>
@@ -487,16 +537,22 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { minLength, required } from '@vuelidate/validators'
+import { useApiUrl } from '~/composables/useApiUrl'
 
 const heroRef = ref<HTMLElement | null>(null)
 const offsetX = ref(0)
 const offsetY = ref(0)
 let revealObserver: IntersectionObserver | null = null
+let sectionObserver: IntersectionObserver | null = null
 let cleanupHeroListeners: (() => void) | null = null
 let metricObserver: IntersectionObserver | null = null
 const metricRefs = ref<HTMLElement[]>([])
 const toast = useToast()
+const { apiUrl } = useApiUrl()
 const demoSubmitAttempted = ref(false)
+const isSubmittingDemo = ref(false)
+const demoJustSubmitted = ref(false)
+const scrollProgress = ref(0)
 const demoForm = reactive({
   name: '',
   contact: '',
@@ -546,22 +602,70 @@ const showDemoMessageError = computed(
   () => (demoSubmitAttempted.value || demoV$.value.message.$dirty) && !!demoFormErrors.value.message,
 )
 
-function submitDemoForm() {
+function scrollToSection(targetId: string) {
+  if (!process.client) return
+  const el = document.getElementById(targetId)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function requestDemoWithContext(context: string) {
+  if (!demoForm.message.trim()) {
+    demoForm.message = `Интересует: ${context}.`
+  }
+  scrollToSection('demo-form')
+}
+
+function requestDemoForPlan(planName: string) {
+  if (!demoForm.message.trim()) {
+    demoForm.message = `Интересует тариф "${planName}".`
+  }
+  scrollToSection('demo-form')
+}
+
+async function submitDemoForm() {
   demoSubmitAttempted.value = true
   demoV$.value.$touch()
   if (!canSubmitDemoForm.value) return
-  toast.add({
-    severity: 'success',
-    summary: 'Заявка отправлена',
-    detail: 'Спасибо! Мы свяжемся с вами в ближайшее время.',
-    life: 4000,
-  })
-  demoForm.name = ''
-  demoForm.contact = ''
-  demoForm.league = ''
-  demoForm.message = ''
-  demoSubmitAttempted.value = false
-  demoV$.value.$reset()
+  isSubmittingDemo.value = true
+  demoJustSubmitted.value = false
+  try {
+    await $fetch(apiUrl('/public/leads/demo'), {
+      method: 'POST',
+      body: {
+        name: demoForm.name.trim(),
+        contact: demoForm.contact.trim(),
+        league: demoForm.league.trim(),
+        message: demoForm.message.trim(),
+        source: 'landing',
+      },
+    })
+    toast.add({
+      severity: 'success',
+      summary: 'Заявка отправлена',
+      detail: 'Спасибо! Мы свяжемся с вами в ближайшее время.',
+      life: 4000,
+    })
+    demoForm.name = ''
+    demoForm.contact = ''
+    demoForm.league = ''
+    demoForm.message = ''
+    demoSubmitAttempted.value = false
+    demoJustSubmitted.value = true
+    setTimeout(() => {
+      demoJustSubmitted.value = false
+    }, 4000)
+    demoV$.value.$reset()
+  } catch {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось отправить заявку',
+      detail: 'Попробуйте ещё раз через минуту или свяжитесь с нами по телефону.',
+      life: 5000,
+    })
+  } finally {
+    isSubmittingDemo.value = false
+  }
 }
 
 const heroStyle = computed(() => ({
@@ -570,58 +674,71 @@ const heroStyle = computed(() => ({
 }))
 
 const navItems = [
-  { label: 'Возможности', href: '#features' },
-  { label: 'Выгоды', href: '#benefits' },
-  { label: 'Тарифы', href: '#pricing' },
-  { label: 'Отзывы', href: '#testimonials' },
-  { label: 'Контакты', href: '#contacts' },
+  { label: 'Возможности', href: '#features', targetId: 'features' },
+  { label: 'Выгоды', href: '#benefits', targetId: 'benefits' },
+  { label: 'Тарифы', href: '#pricing', targetId: 'pricing' },
+  { label: 'Отзывы', href: '#testimonials', targetId: 'testimonials' },
+  { label: 'Контакты', href: '#contacts', targetId: 'contacts' },
 ]
+const quickLinks = [
+  { id: 'benefits', label: 'Что получу' },
+  { id: 'features', label: 'Возможности' },
+  { id: 'pricing', label: 'Тарифы' },
+  { id: 'demo-form', label: 'Демо за 30 сек' },
+]
+const activeSection = ref('benefits')
+const sectionIds = ['benefits', 'features', 'pricing', 'testimonials', 'contacts', 'demo-form']
+
+function revealDelayStyle(index: number) {
+  const delay = Math.min(index, 8) * 70
+  return { transitionDelay: `${delay}ms` }
+}
 
 const heroFacts = [
-  { value: '1 день', label: 'запуск сайта' },
-  { value: '80%', label: 'трафика с мобильных' },
-  { value: '100+', label: 'клиентов в спорте' },
-  { value: '24/7', label: 'поддержка клиентов' },
+  { value: 'Быстро', label: 'старт без разработки с нуля' },
+  { value: 'В одном месте', label: 'витрина, админка, турниры' },
+  { value: 'Импорт', label: 'игроков из CSV / XLSX' },
+  { value: 'По тарифу', label: 'лимиты и роли' },
 ]
 
 const benefits = [
   {
-    icon: '01',
+    icon: 'pi pi-rocket',
     title: 'Быстрее запуск',
     text: 'Не тратите месяцы на разработку: базовый сайт и админка готовы сразу после подключения.',
   },
   {
-    icon: '02',
+    icon: 'pi pi-sitemap',
     title: 'Проще управление',
     text: 'Календарь, турнирные таблицы, заявки, составы и протоколы матчей собраны в одном интерфейсе.',
   },
   {
-    icon: '03',
+    icon: 'pi pi-shield',
     title: 'Безопаснее процесс',
     text: 'Роли пользователей, контроль доступа и централизованные данные снижают риск ошибок.',
   },
   {
-    icon: '04',
+    icon: 'pi pi-palette',
     title: 'Профессиональный вид',
     text: 'Современный дизайн и адаптивная верстка формируют доверие у игроков, болельщиков и партнеров.',
   },
   {
-    icon: '05',
-    title: 'Рост вовлеченности',
-    text: 'Новости, фото, видео и уведомления помогают удерживать аудиторию и увеличивать активность.',
+    icon: 'pi pi-chart-line',
+    title: 'Работа с аудиторией',
+    text: 'Новости, фото и видео — инструменты публикации; охват зависит от контента и продвижения, не только от платформы.',
   },
   {
-    icon: '06',
+    icon: 'pi pi-wallet',
     title: 'Экономия бюджета',
     text: 'Подписка обходится дешевле индивидуальной разработки и постоянной доработки отдельных модулей.',
   },
 ]
 
 const launchSteps = [
-  { num: '01', title: 'Бриф и цели', text: 'Фиксируем задачи, бизнес-модель и структуру будущего проекта.' },
-  { num: '02', title: 'Настройка платформы', text: 'Подключаем домен, роли, тарифы, интеграции и ключевые модули.' },
-  { num: '03', title: 'Миграция данных', text: 'Переносим команды, игроков, календарь и материалы без потери истории.' },
-  { num: '04', title: 'Запуск и рост', text: 'Выходим в прод и улучшаем конверсию на основе аналитики и поведения.' },
+  { num: '01', title: 'Бриф и цели', text: 'Согласуем задачи, состав данных и ожидания по срокам — без обещаний «магического» переноса с любого старого сайта.' },
+  { num: '02', title: 'Настройка платформы', text: 'Организация, домен при необходимости, роли пользователей, тариф и включённые модули.' },
+  { num: '03', title: 'Данные', text: 'Игроков можно загрузить из CSV/XLSX; команды — вручную или импортом CSV там, где это включено в тарифе. Остальное (новости, медиа, история матчей) переносится по плану: вручную или отдельными задачами под ваш кейс.' },
+  { num: '04', title: 'Запуск', text: 'Публикуем витрину и админку, подключаем аналитику при необходимости и дорабатываем по обратной связи.' },
 ]
 
 const featureList = [
@@ -637,12 +754,12 @@ const featureList = [
 
 const integrations = ['Telegram', 'VK', 'YouTube', 'GA4', 'Я.Метрика', 'Webhook API']
 const trustMetrics = [
-  '99.95% uptime',
-  'До 70% меньше ручной работы',
-  'Внедрение от 1 дня',
-  '24/7 поддержка',
-  'Готовые интеграции',
-  'Современная аналитика',
+  'Роли и права в админке',
+  'Импорт игроков из таблиц',
+  'Публичная витрина и мобильная вёрстка',
+  'Турниры, матчи, протоколы',
+  'Новости и медиа',
+  'Тарифы под размер лиги',
 ]
 const trustMetricsLoop = [...trustMetrics, ...trustMetrics]
 
@@ -678,17 +795,17 @@ const plans = [
 ]
 
 const animatedMetrics = [
-  { key: 'launch', value: 1, suffix: 'д', label: 'средний срок запуска' },
-  { key: 'lessRoutine', value: 70, suffix: '%', label: 'меньше ручной работы' },
-  { key: 'mobile', value: 82, suffix: '%', label: 'мобильного трафика' },
-  { key: 'support', value: 24, suffix: '/7', label: 'поддержка без выходных' },
+  { key: 'modules', value: 4, suffix: '+', label: 'основных раздела: витрина, турниры, команды, новости' },
+  { key: 'roles', value: 3, suffix: '', label: 'роли в админке (по настройке тарифа)' },
+  { key: 'mobile', value: 100, suffix: '%', label: 'адаптивная публичная витрина' },
+  { key: 'import', value: 2, suffix: '', label: 'формата импорта игроков: CSV и XLSX' },
 ] as const
 
 const metricDisplay = ref<Record<string, number>>({
-  launch: 0,
-  lessRoutine: 0,
+  modules: 0,
+  roles: 0,
   mobile: 0,
-  support: 0,
+  import: 0,
 })
 
 const testimonials = [
@@ -700,7 +817,7 @@ const testimonials = [
   {
     author: 'Артем Максимовских',
     role: 'Организатор турниров',
-    text: 'Удобная мобильная версия и понятный интерфейс для администраторов. Команда поддержки реагирует оперативно.',
+    text: 'Удобная мобильная версия и понятный интерфейс для администраторов. Вопросы по платформе решаем через согласованные каналы.',
   },
   {
     author: 'Сергей Крестин',
@@ -711,41 +828,44 @@ const testimonials = [
 
 const caseStudies = [
   {
-    title: 'Региональная лига (32 команды)',
-    before: 'Протоколы заполнялись вручную, ошибки в таблице каждую неделю.',
-    after: 'Автогенерация протоколов и синхронизация таблиц в реальном времени.',
-    result: '-58% операционных задач у администраторов.',
+    title: 'Региональная лига (пример)',
+    before: 'Протоколы и таблицы вели вручную, частые ошибки при переносе счёта.',
+    after: 'Единое место для матчей и публикации результатов; меньше ручных пересылок между файлами.',
+    result: 'Типичный эффект — меньше согласований «кто что внёс», если процесс дисциплинирован.',
   },
   {
-    title: 'Городской чемпионат',
-    before: 'Сайт не адаптирован под мобильные и слабая вовлеченность.',
-    after: 'Новая мобильная витрина, push-уведомления и понятный календарь.',
-    result: '+41% возвратных посетителей за 2 месяца.',
+    title: 'Городской чемпионат (пример)',
+    before: 'Устаревшая витрина, неудобно с телефона.',
+    after: 'Адаптивная публичная часть и понятный календарь; push и прочие каналы — по настройке.',
+    result: 'Удобство для зрителей зависит от контента и рекламы; платформа даёт техническую базу.',
   },
   {
-    title: 'Федерация детского футбола',
-    before: 'Разрозненные инструменты и нет прозрачной аналитики по турнирам.',
-    after: 'Единая панель, сквозная статистика, роли и контроль доступа.',
-    result: 'Сокращение времени подготовки отчетов с 6 часов до 45 минут.',
+    title: 'Детская лига (пример)',
+    before: 'Разрозненные таблицы и переписки вместо одного источника правды.',
+    after: 'Роли в админке и структурированные данные по сезонам — по мере заполнения.',
+    result: 'Экономия времени на отчётах возможна, если заранее согласовать форматы данных.',
   },
 ]
+const caseSplit = ref<Record<string, number>>(
+  Object.fromEntries(caseStudies.map(item => [item.title, 50])),
+)
 
 const faqs = [
   {
     q: 'Сколько времени занимает запуск?',
-    a: 'Обычно от 1 до 3 дней в зависимости от объема данных и количества интеграций.',
+    a: 'Первый рабочий контур (организация, роли, часть команд и игроков) часто укладывается в несколько дней. Полный перенос контента со старого сайта и «красивая» витрина без заготовок занимают дольше и оцениваются отдельно.',
   },
   {
     q: 'Можно ли перейти со старого сайта?',
-    a: 'Да, переносим контент, пользователей и историю турниров по согласованному плану.',
+    a: 'Автоматического переноса «с любого движка» нет. Игроков загружаем из CSV/XLSX; команды — вручную или CSV там, где это включено в тариф. Тексты, медиа и история матчей переносятся по плану: вручную или отдельными задачами.',
   },
   {
     q: 'Есть ли мобильная версия?',
-    a: 'Да, все ключевые страницы адаптированы под смартфоны и планшеты.',
+    a: 'Публичные страницы и админка рассчитаны на адаптивную вёрстку; удобство на телефоне зависит ещё и от объёма данных на экране.',
   },
   {
-    q: 'Что с техподдержкой после запуска?',
-    a: 'Поддержка доступна 24/7, плюс регулярные обновления и помощь по улучшению конверсии.',
+    q: 'Что с поддержкой после запуска?',
+    a: 'Каналы и время ответа зависят от тарифа и договора. Обновления платформы выкатываем регулярно; индивидуальные доработки — по согласованию.',
   },
 ]
 
@@ -795,6 +915,15 @@ function animateMetric(key: string, target: number) {
 }
 
 onMounted(() => {
+  const updateScrollProgress = () => {
+    const total = document.documentElement.scrollHeight - window.innerHeight
+    if (total <= 0) {
+      scrollProgress.value = 0
+      return
+    }
+    scrollProgress.value = Math.min(Math.max(window.scrollY / total, 0), 1)
+  }
+
   const onMove = (event: MouseEvent) => {
     if (!heroRef.value) return
     const rect = heroRef.value.getBoundingClientRect()
@@ -811,9 +940,14 @@ onMounted(() => {
 
   heroRef.value?.addEventListener('mousemove', onMove)
   heroRef.value?.addEventListener('mouseleave', onLeave)
+  window.addEventListener('scroll', updateScrollProgress, { passive: true })
+  window.addEventListener('resize', updateScrollProgress)
+  updateScrollProgress()
   cleanupHeroListeners = () => {
     heroRef.value?.removeEventListener('mousemove', onMove)
     heroRef.value?.removeEventListener('mouseleave', onLeave)
+    window.removeEventListener('scroll', updateScrollProgress)
+    window.removeEventListener('resize', updateScrollProgress)
   }
 
   revealObserver = new IntersectionObserver(
@@ -829,6 +963,21 @@ onMounted(() => {
   )
 
   document.querySelectorAll('.reveal').forEach(el => revealObserver?.observe(el))
+
+  sectionObserver = new IntersectionObserver(
+    entries => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          activeSection.value = (entry.target as HTMLElement).id
+        }
+      }
+    },
+    { threshold: 0.35, rootMargin: '-30% 0px -55% 0px' },
+  )
+  for (const id of sectionIds) {
+    const el = document.getElementById(id)
+    if (el) sectionObserver.observe(el)
+  }
 
   metricObserver = new IntersectionObserver(
     entries => {
@@ -852,6 +1001,8 @@ onBeforeUnmount(() => {
   cleanupHeroListeners?.()
   revealObserver?.disconnect()
   revealObserver = null
+  sectionObserver?.disconnect()
+  sectionObserver = null
   metricObserver?.disconnect()
   metricObserver = null
 })
@@ -869,6 +1020,47 @@ onBeforeUnmount(() => {
 .reveal.in-view {
   opacity: 1;
   transform: translateY(0) scale(1);
+}
+
+.section-anchor {
+  scroll-margin-top: 5rem;
+}
+
+.scroll-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 2px;
+  transform-origin: left;
+  background: linear-gradient(90deg, #14b8a6, #6366f1);
+  transition: transform 90ms linear;
+}
+
+.nav-link {
+  position: relative;
+}
+
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -0.25rem;
+  width: 100%;
+  height: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #14b8a6, #6366f1);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 180ms ease;
+}
+
+.nav-link-active {
+  color: #0f766e;
+}
+
+.nav-link-active::after {
+  transform: scaleX(1);
 }
 
 .login-link-btn {
@@ -897,6 +1089,21 @@ onBeforeUnmount(() => {
   --landing-primary: #0d9488;
   --landing-primary-2: #6366f1;
   --landing-ink: #0f172a;
+  --landing-font-text:
+    "Manrope",
+    "Inter",
+    "Segoe UI",
+    Roboto,
+    Arial,
+    sans-serif;
+  --landing-font-display:
+    "Unbounded",
+    "Manrope",
+    "Inter",
+    "Segoe UI",
+    Roboto,
+    Arial,
+    sans-serif;
   --landing-card-shadow: 0 20px 45px -26px rgba(15, 23, 42, 0.38);
   --p-primary-color: var(--landing-primary);
   --p-primary-hover-color: #0f766e;
@@ -908,6 +1115,41 @@ onBeforeUnmount(() => {
   --p-button-primary-hover-border-color: #0f766e;
   --p-button-primary-active-background: #115e59;
   --p-button-primary-active-border-color: #115e59;
+  font-family: var(--landing-font-text);
+  letter-spacing: 0.002em;
+}
+
+.landing-root .landing-brand-tagline {
+  margin: 0;
+  max-width: 14rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.landing-root .landing-brand-name {
+  margin: 0.15rem 0 0;
+  font-family: var(--landing-font-display);
+  font-size: 1.0625rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+  background: linear-gradient(100deg, #0f766e 0%, #0d9488 38%, #1e293b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.landing-root :is(h1, h2) {
+  font-family: var(--landing-font-display);
+  letter-spacing: -0.02em;
+}
+
+.landing-root :is(h3, .plan-btn, .login-link-btn) {
+  font-family: var(--landing-font-text);
+  letter-spacing: 0.01em;
 }
 
 .card-fx {
@@ -921,6 +1163,12 @@ onBeforeUnmount(() => {
   transform: translateY(-4px);
   box-shadow: var(--landing-card-shadow);
   border-color: rgba(99, 102, 241, 0.35);
+}
+
+.benefit-icon {
+  color: #0f766e;
+  background: linear-gradient(135deg, #ccfbf1, #e0e7ff);
+  box-shadow: 0 8px 20px -14px rgba(15, 118, 110, 0.55);
 }
 
 .parallax-layer {
@@ -963,6 +1211,24 @@ onBeforeUnmount(() => {
   border: none;
 }
 
+.hero-pill {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  border-radius: 9999px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  transition: all 180ms ease;
+}
+
+.hero-pill:hover {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(16, 185, 129, 0.2);
+  color: #f8fafc;
+}
+
 .cta-glow::after {
   content: '';
   position: absolute;
@@ -989,14 +1255,17 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
   font-weight: 800;
   color: #ffffff;
-  background: #0f766e;
+  background: linear-gradient(135deg, #0f766e, #0d9488);
   box-shadow:
     0 12px 22px -12px rgba(15, 118, 110, 0.85),
     inset 0 1px 0 rgba(255, 255, 255, 0.3);
   transition:
     transform 220ms ease,
     box-shadow 220ms ease,
-    filter 220ms ease;
+    filter 220ms ease,
+    background-position 220ms ease;
+  background-size: 140% 140%;
+  background-position: 20% 50%;
 }
 
 .plan-btn:hover {
@@ -1005,7 +1274,8 @@ onBeforeUnmount(() => {
   box-shadow:
     0 16px 30px -14px rgba(15, 118, 110, 0.65),
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  background: #115e59;
+  background: linear-gradient(135deg, #115e59, #0f766e);
+  background-position: 80% 50%;
 }
 
 .plan-btn:active {
@@ -1030,8 +1300,8 @@ onBeforeUnmount(() => {
 .landing-input {
   width: 100%;
   border-radius: 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(15, 23, 42, 0.35);
   padding: 0.72rem 0.85rem;
   color: #ffffff;
   outline: none;
@@ -1042,7 +1312,7 @@ onBeforeUnmount(() => {
 }
 
 .landing-input::placeholder {
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(226, 232, 240, 0.72);
 }
 
 .landing-input:focus {
@@ -1144,6 +1414,13 @@ onBeforeUnmount(() => {
   .reveal {
     opacity: 1;
     transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .landing-root h1 {
+    font-size: 2.2rem;
+    line-height: 1.05;
   }
 }
 </style>

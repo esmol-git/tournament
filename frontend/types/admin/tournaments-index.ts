@@ -121,6 +121,24 @@ export interface TournamentDetails {
   }>
 }
 
+/** Строка `GET /tournaments/:id/player-stats` (агрегат по протоколам). */
+export interface TournamentPlayerStatRow {
+  tournamentId: string
+  tournamentName: string
+  playerId: string
+  firstName: string
+  lastName: string
+  birthDate?: string | null
+  teamId: string | null
+  teamName: string | null
+  teamLogoUrl?: string | null
+  playerPhotoUrl?: string | null
+  goals: number
+  assists: number
+  yellowCards: number
+  redCards: number
+}
+
 export interface UserLite {
   id: string
   email: string | null

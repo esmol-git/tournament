@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   Patch,
   Post,
@@ -32,6 +33,7 @@ import { SetTeamGroupDto } from './dto/set-team-group.dto';
 import { SyncTeamsGroupLayoutDto } from './dto/sync-teams-group-layout.dto';
 import { SetTeamRatingDto } from './dto/set-team-rating.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
+import { UpdateLaunchChecklistDto } from './dto/update-launch-checklist.dto';
 import { MatchesFilterQueryDto } from './dto/matches-filter-query.dto';
 import { ListTenantTournamentsQueryDto } from './dto/list-tenant-tournaments-query.dto';
 import { CreateTournamentNewsDto } from './dto/create-tournament-news.dto';
@@ -174,6 +176,20 @@ export class TournamentsController {
     return this.tournamentsService.update(id, dto);
   }
 
+  @Patch('tournaments/:id/launch-checklist')
+  @UseGuards(TournamentManageGuard)
+  async updateLaunchChecklist(
+    @Param('id') id: string,
+    @Body() dto: UpdateLaunchChecklistDto,
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.tournamentsService.updateLaunchChecklist(
+      id,
+      dto.completed,
+      req.user.sub,
+    );
+  }
+
   @Delete('tournaments/:id')
   @UseGuards(TournamentManageGuard)
   async delete(@Param('id') id: string) {
@@ -200,6 +216,14 @@ export class TournamentsController {
       parsedOffset,
       parsedLimit,
     );
+  }
+
+  /** Статистика игроков турнира по протоколам (голы, передачи, ЖК/КК). */
+  @Get('tournaments/:id/player-stats')
+  @Header('Cache-Control', 'private, no-store')
+  @UseGuards(TournamentMatchStaffGuard)
+  async getPlayerStats(@Param('id') id: string) {
+    return this.tournamentsService.getTournamentPlayerStats(id);
   }
 
   @Post('tournaments/:id/teams/:teamId')
@@ -260,6 +284,19 @@ export class TournamentsController {
   @UseGuards(TournamentManageGuard)
   async clearCalendar(@Param('id') id: string) {
     return this.tournamentsService.clearCalendar(id);
+  }
+
+  @Get('tournaments/:id/calendar.ics')
+  @UseGuards(TournamentMatchStaffGuard)
+  @Header('Content-Type', 'text/calendar; charset=utf-8')
+  async exportCalendarIcs(@Param('id') id: string) {
+    return this.tournamentsService.exportTournamentCalendarIcs(id);
+  }
+
+  @Get('tournaments/:id/calendar-feed-token')
+  @UseGuards(TournamentMatchStaffGuard)
+  async getCalendarFeedToken(@Param('id') id: string) {
+    return this.tournamentsService.createTournamentCalendarFeedToken(id);
   }
 
   @Post('tournaments/:id/playoff')

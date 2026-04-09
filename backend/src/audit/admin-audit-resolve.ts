@@ -133,6 +133,11 @@ const MATCHERS: Matcher[] = [
   },
   {
     methods: ['PATCH'],
+    pattern: /^\/tournaments\/([^/]+)\/matches\/bulk$/,
+    resolve: (m) => meta('tournament.matches_bulk_update', 'tournament', m[1]),
+  },
+  {
+    methods: ['PATCH'],
     pattern: /^\/tournaments\/([^/]+)\/matches\/([^/]+)\/protocol$/,
     resolve: (m) => meta('tournament.match_protocol_update', 'match', m[2]),
   },

@@ -28,12 +28,15 @@ import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
 import { displayTeamNameForUi } from '~/utils/teamDisplayName'
 import { adminTooltip } from '~/utils/adminTooltip'
 import { formatUserListLabel } from '~/utils/userDisplayName'
+import { toastScheduleWarnings } from '~/utils/scheduleWarningsToast'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import draggable from 'vuedraggable'
 import { useTenantStore } from '~/stores/tenant'
 import { useAdminTenantTeamsAllQuery } from '~/composables/admin/useAdminTenantListQueries'
 import { useAdminGlobalModeratorTournamentPolicy } from '~/composables/useAdminGlobalModeratorTournamentPolicy'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
+import AdminTournamentTableShareImageDialog from '~/app/components/admin/AdminTournamentTableShareImageDialog.vue'
+import AdminTournamentStatsSection from '~/app/components/admin/AdminTournamentStatsSection.vue'
 
 definePageMeta({
   layout: 'admin',
@@ -56,6 +59,10 @@ const subscriptionPlan = computed(() => {
   const u = user.value as { tenantSubscription?: { plan?: string | null } | null } | null
   return u?.tenantSubscription?.plan ?? null
 })
+const currentTenantId = computed(() => {
+  const u = user.value as { tenantId?: string | null } | null
+  return u?.tenantId ?? ''
+})
 const canTournamentAutomation = computed(() =>
   hasSubscriptionFeature(subscriptionPlan.value, 'tournament_automation'),
 )
@@ -74,7 +81,14 @@ const calendarRefreshError = ref<string | null>(null)
 let isFirstTournamentFetch = true
 const tournament = ref<TournamentDetails | null>(null)
 
+/** Пачки матчей в GET /tournaments/:id (как на публичном плей-оффе: matchesOffset / matchesLimit). */
+const ADMIN_TOURNAMENT_MATCHES_PAGE_SIZE = 100
+const tournamentMatchesLoadingMore = ref(false)
+const matchesAppendInFlight = ref(false)
+
 const tableLoading = ref(false)
+const calendarIcsDownloading = ref(false)
+const calendarFeedLinkLoading = ref(false)
 const tableError = ref<string | null>(null)
 /** Успешно загрузили таблицу хотя бы раз (чтобы не показывать «пусто» до первого ответа). */
 const tableLoadSucceeded = ref(false)
@@ -82,11 +96,32 @@ const tableSkeletonRows = Array.from({ length: 8 }, (_, i) => ({ id: `tbl-sk-${i
 const table = ref<TableRow[]>([])
 const groupTables = ref<Record<string, TableRow[]>>({})
 
+const tableShareDialogVisible = ref(false)
+
 const calendarDialog = ref(false)
 const calendarSaving = ref(false)
 const calendarSubmitAttempted = ref(false)
+const launchChecklistSaving = ref(false)
+const launchBlockCollapsed = ref(true)
+const diagnosticsBlockCollapsed = ref(true)
+const infrastructureLoading = ref(false)
+const infrastructureSaving = ref(false)
 
 const activeTab = ref(0)
+const infrastructureForm = ref({
+  seasonId: null as string | null,
+  competitionId: null as string | null,
+  ageGroupId: null as string | null,
+  refereeIds: [] as string[],
+  stadiumIds: [] as string[],
+})
+const infrastructureOptions = ref({
+  seasons: [] as Array<{ id: string; name: string; active?: boolean | null }>,
+  competitions: [] as Array<{ id: string; name: string; active?: boolean | null }>,
+  ageGroups: [] as Array<{ id: string; name: string; shortLabel?: string | null; active?: boolean | null }>,
+  referees: [] as Array<{ id: string; firstName: string; lastName: string }>,
+  stadiums: [] as Array<{ id: string; name: string; city?: string | null; address?: string | null }>,
+})
 
 const { teams: allTeams, teamsLoading, teamsQueryError, refetch: refetchTeamsCatalog } =
   useAdminTenantTeamsAllQuery()
@@ -193,6 +228,33 @@ const calendarFiltersActive = computed(() => {
     !!calendarFilterDateRange.value?.length
   )
 })
+
+/**
+ * Общее число матчей для пагинации в GET /tournaments/:id.
+ * Без фильтров календаря совпадает с summary.matchesTotal; при фильтрах полагаемся на matchesTotal из ответа.
+ */
+function resolvedMatchesTotal(tour: TournamentDetails): number {
+  const loaded = tour.matches?.length ?? 0
+  if (typeof tour.matchesTotal === 'number') return tour.matchesTotal
+  if (
+    !calendarFiltersActive.value &&
+    typeof tour.summary?.matchesTotal === 'number'
+  ) {
+    return tour.summary.matchesTotal
+  }
+  return loaded
+}
+
+function withResolvedMatchesTotal(tour: TournamentDetails): TournamentDetails {
+  if (typeof tour.matchesTotal === 'number') return tour
+  if (
+    !calendarFiltersActive.value &&
+    typeof tour.summary?.matchesTotal === 'number'
+  ) {
+    return { ...tour, matchesTotal: tour.summary.matchesTotal }
+  }
+  return tour
+}
 
 const resetCalendarFilters = () => {
   calendarFilterDateRange.value = null
@@ -367,6 +429,80 @@ const onProtocolSaved = async () => {
   await fetchTable()
 }
 
+function buildTournamentDetailQueryParams(matchesOffset: number): URLSearchParams {
+  const params = new URLSearchParams()
+  const range = calendarFilterDateRange.value
+  if (range?.[0]) params.set('dateFrom', toYmdLocal(new Date(range[0])))
+  if (range?.[1]) params.set('dateTo', toYmdLocal(new Date(range[1])))
+  if (calendarFilterStatuses.value.length) params.set('statuses', calendarFilterStatuses.value.join(','))
+  if (calendarFilterTeamIds.value.length) params.set('teamIds', calendarFilterTeamIds.value.join(','))
+  params.set('matchesLimit', String(ADMIN_TOURNAMENT_MATCHES_PAGE_SIZE))
+  params.set('matchesOffset', String(Math.max(0, Math.floor(matchesOffset))))
+  return params
+}
+
+async function appendNextTournamentMatchesPage(): Promise<void> {
+  while (matchesAppendInFlight.value) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+  }
+  matchesAppendInFlight.value = true
+  try {
+    const t = tournament.value
+    if (!token.value || !t) return
+    const loaded = t.matches?.length ?? 0
+    const total = resolvedMatchesTotal(t)
+    if (loaded >= total) return
+
+    const params = buildTournamentDetailQueryParams(loaded)
+    const url = apiUrl(`/tournaments/${tournamentId.value}?${params.toString()}`)
+    const res = await authFetch<TournamentDetails>(url, {
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+
+    const byId = new Map<string, MatchRow>()
+    for (const m of t.matches ?? []) byId.set(m.id, m)
+    for (const m of res.matches ?? []) byId.set(m.id, m)
+    const merged = Array.from(byId.values()).sort(
+      (a, b) =>
+        new Date(a.startTime).getTime() - new Date(b.startTime).getTime() ||
+        a.id.localeCompare(b.id),
+    )
+
+    tournament.value = withResolvedMatchesTotal({
+      ...t,
+      ...res,
+      matches: merged,
+      matchNumberById: res.matchNumberById ?? t.matchNumberById,
+    })
+    calendarRounds.value = buildCalendarRoundsFromMatches(merged, t.groups ?? [])
+  } finally {
+    matchesAppendInFlight.value = false
+  }
+}
+
+async function loadMoreTournamentMatchesForWorkspace() {
+  if (tournamentMatchesLoadingMore.value) return
+  const tour = tournament.value
+  if (!tour) return
+  const loaded = tour.matches?.length ?? 0
+  const total = resolvedMatchesTotal(tour)
+  if (loaded >= total) return
+
+  tournamentMatchesLoadingMore.value = true
+  try {
+    await appendNextTournamentMatchesPage()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.matches_load_more_error'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    tournamentMatchesLoadingMore.value = false
+  }
+}
+
 const fetchTournament = async () => {
   if (!token.value) {
     initialLoading.value = false
@@ -379,24 +515,16 @@ const fetchTournament = async () => {
     calendarRefreshError.value = null
   }
   try {
-    const params = new URLSearchParams()
-    const range = calendarFilterDateRange.value
-    if (range?.[0]) params.set('dateFrom', toYmdLocal(new Date(range[0])))
-    if (range?.[1]) params.set('dateTo', toYmdLocal(new Date(range[1])))
-    if (calendarFilterStatuses.value.length) params.set('statuses', calendarFilterStatuses.value.join(','))
-    if (calendarFilterTeamIds.value.length) params.set('teamIds', calendarFilterTeamIds.value.join(','))
-
+    const params = buildTournamentDetailQueryParams(0)
     const qs = params.toString()
-    const url = qs
-      ? apiUrl(`/tournaments/${tournamentId.value}?${qs}`)
-      : apiUrl(`/tournaments/${tournamentId.value}`)
+    const url = apiUrl(`/tournaments/${tournamentId.value}?${qs}`)
 
     const res = await authFetch<TournamentDetails>(url, {
       headers: { Authorization: `Bearer ${token.value}` },
     })
     tournamentPageError.value = null
     calendarRefreshError.value = null
-    tournament.value = res
+    tournament.value = withResolvedMatchesTotal(res)
     calendarRounds.value = buildCalendarRoundsFromMatches(res.matches ?? [], res.groups ?? [])
 
     calendarForm.intervalDays = res.intervalDays ?? 7
@@ -428,12 +556,20 @@ const fetchTournament = async () => {
     selectedTeamIds.value = Array.isArray(res.tournamentTeams)
       ? res.tournamentTeams.map((x) => x.teamId)
       : []
+    infrastructureForm.value = {
+      seasonId: res.season?.id ?? null,
+      competitionId: res.competition?.id ?? null,
+      ageGroupId: res.ageGroup?.id ?? null,
+      refereeIds: (res.tournamentReferees ?? []).map((x) => x.refereeId),
+      stadiumIds: (res.tournamentStadiums ?? []).map((x) => x.stadiumId),
+    }
 
     if (showGroupBucketsFor(res)) {
       initGroupColumns(res)
     } else {
       groupColumns.value = []
     }
+
   } catch (e: any) {
     if (isInitial) {
       tournamentPageError.value = getApiErrorMessage(e, t('admin.errors.request_failed'))
@@ -487,6 +623,23 @@ const isGroupedFormat = computed(() => {
   if (isGroupsPlusPlayoffFamily(t.format)) return true
   if (t.format === 'MANUAL' && (t.groupCount ?? 1) > 1) return true
   return false
+})
+
+const groupedTablesForShare = computed(() => {
+  if (!isGroupedFormat.value || !tournament.value?.groups?.length) return undefined
+  return tournament.value.groups
+    .slice()
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    .map((g) => ({
+      groupId: g.id,
+      groupName: g.name,
+      rows: groupTables.value[g.id] ?? [],
+    }))
+})
+
+const flatRowsForShare = computed(() => {
+  if (isGroupedFormat.value) return []
+  return table.value
 })
 
 const isTableDataEmpty = computed(() => {
@@ -668,20 +821,153 @@ function openPublicTournamentLink() {
 
 const showTournamentTableTab = computed(() => !isPlayoffOnlyFormat.value)
 
+const statisticsTabIndex = computed(() =>
+  tournamentTabSlugToIndex('statistics', showTournamentTableTab.value),
+)
+const infrastructureTabIndex = computed(() =>
+  tournamentTabSlugToIndex('infrastructure', showTournamentTableTab.value),
+)
+const matchesTabIndex = computed(() =>
+  tournamentTabSlugToIndex('matches', showTournamentTableTab.value),
+)
+/** Неактивные вкладки PrimeVue часто скрыты — IntersectionObserver на «Матчах» иначе не срабатывает. */
+const isMatchesTabActive = computed(() => activeTab.value === matchesTabIndex.value)
+const isCalendarTabActive = computed(
+  () => activeTab.value === tournamentTabSlugToIndex('calendar', showTournamentTableTab.value),
+)
+const isStatisticsTabActive = computed(() => activeTab.value === statisticsTabIndex.value)
+
+/** Монтируем блок статистики только после первого захода на вкладку (и снова при смене турнира, если вкладка активна). */
+const statisticsSectionMounted = ref(false)
+
+watch(activeTab, (i) => {
+  if (i === statisticsTabIndex.value) statisticsSectionMounted.value = true
+}, { immediate: true })
+
+watch(tournamentId, () => {
+  statisticsSectionMounted.value = activeTab.value === statisticsTabIndex.value
+})
+
+async function downloadTournamentCalendarIcs() {
+  if (!token.value || !tournament.value?.id) return
+  calendarIcsDownloading.value = true
+  try {
+    const res = await fetch(apiUrl(`/tournaments/${tournament.value.id}/calendar.ics`), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`)
+    }
+    const blob = await res.blob()
+    const safeSlug =
+      (tournament.value.slug || tournament.value.name || 'tournament')
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'tournament'
+    const downloadName = `${safeSlug}-calendar.ics`
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = downloadName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(blobUrl)
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.ics_download_success'),
+      life: 2500,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.ics_download_error'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    calendarIcsDownloading.value = false
+  }
+}
+
+async function copyTournamentCalendarFeedLink() {
+  if (!token.value || !tournament.value?.id) return
+  const tenantSlug = tenantSlugForPublicLink.value
+  if (!tenantSlug) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.public_link_need_slug'),
+      life: 7000,
+    })
+    return
+  }
+  calendarFeedLinkLoading.value = true
+  try {
+    const feedTokenRes = await authFetch<{ token: string }>(
+      apiUrl(`/tournaments/${tournament.value.id}/calendar-feed-token`),
+      { headers: { Authorization: `Bearer ${token.value}` } },
+    )
+    const tokenValue = String(feedTokenRes?.token ?? '').trim()
+    if (!tokenValue) throw new Error('Empty calendar feed token')
+    const feedUrl = apiUrl(
+      `/public/tenants/${encodeURIComponent(tenantSlug)}/tournaments/${encodeURIComponent(
+        tournament.value.id,
+      )}/calendar-feed.ics?token=${encodeURIComponent(tokenValue)}`,
+    )
+    if (navigator.clipboard?.writeText && (window.isSecureContext || window.location.protocol === 'https:')) {
+      await navigator.clipboard.writeText(feedUrl)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = feedUrl
+      ta.setAttribute('readonly', 'true')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      ta.style.top = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (!ok) throw new Error('execCommand copy failed')
+    }
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.ics_feed_link_copied'),
+      detail: t('admin.tournament_page.ics_feed_link_hint'),
+      life: 5000,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.ics_feed_link_error'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 6000,
+    })
+  } finally {
+    calendarFeedLinkLoading.value = false
+  }
+}
+
 function tournamentTabSlugToIndex(slug: string | undefined | null, hasTable: boolean): number {
   const s = (slug ?? 'calendar').toString().toLowerCase()
   if (s === 'calendar') return 0
   if (s === 'matches') return 1
   if (s === 'table') return hasTable ? 2 : 0
-  if (s === 'squads') return hasTable ? 3 : 2
+  if (s === 'statistics') return hasTable ? 3 : 2
+  if (s === 'compositions' || s === 'squads') return hasTable ? 4 : 3
+  if (s === 'infrastructure') return hasTable ? 5 : 4
   return 0
 }
 
 function tournamentIndexToSlug(index: number, hasTable: boolean): string {
   if (hasTable) {
-    return (['calendar', 'matches', 'table', 'squads'] as const)[index] ?? 'calendar'
+    return (
+      ['calendar', 'matches', 'table', 'statistics', 'compositions', 'infrastructure'] as const
+    )[index] ?? 'calendar'
   }
-  return (['calendar', 'matches', 'squads'] as const)[index] ?? 'calendar'
+  return (['calendar', 'matches', 'statistics', 'compositions', 'infrastructure'] as const)[index] ?? 'calendar'
 }
 
 let tournamentTabSyncInProgress = false
@@ -712,7 +998,7 @@ watch(activeTab, (i) => {
   if (tournamentTabSyncInProgress) return
   if (!tournament.value) return
   const hasTable = showTournamentTableTab.value
-  const max = hasTable ? 3 : 2
+  const max = hasTable ? 5 : 4
   if (i < 0 || i > max) return
   const slug = tournamentIndexToSlug(i, hasTable)
   if ((route.query.tab as string | undefined) === slug) return
@@ -731,6 +1017,8 @@ watch(showTournamentTableTab, (hasTable) => {
   if (!hasTable) {
     if (activeTab.value === 2) activeTab.value = 0
     else if (activeTab.value === 3) activeTab.value = 2
+    else if (activeTab.value === 4) activeTab.value = 3
+    else if (activeTab.value === 5) activeTab.value = 4
   }
 })
 
@@ -770,6 +1058,20 @@ const hasScheduleMatches = computed(() => {
   const nMap = t.matchNumberById ? Object.keys(t.matchNumberById).length : 0
   if (nMap > 0) return true
   return (t.matches?.length ?? 0) > 0
+})
+
+/** Есть ли ещё матчи за пределами уже загруженных пачек (см. matchesLimit на бэкенде). */
+const tournamentMatchesHasMore = computed(() => {
+  const tour = tournament.value
+  if (!tour) return false
+  const loaded = tour.matches?.length ?? 0
+  return loaded < resolvedMatchesTotal(tour)
+})
+
+const tournamentPagingResolvedTotal = computed(() => {
+  const tour = tournament.value
+  if (!tour) return 0
+  return resolvedMatchesTotal(tour)
 })
 
 function isPowerOfTwo(n: number): boolean {
@@ -870,6 +1172,230 @@ const showCalendarReadinessPanel = computed(
   () => !isManualFormat.value && !hasScheduleMatches.value && !!tournament.value,
 )
 
+type LaunchWizardStep = {
+  id: 'basic' | 'teams' | 'staff_and_venues' | 'calendar' | 'publish'
+  title: string
+  ok: boolean
+  hint: string
+  tab: 'calendar' | 'squads' | 'infrastructure' | null
+}
+
+const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
+  const tRow = tournament.value
+  if (!tRow) return []
+  const teams = tRow.tournamentTeams?.length ?? 0
+  const minTeams = Math.max(2, tRow.minTeams ?? 0)
+  const hasReferees = (tRow.tournamentReferees?.length ?? 0) > 0
+  const hasStadiums = (tRow.tournamentStadiums?.length ?? 0) > 0 || !!tRow.stadiumId
+  const hasDates =
+    !!tRow.startsAt &&
+    !!tRow.endsAt &&
+    new Date(tRow.startsAt).getTime() <= new Date(tRow.endsAt).getTime()
+  const groupsRequired = showGroupBucketsFor(tRow)
+  const unassignedTeams = groupsRequired
+    ? (tRow.tournamentTeams ?? []).filter((tt) => !tt.group?.id).length
+    : 0
+  const teamsStepOk = teams >= minTeams && (!groupsRequired || unassignedTeams === 0)
+  const teamsStepHint =
+    teams < minTeams
+      ? `Добавьте минимум ${minTeams} команд (сейчас ${teams}).`
+      : groupsRequired && unassignedTeams > 0
+        ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
+        : 'Проверьте состав команд.'
+
+  return [
+    {
+      id: 'basic',
+      title: '1) Базовые поля',
+      ok:
+        !!String(tRow.name ?? '').trim() &&
+        !!String(tRow.slug ?? '').trim() &&
+        !!String(tRow.format ?? '').trim() &&
+        hasDates,
+      hint: 'Заполните название, slug, формат и корректные даты (начало <= окончание).',
+      tab: null,
+    },
+    {
+      id: 'teams',
+      title: '2) Команды и состав',
+      ok: teamsStepOk,
+      hint: teamsStepHint,
+      tab: 'squads',
+    },
+    {
+      id: 'staff_and_venues',
+      title: '3) Судьи и площадки',
+      ok: hasReferees && hasStadiums,
+      hint: 'Назначьте хотя бы одного судью и одну площадку на вкладке «Инфраструктура».',
+      tab: 'infrastructure',
+    },
+    {
+      id: 'calendar',
+      title: '4) Генерация календаря',
+      ok: hasScheduleMatches.value,
+      hint: 'Сгенерируйте календарь или добавьте матчи вручную.',
+      tab: 'calendar',
+    },
+    {
+      id: 'publish',
+      title: '5) Проверка и публикация',
+      ok: !!tRow.published,
+      hint: 'После проверки данных включите публикацию турнира на сайте.',
+      tab: null,
+    },
+  ]
+})
+
+const launchWizardReadyCount = computed(
+  () => launchWizardSteps.value.filter((step) => step.ok).length,
+)
+const launchWizardAllReady = computed(
+  () => launchWizardSteps.value.length > 0 && launchWizardSteps.value.every((step) => step.ok),
+)
+const launchChecklistCompletedLabel = computed(() => {
+  const tRow = tournament.value
+  if (!tRow?.launchChecklistCompletedAt) return ''
+  const by = tRow.launchChecklistCompletedBy
+    ? formatUserListLabel(tRow.launchChecklistCompletedBy)
+    : '—'
+  return `Отмечено как завершенное: ${new Date(tRow.launchChecklistCompletedAt).toLocaleString()} · ${by}`
+})
+
+function openLaunchWizardStep(step: LaunchWizardStep) {
+  if (step.tab) {
+    const hasTable = showTournamentTableTab.value
+    activeTab.value = tournamentTabSlugToIndex(step.tab, hasTable)
+    void router.replace({ query: { ...route.query, tab: step.tab } })
+    return
+  }
+  if (step.id === 'publish' && import.meta.client) {
+    document.getElementById('tournament-publish-card')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }
+}
+
+async function setLaunchChecklistCompleted(completed: boolean) {
+  if (!token.value || !tournament.value || launchChecklistSaving.value) return
+  launchChecklistSaving.value = true
+  try {
+    const res = await authFetch<{
+      launchChecklistCompletedAt?: string | null
+      launchChecklistCompletedBy?: {
+        id: string
+        name: string
+        lastName?: string | null
+        username?: string | null
+      } | null
+    }>(apiUrl(`/tournaments/${tournamentId.value}/launch-checklist`), {
+      method: 'PATCH',
+      body: { completed },
+    })
+    tournament.value = {
+      ...tournament.value,
+      launchChecklistCompletedAt: res.launchChecklistCompletedAt ?? null,
+      launchChecklistCompletedBy: res.launchChecklistCompletedBy ?? null,
+    }
+    toast.add({
+      severity: 'success',
+      summary: completed ? 'Запуск отмечен как завершенный' : 'Статус запуска снят',
+      life: 3000,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось обновить статус запуска',
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    launchChecklistSaving.value = false
+  }
+}
+
+async function loadInfrastructureOptions() {
+  if (!token.value || !currentTenantId.value) return
+  infrastructureLoading.value = true
+  try {
+    const tenantId = currentTenantId.value
+    const [seasons, competitions, ageGroups, referees, stadiums] = await Promise.all([
+      authFetch<Array<{ id: string; name: string; active?: boolean | null }>>(
+        apiUrl(`/tenants/${tenantId}/seasons`),
+      ),
+      authFetch<Array<{ id: string; name: string; active?: boolean | null }>>(
+        apiUrl(`/tenants/${tenantId}/competitions`),
+      ),
+      authFetch<
+        Array<{ id: string; name: string; shortLabel?: string | null; active?: boolean | null }>
+      >(apiUrl(`/tenants/${tenantId}/age-groups`)),
+      authFetch<Array<{ id: string; firstName: string; lastName: string }>>(
+        apiUrl(`/tenants/${tenantId}/referees`),
+      ),
+      authFetch<Array<{ id: string; name: string; city?: string | null; address?: string | null }>>(
+        apiUrl(`/tenants/${tenantId}/stadiums`),
+      ),
+    ])
+    infrastructureOptions.value = { seasons, competitions, ageGroups, referees, stadiums }
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.infrastructure_options_load_error'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    infrastructureLoading.value = false
+  }
+}
+
+/** Справочники сезонов/площадок — по первому открытию вкладки «Инфраструктура», не при каждом входе на страницу турнира. */
+let infrastructureOptionsLoadRequested = false
+
+watch(
+  [activeTab, showTournamentTableTab, tournament],
+  () => {
+    if (activeTab.value !== infrastructureTabIndex.value) return
+    if (!tournament.value || !token.value || !currentTenantId.value) return
+    if (infrastructureOptionsLoadRequested) return
+    infrastructureOptionsLoadRequested = true
+    void loadInfrastructureOptions()
+  },
+  { immediate: true },
+)
+
+async function saveInfrastructure() {
+  if (!token.value || !tournament.value || infrastructureSaving.value) return
+  infrastructureSaving.value = true
+  try {
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}`), {
+      method: 'PATCH',
+      body: {
+        seasonId: infrastructureForm.value.seasonId || null,
+        competitionId: infrastructureForm.value.competitionId || null,
+        ageGroupId: infrastructureForm.value.ageGroupId || null,
+        refereeIds: infrastructureForm.value.refereeIds,
+        stadiumIds: infrastructureForm.value.stadiumIds,
+      },
+    })
+    await fetchTournament()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.infrastructure_saved'),
+      life: 3000,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.infrastructure_save_error'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    infrastructureSaving.value = false
+  }
+}
+
 watch(hasScheduleMatches, (has) => {
   if (has || !tournament.value) return
   const hasTable = showTournamentTableTab.value
@@ -907,6 +1433,103 @@ const canEditTeamComposition = computed(
 /** Рейтинги для сетки — пока нет введённых результатов; при наличии матчей сработает перегенерация календаря. */
 const canEditTeamRatings = computed(
   () => canEditTournament.value && !hasAnyEnteredResults.value,
+)
+const matchDayModeEnabled = ref(false)
+const matchDayDate = ref<Date | null>(new Date())
+const matchDayQuickLoadingId = ref<string | null>(null)
+const openMatchDayFullscreen = () => {
+  const q: Record<string, string> = {}
+  if (matchDayDate.value) q.date = toYmdLocal(matchDayDate.value)
+  void router.push({
+    path: `/admin/match-day/${tournamentId.value}`,
+    query: q,
+  })
+}
+
+const isSameLocalDate = (a: Date, b: Date) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate()
+
+const matchDayTimelineMatches = computed(() => {
+  const day = matchDayDate.value
+  const items = (tournament.value?.matches ?? []).slice()
+  if (!day) return items
+  return items
+    .filter((m) => isSameLocalDate(new Date(m.startTime), day))
+    .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+})
+
+const matchDayNextMatch = computed(() => {
+  const now = Date.now()
+  const rows = matchDayTimelineMatches.value
+  const live = rows.find((m) => m.status === 'LIVE')
+  if (live) return live
+  return rows.find((m) => new Date(m.startTime).getTime() >= now) ?? rows[0] ?? null
+})
+
+const shiftMatchInDayMode = async (match: MatchRow, minutes: number) => {
+  if (!token.value || isMatchEditLocked(match.status)) return
+  matchDayQuickLoadingId.value = match.id
+  try {
+    const nextStart = new Date(new Date(match.startTime).getTime() + minutes * 60_000)
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}/matches/${match.id}`), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: {
+        startTime: nextStart.toISOString(),
+        scheduleChangeNote: `Быстрый сдвиг в режиме дня тура (${minutes > 0 ? '+' : ''}${minutes} мин)`,
+      },
+    })
+    await fetchTournament()
+    toast.add({
+      severity: 'success',
+      summary: 'Время матча обновлено',
+      life: 2500,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось сдвинуть матч',
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    matchDayQuickLoadingId.value = null
+  }
+}
+
+const quickSetMatchStatusInDayMode = async (
+  match: MatchRow,
+  status: 'SCHEDULED' | 'LIVE' | 'FINISHED',
+) => {
+  if (!token.value || isMatchEditLocked(match.status)) return
+  matchDayQuickLoadingId.value = match.id
+  try {
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}/matches/${match.id}/status`), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: { status },
+    })
+    await fetchTournament()
+    toast.add({
+      severity: 'success',
+      summary: 'Статус матча обновлен',
+      life: 2500,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось обновить статус',
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 5000,
+    })
+  } finally {
+    matchDayQuickLoadingId.value = null
+  }
+}
+const infrastructureReferenceFieldsLocked = computed(
+  () => hasScheduleMatches.value && hasAnyEnteredResults.value,
 )
 
 // Если календарь уже сгенерирован (есть матчи), то при правках состава/групп
@@ -1713,27 +2336,31 @@ const generateCalendar = async () => {
       },
     })
 
-    await authFetch(apiUrl(`/tournaments/${tournamentId.value}/calendar`), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token.value}` },
-      body: {
-        // можно не передавать параметры — backend возьмёт startsAt/intervalDays/allowedDays из турнира
-        startDate: normalizeDateInput(calendarForm.startDate),
-        intervalDays: effectiveIntervalDays.value,
-        roundsPerDay: calendarForm.roundsPerDay || undefined,
-        roundRobinCycles: calendarForm.roundRobinCycles || undefined,
-        schedulingMode: calendarForm.schedulingMode,
-        allowedDays: effectiveAllowedDays.value?.length
-          ? effectiveAllowedDays.value
-          : undefined,
-        replaceExisting: calendarForm.replaceExisting,
-        matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
-        matchBreakMinutes: calendarForm.matchBreakMinutes ?? undefined,
-        simultaneousMatches: calendarForm.simultaneousMatches || undefined,
-        dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
-        dayStartTimeOverrides: cleanedDayStartTimeOverrides,
+    const calendarRes = await authFetch<{ scheduleWarnings?: string[] | null }>(
+      apiUrl(`/tournaments/${tournamentId.value}/calendar`),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: {
+          // можно не передавать параметры — backend возьмёт startsAt/intervalDays/allowedDays из турнира
+          startDate: normalizeDateInput(calendarForm.startDate),
+          intervalDays: effectiveIntervalDays.value,
+          roundsPerDay: calendarForm.roundsPerDay || undefined,
+          roundRobinCycles: calendarForm.roundRobinCycles || undefined,
+          schedulingMode: calendarForm.schedulingMode,
+          allowedDays: effectiveAllowedDays.value?.length
+            ? effectiveAllowedDays.value
+            : undefined,
+          replaceExisting: calendarForm.replaceExisting,
+          matchDurationMinutes: calendarForm.matchDurationMinutes || undefined,
+          matchBreakMinutes: calendarForm.matchBreakMinutes ?? undefined,
+          simultaneousMatches: calendarForm.simultaneousMatches || undefined,
+          dayStartTimeDefault: calendarForm.dayStartTimeDefault || undefined,
+          dayStartTimeOverrides: cleanedDayStartTimeOverrides,
+        },
       },
-    })
+    )
+    toastScheduleWarnings(toast, calendarRes)
     calendarDialog.value = false
     await fetchTournament()
     toast.add({
@@ -1845,6 +2472,136 @@ const canManageManualMatches = computed(
 const matchesWorkspaceRef = ref<{
   openManualMatchDialog: () => void
 } | null>(null)
+const matchesDiagnosticPresetFilter = ref<
+  | 'all'
+  | 'without_stadium'
+  | 'without_group'
+  | 'live_without_stadium'
+  | 'team_overlap'
+  | 'stadium_overlap'
+  | 'finished_without_score'
+  | 'scheduled_in_past'
+>('all')
+
+const tournamentDiagnostics = computed(() => {
+  const rows = tournament.value?.matches ?? []
+  const durationMs = Math.max(1, Number(tournament.value?.matchDurationMinutes ?? 90)) * 60_000
+  const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 && b0 < a1
+  let teamOverlap = 0
+  let stadiumOverlap = 0
+  const teamOverlapIds = new Set<string>()
+  const stadiumOverlapIds = new Set<string>()
+  for (let i = 0; i < rows.length; i += 1) {
+    const a = rows[i]
+    if (!a) continue
+    const a0 = new Date(a.startTime).getTime()
+    const a1 = a0 + durationMs
+    for (let j = i + 1; j < rows.length; j += 1) {
+      const b = rows[j]
+      if (!b) continue
+      const b0 = new Date(b.startTime).getTime()
+      const b1 = b0 + durationMs
+      if (!overlaps(a0, a1, b0, b1)) continue
+      const hasTeamOverlap =
+        a.homeTeam.id === b.homeTeam.id ||
+        a.homeTeam.id === b.awayTeam.id ||
+        a.awayTeam.id === b.homeTeam.id ||
+        a.awayTeam.id === b.awayTeam.id
+      const hasStadiumOverlap = !!a.stadiumId && !!b.stadiumId && a.stadiumId === b.stadiumId
+      if (hasTeamOverlap) {
+        teamOverlapIds.add(a.id)
+        teamOverlapIds.add(b.id)
+      }
+      if (hasStadiumOverlap) {
+        stadiumOverlapIds.add(a.id)
+        stadiumOverlapIds.add(b.id)
+      }
+    }
+  }
+  teamOverlap = teamOverlapIds.size
+  stadiumOverlap = stadiumOverlapIds.size
+  const withoutStadium = rows.filter(
+    (m) => !m.stadiumId && (m.status === 'SCHEDULED' || m.status === 'LIVE'),
+  ).length
+  const withoutGroup = rows.filter((m) => m.stage === 'GROUP' && !m.groupId).length
+  const finishedWithoutScore = rows.filter(
+    (m) =>
+      (m.status === 'FINISHED' || m.status === 'PLAYED') &&
+      (m.homeScore === null || m.awayScore === null),
+  ).length
+  const scheduledInPast = rows.filter(
+    (m) => m.status === 'SCHEDULED' && new Date(m.startTime).getTime() < Date.now(),
+  ).length
+  const totalActive = rows.filter(
+    (m) => m.status === 'SCHEDULED' || m.status === 'LIVE',
+  ).length
+  const noRefereesConfigured =
+    (tournament.value?.tournamentReferees?.length ?? 0) === 0
+  const noStadiumsConfigured =
+    (tournament.value?.tournamentStadiums?.length ?? 0) === 0 &&
+    !tournament.value?.stadiumId
+  return {
+    withoutStadium,
+    withoutGroup,
+    teamOverlap,
+    stadiumOverlap,
+    finishedWithoutScore,
+    scheduledInPast,
+    totalActive,
+    noRefereesConfigured,
+    noStadiumsConfigured,
+  }
+})
+
+const showLaunchWizardBlock = computed(
+  () => !!tournament.value && tournament.value.status === 'DRAFT' && !tournament.value.published,
+)
+const showDiagnosticsBlock = computed(
+  () => !!tournament.value && !showLaunchWizardBlock.value,
+)
+
+const mobileTabOptions = computed(() => {
+  const hasTable = showTournamentTableTab.value
+  const items = [
+    { label: t('admin.tournament_page.tab_calendar'), value: 0 },
+    { label: t('admin.tournament_page.tab_matches'), value: 1 },
+  ]
+  if (hasTable) items.push({ label: t('admin.tournament_page.tab_table'), value: 2 })
+  items.push({
+    label: t('admin.tournament_page.tab_statistics'),
+    value: hasTable ? 3 : 2,
+  })
+  items.push({
+    label: t('admin.tournament_page.tab_compositions'),
+    value: hasTable ? 4 : 3,
+  })
+  items.push({
+    label: t('admin.tournament_page.tab_infrastructure'),
+    value: hasTable ? 5 : 4,
+  })
+  return items
+})
+
+const openMatchesDiagnosticFilter = (
+  preset:
+    | 'all'
+    | 'without_stadium'
+    | 'without_group'
+    | 'live_without_stadium'
+    | 'team_overlap'
+    | 'stadium_overlap'
+    | 'finished_without_score'
+    | 'scheduled_in_past',
+) => {
+  matchesDiagnosticPresetFilter.value = preset
+  const hasTable = showTournamentTableTab.value
+  activeTab.value = tournamentTabSlugToIndex('matches', hasTable)
+}
+
+const openInfrastructureDiagnostics = () => {
+  const hasTable = showTournamentTableTab.value
+  activeTab.value = tournamentTabSlugToIndex('infrastructure', hasTable)
+}
 
 const onMatchesWorkspaceUpdated = async () => {
   await fetchTournament()
@@ -2053,6 +2810,22 @@ onMounted(async () => {
 
       <div class="admin-toolbar-responsive flex flex-wrap gap-2">
         <Button
+          :label="t('admin.tournament_page.download_ics')"
+          icon="pi pi-download"
+          severity="secondary"
+          outlined
+          :loading="calendarIcsDownloading"
+          @click="downloadTournamentCalendarIcs"
+        />
+        <Button
+          :label="t('admin.tournament_page.copy_ics_feed_link')"
+          icon="pi pi-link"
+          severity="secondary"
+          outlined
+          :loading="calendarFeedLinkLoading"
+          @click="copyTournamentCalendarFeedLink"
+        />
+        <Button
           v-if="!isPlayoffOnlyFormat"
           :label="t('admin.tournament_page.refresh_table')"
           icon="pi pi-refresh"
@@ -2065,6 +2838,7 @@ onMounted(async () => {
 
     <div
       v-if="tournament && !modPolicy.locksTournamentPublishingAndDraftStructure"
+      id="tournament-publish-card"
       class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
     >
       <p class="text-sm font-semibold text-surface-900 dark:text-surface-0">
@@ -2137,7 +2911,289 @@ onMounted(async () => {
       </Message>
     </div>
 
-    <TabView :activeIndex="activeTab" @update:activeIndex="(v) => (activeTab = v)">
+    <div
+      v-if="showLaunchWizardBlock && tournament"
+      class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
+    >
+      <div class="panel-header-row flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p class="panel-header-title text-sm font-semibold text-surface-900 dark:text-surface-0">
+            Мастер запуска турнира
+          </p>
+          <p class="mt-1 text-xs text-muted-color">
+            Выполнено шагов: {{ launchWizardReadyCount }}/{{ launchWizardSteps.length }}
+          </p>
+        </div>
+        <div class="panel-collapse-actions flex items-center gap-2">
+          <Tag
+            :severity="launchWizardAllReady ? 'success' : 'warn'"
+            :value="launchWizardAllReady ? 'Готов к запуску' : 'Есть незавершенные шаги'"
+          />
+          <Button
+            class="panel-chevron-btn collapse-toggle-btn"
+            size="small"
+            text
+            severity="secondary"
+            :icon="launchBlockCollapsed ? 'pi pi-chevron-down' : 'pi pi-chevron-up'"
+            :label="launchBlockCollapsed ? 'Развернуть' : 'Свернуть'"
+            @click="launchBlockCollapsed = !launchBlockCollapsed"
+          />
+        </div>
+      </div>
+
+      <div v-if="!launchBlockCollapsed" class="mt-3 space-y-2">
+        <div
+          v-for="step in launchWizardSteps"
+          :key="step.id"
+          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-surface-200 px-3 py-2 dark:border-surface-700"
+        >
+          <div class="min-w-0">
+            <p
+              class="text-sm font-medium"
+              :class="step.ok ? 'text-green-700 dark:text-green-300' : 'text-surface-900 dark:text-surface-0'"
+            >
+              <i :class="step.ok ? 'pi pi-check-circle mr-1' : 'pi pi-exclamation-circle mr-1'" />
+              {{ step.title }}
+            </p>
+            <p v-if="!step.ok" class="mt-1 text-xs text-muted-color">{{ step.hint }}</p>
+          </div>
+          <Button
+            v-if="!step.ok && (step.tab || step.id === 'publish')"
+            label="Перейти"
+            icon="pi pi-arrow-right"
+            text
+            @click="openLaunchWizardStep(step)"
+          />
+        </div>
+      </div>
+      <p v-if="launchChecklistCompletedLabel" class="mt-3 text-xs text-muted-color">
+        {{ launchChecklistCompletedLabel }}
+      </p>
+      <div class="mt-3 flex flex-wrap justify-end gap-2">
+        <Button
+          v-if="launchWizardAllReady && !tournament.launchChecklistCompletedAt"
+          label="Отметить запуск завершенным"
+          icon="pi pi-check"
+          :loading="launchChecklistSaving"
+          @click="setLaunchChecklistCompleted(true)"
+        />
+        <Button
+          v-if="tournament.launchChecklistCompletedAt"
+          label="Снять отметку запуска"
+          icon="pi pi-times"
+          severity="secondary"
+          text
+          :loading="launchChecklistSaving"
+          @click="setLaunchChecklistCompleted(false)"
+        />
+      </div>
+    </div>
+
+    <div
+      v-if="showDiagnosticsBlock && tournament"
+      class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
+    >
+      <div class="panel-header-row flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p class="panel-header-title text-sm font-semibold text-surface-900 dark:text-surface-0 flex items-center gap-1.5">
+            <span>Диагностика турнира</span>
+            <i
+              class="panel-info-icon pi pi-info-circle text-muted-color"
+              v-tooltip.top="'Ключевые проверки расписания и инфраструктуры с быстрыми переходами к исправлению.'"
+            />
+          </p>
+          <p class="mt-1 text-xs text-muted-color">
+            Быстрая проверка проблем в текущем расписании и инфраструктуре.
+          </p>
+        </div>
+        <Button
+          class="panel-chevron-btn collapse-toggle-btn"
+          size="small"
+          text
+          severity="secondary"
+          :icon="diagnosticsBlockCollapsed ? 'pi pi-chevron-down' : 'pi pi-chevron-up'"
+          :label="diagnosticsBlockCollapsed ? 'Развернуть' : 'Свернуть'"
+          @click="diagnosticsBlockCollapsed = !diagnosticsBlockCollapsed"
+        />
+      </div>
+
+      <div v-if="!diagnosticsBlockCollapsed" class="mt-3 grid gap-3 md:grid-cols-3">
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Активных матчей без площадки</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Матчи, которые сейчас запланированы или идут, но площадка для них не назначена.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">
+            {{ tournamentDiagnostics.withoutStadium }}<span class="text-sm text-muted-color"> / {{ tournamentDiagnostics.totalActive }}</span>
+          </p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('live_without_stadium')"
+          />
+        </div>
+
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Судьи турнира</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Проверка, назначен ли справочник судей на уровне турнира (инфраструктура).'"
+            />
+          </p>
+          <p class="mt-1 text-sm font-medium">
+            {{ tournamentDiagnostics.noRefereesConfigured ? 'Не назначены' : 'Назначены' }}
+          </p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Открыть инфраструктуру"
+            @click="openInfrastructureDiagnostics"
+          />
+        </div>
+
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Площадки турнира</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Проверка, назначены ли площадки турнира (общая или список площадок).'"
+            />
+          </p>
+          <p class="mt-1 text-sm font-medium">
+            {{ tournamentDiagnostics.noStadiumsConfigured ? 'Не назначены' : 'Назначены' }}
+          </p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Открыть инфраструктуру"
+            @click="openInfrastructureDiagnostics"
+          />
+        </div>
+      </div>
+      <div v-if="!diagnosticsBlockCollapsed" class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Пересечения команд</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Матчи, где одна и та же команда пересекается по времени с другим матчем.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">{{ tournamentDiagnostics.teamOverlap }}</p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('team_overlap')"
+          />
+        </div>
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Пересечения площадок</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Матчи, где одна и та же площадка занята в пересекающиеся интервалы времени.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">{{ tournamentDiagnostics.stadiumOverlap }}</p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('stadium_overlap')"
+          />
+        </div>
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Завершены без счёта</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Матчи, отмеченные как завершённые или сыгранные, но без заполненного счёта.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">{{ tournamentDiagnostics.finishedWithoutScore }}</p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('finished_without_score')"
+          />
+        </div>
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Запланированы в прошлом</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Матчи, которые всё ещё запланированы, хотя их время начала уже прошло.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">{{ tournamentDiagnostics.scheduledInPast }}</p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('scheduled_in_past')"
+          />
+        </div>
+      </div>
+      <div v-if="!diagnosticsBlockCollapsed && isManualFormat" class="mt-3 grid gap-3 md:grid-cols-3">
+        <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+          <p class="text-xs text-muted-color flex items-center gap-1.5">
+            <span>Матчей без группы</span>
+            <i
+              class="pi pi-info-circle text-[11px]"
+              v-tooltip.top="'Только для ручного формата: матчи группового этапа, у которых не назначена группа.'"
+            />
+          </p>
+          <p class="mt-1 text-lg font-semibold">
+            {{ tournamentDiagnostics.withoutGroup }}
+          </p>
+          <Button
+            class="mt-2"
+            size="small"
+            severity="secondary"
+            outlined
+            label="Показать в матчах"
+            @click="openMatchesDiagnosticFilter('without_group')"
+          />
+        </div>
+      </div>
+    </div>
+
+    <div class="mb-3 sm:hidden">
+      <Select
+        v-model="activeTab"
+        :options="mobileTabOptions"
+        option-label="label"
+        option-value="value"
+        class="w-full"
+      />
+    </div>
+
+    <TabView
+      class="tournament-page-tabs"
+      :activeIndex="activeTab"
+      @update:activeIndex="(v) => (activeTab = v)"
+    >
       <TabPanel value="calendar" :header="t('admin.tournament_page.tab_calendar')">
         <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">
           <div
@@ -2598,6 +3654,15 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
+            <AdminTournamentMatchesPagingBar
+              v-if="tournament && tournamentMatchesHasMore && !calendarRefreshing"
+              :matches-has-more="tournamentMatchesHasMore"
+              :matches-loading-more="tournamentMatchesLoadingMore"
+              :load-more-matches="loadMoreTournamentMatchesForWorkspace"
+              :tab-visible="isCalendarTabActive"
+              :loaded-count="tournament.matches?.length ?? 0"
+              :total-count="tournamentPagingResolvedTotal"
+            />
             </AdminDataState>
           </div>
           </template>
@@ -2614,6 +3679,166 @@ onMounted(async () => {
             : undefined
         "
       >
+        <div class="mb-4 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-3 sm:p-4">
+          <div class="panel-header-title text-sm font-semibold text-surface-900 dark:text-surface-0 flex items-center gap-1.5">
+              <span>Режим дня тура</span>
+              <i
+                class="panel-info-icon pi pi-info-circle text-muted-color"
+                v-tooltip.top="'Быстрые действия по матчам выбранной даты: старт, завершение, сдвиг времени и переход в протокол.'"
+              />
+          </div>
+          <div class="match-day-toolbar mt-2 flex flex-wrap items-center justify-between gap-3">
+            <div class="match-day-toolbar-actions flex items-center gap-2">
+              <Button
+                size="small"
+                severity="secondary"
+                outlined
+                :icon="matchDayModeEnabled ? 'pi pi-eye-slash' : 'pi pi-eye'"
+                :label="matchDayModeEnabled ? 'Скрыть режим' : 'Показать режим'"
+                @click="matchDayModeEnabled = !matchDayModeEnabled"
+              />
+              <Button
+                size="small"
+                severity="secondary"
+                outlined
+                icon="pi pi-external-link"
+                label="На весь экран"
+                @click="openMatchDayFullscreen"
+              />
+            </div>
+            <div class="match-day-toolbar-date flex items-center gap-2">
+              <DatePicker
+                v-model="matchDayDate"
+                class="w-full sm:w-52"
+                dateFormat="yy-mm-dd"
+                showIcon
+              />
+            </div>
+          </div>
+          <p class="mt-1 text-xs text-muted-color">
+            Хронология матчей на выбранную дату + быстрые действия без переходов.
+          </p>
+        </div>
+
+        <div
+          v-if="matchDayModeEnabled"
+          class="mb-4 grid gap-4 lg:grid-cols-3"
+        >
+          <div class="rounded-xl border border-primary/30 bg-primary/5 p-4 lg:col-span-1">
+            <div class="text-xs uppercase tracking-wide text-primary/90">Следующий матч</div>
+            <template v-if="matchDayNextMatch">
+              <div class="mt-2 text-sm font-semibold">
+                {{ matchDayNextMatch.homeTeam.name }} - {{ matchDayNextMatch.awayTeam.name }}
+              </div>
+              <div class="mt-1 text-xs text-muted-color">
+                {{ formatDateTimeNoSeconds(matchDayNextMatch.startTime) }} ·
+                <span :class="statusPillClass(matchDayNextMatch.status)">{{ localizedStatusLabel(matchDayNextMatch.status) }}</span>
+              </div>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <Button size="small" icon="pi pi-book" label="Протокол" @click="openProtocol(matchDayNextMatch)" />
+                <Button
+                  v-if="matchDayNextMatch.status === 'SCHEDULED'"
+                  size="small"
+                  severity="success"
+                  outlined
+                  icon="pi pi-play"
+                  label="Начать"
+                  :loading="matchDayQuickLoadingId === matchDayNextMatch.id"
+                  @click="quickSetMatchStatusInDayMode(matchDayNextMatch, 'LIVE')"
+                />
+                <Button
+                  v-if="matchDayNextMatch.status === 'LIVE'"
+                  size="small"
+                  severity="warn"
+                  outlined
+                  icon="pi pi-check"
+                  label="Завершить"
+                  :loading="matchDayQuickLoadingId === matchDayNextMatch.id"
+                  @click="quickSetMatchStatusInDayMode(matchDayNextMatch, 'FINISHED')"
+                />
+                <Button
+                  size="small"
+                  severity="secondary"
+                  outlined
+                  icon="pi pi-clock"
+                  label="+15"
+                  :loading="matchDayQuickLoadingId === matchDayNextMatch.id"
+                  :disabled="isMatchEditLocked(matchDayNextMatch.status)"
+                  @click="shiftMatchInDayMode(matchDayNextMatch, 15)"
+                />
+              </div>
+            </template>
+            <p v-else class="mt-2 text-sm text-muted-color">На выбранную дату матчей нет.</p>
+          </div>
+
+          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 lg:col-span-2">
+            <div class="text-sm font-semibold">Таймлайн дня</div>
+            <div v-if="!matchDayTimelineMatches.length" class="mt-2 text-sm text-muted-color">
+              Матчи на эту дату не найдены.
+            </div>
+            <div v-else class="mt-3 space-y-2">
+              <div
+                v-for="m in matchDayTimelineMatches"
+                :key="m.id"
+                class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-200 px-3 py-2 dark:border-surface-700"
+              >
+                <div class="min-w-0">
+                  <div class="text-sm font-medium">
+                    {{ m.homeTeam.name }} - {{ m.awayTeam.name }}
+                  </div>
+                  <div class="mt-1 text-xs text-muted-color">
+                    {{ formatDateTimeNoSeconds(m.startTime) }} ·
+                    <span :class="statusPillClass(m.status)">{{ localizedStatusLabel(m.status) }}</span>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  <Button size="small" text icon="pi pi-book" label="Протокол" @click="openProtocol(m)" />
+                  <Button
+                    v-if="m.status === 'SCHEDULED'"
+                    size="small"
+                    text
+                    severity="success"
+                    icon="pi pi-play"
+                    label="Начать"
+                    :loading="matchDayQuickLoadingId === m.id"
+                    @click="quickSetMatchStatusInDayMode(m, 'LIVE')"
+                  />
+                  <Button
+                    v-if="m.status === 'LIVE'"
+                    size="small"
+                    text
+                    severity="warn"
+                    icon="pi pi-check"
+                    label="Завершить"
+                    :loading="matchDayQuickLoadingId === m.id"
+                    @click="quickSetMatchStatusInDayMode(m, 'FINISHED')"
+                  />
+                  <Button
+                    size="small"
+                    text
+                    severity="secondary"
+                    icon="pi pi-angle-left"
+                    label="-15"
+                    :disabled="isMatchEditLocked(m.status)"
+                    :loading="matchDayQuickLoadingId === m.id"
+                    @click="shiftMatchInDayMode(m, -15)"
+                  />
+                  <Button
+                    size="small"
+                    text
+                    severity="secondary"
+                    icon="pi pi-angle-right"
+                    label="+15"
+                    :disabled="isMatchEditLocked(m.status)"
+                    :loading="matchDayQuickLoadingId === m.id"
+                    @click="shiftMatchInDayMode(m, 15)"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div
           v-if="canShowPlayoffFromGroupsPanel"
           class="mb-4 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50 p-4"
@@ -2640,7 +3865,12 @@ onMounted(async () => {
           embedded
           :tournament-id="tournamentId"
           :tournament="tournament"
+          :preset-filter="matchesDiagnosticPresetFilter"
           :external-open-protocol="openProtocol"
+          :matches-has-more="tournamentMatchesHasMore"
+          :matches-loading-more="tournamentMatchesLoadingMore"
+          :matches-tab-visible="isMatchesTabActive"
+          :load-more-matches="loadMoreTournamentMatchesForWorkspace"
           @updated="onMatchesWorkspaceUpdated"
         />
       </TabPanel>
@@ -2662,14 +3892,34 @@ onMounted(async () => {
               <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.table_title') }}</h2>
               <p class="mt-1 text-xs text-muted-color">{{ t('admin.tournament_page.table_autorefresh_hint') }}</p>
             </div>
-            <Button
-              :label="t('admin.tournament_page.refresh')"
-              icon="pi pi-refresh"
-              :loading="tableLoading"
-              severity="secondary"
-              @click="fetchTable"
-            />
+            <div class="flex flex-wrap items-center gap-2">
+              <Button
+                v-if="hasScheduleMatches && !showTableEmptyState && !tableLoading"
+                :label="t('admin.tournament_page.table_share_image')"
+                icon="pi pi-image"
+                severity="secondary"
+                outlined
+                @click="tableShareDialogVisible = true"
+              />
+              <Button
+                :label="t('admin.tournament_page.refresh')"
+                icon="pi pi-refresh"
+                :loading="tableLoading"
+                severity="secondary"
+                @click="fetchTable"
+              />
+            </div>
           </div>
+
+          <AdminTournamentTableShareImageDialog
+            v-model:visible="tableShareDialogVisible"
+            :tournament-name="tournament?.name ?? t('admin.tournament_page.tournament_fallback_name')"
+            :file-slug="tournament?.slug ?? tournamentId"
+            :flat-rows="flatRowsForShare"
+            :grouped-tables="groupedTablesForShare"
+            :is-grouped-standings="isGroupedFormat"
+            :playoff-qualifiers-per-group="playoffQualifiersPerGroup"
+          />
 
           <AdminDataState
             class="mt-3"
@@ -2814,6 +4064,16 @@ onMounted(async () => {
             </div>
           </AdminDataState>
         </div>
+      </TabPanel>
+
+      <TabPanel value="statistics" :header="t('admin.tournament_page.tab_statistics')">
+        <AdminTournamentStatsSection
+          v-if="tournament && statisticsSectionMounted"
+          :key="tournamentId"
+          :active="isStatisticsTabActive"
+          :tournament-id="tournamentId"
+          :tournament="tournament"
+        />
       </TabPanel>
 
       <TabPanel value="compositions" :header="t('admin.tournament_page.tab_compositions')">
@@ -3071,6 +4331,144 @@ onMounted(async () => {
                 {{ t('admin.tournament_page.tournament_moderators_empty') }}
               </p>
             </div>
+          </div>
+        </div>
+      </TabPanel>
+
+      <TabPanel value="infrastructure" :header="t('admin.tournament_page.tab_infrastructure')">
+        <div class="grid gap-4 lg:grid-cols-12">
+          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 sm:p-5 lg:col-span-12">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.infrastructure_tournament_params_title') }}
+              </h2>
+              <Button
+                :label="t('admin.tournament_page.save')"
+                icon="pi pi-save"
+                :loading="infrastructureSaving"
+                class="shrink-0"
+                @click="saveInfrastructure"
+              />
+            </div>
+            <Message
+              v-if="infrastructureReferenceFieldsLocked"
+              severity="warn"
+              :closable="false"
+              class="mt-3"
+            >
+              {{ t('admin.tournament_page.infrastructure_locked_after_results') }}
+            </Message>
+            <div class="mt-4 grid gap-3 md:grid-cols-2">
+              <div>
+                <label class="mb-1.5 block text-xs font-medium tracking-wide text-muted-color">{{ t('admin.tournament_page.season_label') }}</label>
+                <Select
+                  v-model="infrastructureForm.seasonId"
+                  :options="infrastructureOptions.seasons"
+                  optionLabel="name"
+                  optionValue="id"
+                  :loading="infrastructureLoading"
+                  :disabled="infrastructureReferenceFieldsLocked"
+                  showClear
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <label class="mb-1.5 block text-xs font-medium tracking-wide text-muted-color">{{ t('admin.tournament_page.competition_type_label') }}</label>
+                <Select
+                  v-model="infrastructureForm.competitionId"
+                  :options="infrastructureOptions.competitions"
+                  optionLabel="name"
+                  optionValue="id"
+                  :loading="infrastructureLoading"
+                  :disabled="infrastructureReferenceFieldsLocked"
+                  showClear
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <label class="mb-1.5 block text-xs font-medium tracking-wide text-muted-color">{{ t('admin.tournament_page.age_group_label') }}</label>
+                <Select
+                  v-model="infrastructureForm.ageGroupId"
+                  :options="infrastructureOptions.ageGroups"
+                  optionLabel="name"
+                  optionValue="id"
+                  :loading="infrastructureLoading"
+                  :disabled="infrastructureReferenceFieldsLocked"
+                  showClear
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <label class="mb-1.5 block text-xs font-medium tracking-wide text-muted-color">{{ t('admin.tournament_page.tournament_format') }}</label>
+                <div class="h-[2.6rem] flex items-center rounded-md border border-surface-200 bg-surface-50/80 px-3 text-sm dark:border-surface-700 dark:bg-surface-800/40">
+                  {{ localizedTournamentFormatLabel(tournament?.format) }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 sm:p-5 lg:col-span-6 h-full">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.infrastructure_referees_title') }}
+              </h2>
+              <span class="rounded-full border border-surface-200 px-2 py-0.5 text-xs text-muted-color dark:border-surface-700">
+                {{ infrastructureForm.refereeIds.length }}
+              </span>
+            </div>
+            <MultiSelect
+              v-model="infrastructureForm.refereeIds"
+              :options="infrastructureOptions.referees"
+              optionValue="id"
+              :loading="infrastructureLoading"
+              :maxSelectedLabels="0"
+              :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
+              class="mt-3 w-full"
+              filter
+              :placeholder="t('admin.tournament_page.infrastructure_referees_placeholder')"
+            >
+              <template #option="{ option }">
+                <span>{{ option.lastName }} {{ option.firstName }}</span>
+              </template>
+            </MultiSelect>
+          </div>
+
+          <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 sm:p-5 lg:col-span-6 h-full">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.infrastructure_stadiums_title') }}
+              </h2>
+              <span class="rounded-full border border-surface-200 px-2 py-0.5 text-xs text-muted-color dark:border-surface-700">
+                {{ infrastructureForm.stadiumIds.length }}
+              </span>
+            </div>
+            <MultiSelect
+              v-model="infrastructureForm.stadiumIds"
+              :options="infrastructureOptions.stadiums"
+              optionLabel="name"
+              optionValue="id"
+              :loading="infrastructureLoading"
+              :maxSelectedLabels="0"
+              :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
+              class="mt-3 w-full"
+              filter
+              :placeholder="t('admin.tournament_page.infrastructure_stadiums_placeholder')"
+            >
+              <template #option="{ option }">
+                <div class="min-w-0">
+                  <div class="truncate">{{ option.name }}</div>
+                  <div class="text-xs text-muted-color truncate">
+                    {{ [option.city, option.address].filter(Boolean).join(', ') || '—' }}
+                  </div>
+                </div>
+              </template>
+            </MultiSelect>
+            <p
+              v-if="infrastructureReferenceFieldsLocked"
+              class="mt-2.5 text-xs leading-relaxed text-muted-color"
+            >
+              {{ t('admin.tournament_page.infrastructure_add_only_after_results') }}
+            </p>
           </div>
         </div>
       </TabPanel>
@@ -3479,8 +4877,63 @@ onMounted(async () => {
       :match="protocolMatch"
       @saved="onProtocolSaved"
     />
+
+    <AdminScrollToMainTopFab />
   </section>
   </AdminDataState>
 </template>
+
+<style scoped>
+:deep(.tournament-page-tabs .p-tabview-panels) {
+  padding: 0.75rem 0 0 0 !important;
+}
+
+:deep(.tournament-page-tabs .p-tabview-panel) {
+  padding: 0 !important;
+}
+
+.panel-header-row {
+  min-height: 2.5rem;
+}
+
+.panel-header-title {
+  min-height: 1.5rem;
+}
+
+.panel-info-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.panel-chevron-btn {
+  --p-button-padding-y: 4px;
+  --p-button-padding-x: 8px;
+}
+
+:deep(.panel-chevron-btn .p-button-icon) {
+  font-size: 12px;
+}
+
+@media (max-width: 767px) {
+  :deep(.tournament-page-tabs .p-tabview-nav-container),
+  :deep(.tournament-page-tabs .p-tabview-tablist-container) {
+    display: none !important;
+  }
+
+  .match-day-toolbar-actions,
+  .match-day-toolbar-date {
+    width: 100%;
+  }
+
+  .panel-collapse-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  :deep(.collapse-toggle-btn .p-button-label) {
+    display: none;
+  }
+}
+</style>
 
 

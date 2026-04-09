@@ -6,6 +6,8 @@
   --public-accent-primary: #123c67;
   --public-accent-secondary: #c80a48;
   --public-accent-tertiary: #4f6b8c;
+  --public-chrome-dark-top: rgb(15 23 42);
+  --public-chrome-dark-nav: rgb(30 41 59);
 }
 
 /**
@@ -15,6 +17,23 @@
 @layer base {
   html {
     scrollbar-gutter: stable;
+  }
+
+  /**
+   * Админка / platform: скролл в `main`, не на корне документа. Иначе
+   * `scrollbar-gutter: stable` на html и компенсация Prime (`body.p-overflow-hidden`)
+   * визуально суммируются при открытии Dialog/Drawer.
+   */
+  html.admin-chrome-no-scrollbar-gutter {
+    scrollbar-gutter: auto;
+  }
+
+  /**
+   * Если stable на html остаётся включённым, второй отступ от Prime не нужен.
+   * Для admin-chrome см. класс выше; правило остаётся для публичной зоны.
+   */
+  body.p-overflow-hidden {
+    padding-right: 0 !important;
   }
 }
 
@@ -30,6 +49,533 @@
        Отключаем scroll-anchoring именно здесь. */
     overflow-anchor: none;
     background: linear-gradient(180deg, #edf3fb 0%, #f7f9fd 35%, #f8fafc 100%);
+  }
+
+  html.dark-mode {
+    color-scheme: dark;
+  }
+
+  html.dark-mode .public-shell {
+    background: linear-gradient(180deg, #1e293b 0%, #334155 40%, #1e293b 100%);
+    color: rgb(226 232 240);
+  }
+
+  html.dark-mode .public-table thead th {
+    background-color: rgb(51 65 85 / 0.96) !important;
+    border-color: rgb(71 85 105) !important;
+    color: rgb(241 245 249) !important;
+  }
+
+  html.dark-mode .public-table tbody tr {
+    border-color: rgb(71 85 105) !important;
+    background-color: rgb(30 41 59 / 0.82) !important;
+    color: rgb(241 245 249) !important;
+  }
+
+  html.dark-mode .public-table tbody tr:nth-child(even) {
+    background-color: rgb(51 65 85 / 0.38) !important;
+  }
+
+  html.dark-mode .public-table tbody tr:hover {
+    background-color: color-mix(in srgb, var(--public-accent-primary) 22%, rgb(51 65 85)) !important;
+  }
+
+  html.dark-mode .public-shell .public-table-wrap {
+    background-color: rgb(30 41 59 / 0.65) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .p-paginator {
+    background: rgb(30 41 59 / 0.55) !important;
+    color: rgb(203 213 225) !important;
+    border: 1px solid rgb(71 85 105) !important;
+    border-radius: 0.75rem;
+  }
+
+  html.dark-mode .public-shell .p-paginator .p-select,
+  html.dark-mode .public-shell .p-paginator .p-paginator-rpp-dropdown {
+    background-color: rgb(51 65 85 / 0.85) !important;
+    border-color: rgb(100 116 139) !important;
+  }
+
+  /** Реестр игроков / бомбардиры: кнопки сортировки и бейджи в шапке таблицы */
+  html.dark-mode .public-shell .players-table-wrap .players-sort-btn {
+    color: rgb(203 213 225) !important;
+  }
+
+  html.dark-mode .public-shell .players-table-wrap .players-sort-btn:hover {
+    background-color: rgb(71 85 105 / 0.55) !important;
+  }
+
+  html.dark-mode .public-shell .players-table-wrap .players-sort-btn--active {
+    background-color: rgb(71 85 105 / 0.95) !important;
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-shell .players-table-wrap .card-pill-yellow {
+    background: rgb(66 32 6 / 0.85) !important;
+    color: rgb(254 240 138) !important;
+  }
+
+  html.dark-mode .public-shell .players-table-wrap .card-pill-red {
+    background: rgb(69 10 10 / 0.75) !important;
+    color: rgb(254 202 202) !important;
+  }
+
+  /** Прогресс турнира: карточка и бейджи счёта — без «чёрных» перекрасок глобальных bg-* */
+  html.dark-mode .public-shell .public-progress-panel {
+    background-color: rgb(30 41 59 / 0.72) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-hint,
+  html.dark-mode .public-shell .public-progress-table-head {
+    background-color: rgb(51 65 85 / 0.82) !important;
+    border-color: rgb(71 85 105) !important;
+    color: rgb(241 245 249) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-team-row--a {
+    background-color: rgb(30 41 59 / 0.55) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-team-row--b {
+    background-color: rgb(51 65 85 / 0.32) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-team-row {
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-loading-head {
+    background-color: rgb(51 65 85 / 0.72) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-loading-row {
+    background-color: rgb(30 41 59 / 0.62) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-empty {
+    background-color: rgb(30 41 59 / 0.68) !important;
+    border-color: rgb(71 85 105) !important;
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-token--wins {
+    background-color: rgb(51 65 85 / 0.92) !important;
+    border-color: rgb(100 116 139) !important;
+    color: rgb(241 245 249) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-token--draws {
+    background-color: rgb(76 29 149 / 0.38) !important;
+    border-color: rgb(139 92 246 / 0.5) !important;
+    color: rgb(221 214 254) !important;
+  }
+
+  html.dark-mode .public-shell .public-progress-token--losses {
+    background-color: rgb(136 19 55 / 0.42) !important;
+    border-color: rgb(244 63 94 / 0.55) !important;
+    color: rgb(254 205 211) !important;
+  }
+
+  /* Частые светлые фоны/бордеры на публичных страницах (Tailwind arbitrary colors) */
+  html.dark-mode .public-shell .bg-white,
+  html.dark-mode .public-shell .bg-\[\#f8fbff\],
+  html.dark-mode .public-shell .bg-\[\#f9fbff\],
+  html.dark-mode .public-shell .bg-\[\#f4f7fc\],
+  html.dark-mode .public-shell .bg-\[\#f7f9fc\],
+  html.dark-mode .public-shell .bg-\[\#eaf1fb\],
+  html.dark-mode .public-shell .bg-\[\#eef5ff\],
+  html.dark-mode .public-shell .bg-\[\#fff2f7\] {
+    background-color: rgb(15 23 42 / 0.94) !important;
+  }
+
+  /** PrimeVue Skeleton на публичных страницах в dark — без светло-серого «кирпича» */
+  html.dark-mode .public-shell .p-skeleton {
+    background-color: rgb(51 65 85 / 0.55) !important;
+  }
+
+  html.dark-mode .public-shell .border-\[\#b7c7dd\],
+  html.dark-mode .public-shell .border-\[\#d6e0ee\],
+  html.dark-mode .public-shell .border-\[\#e1e8f2\],
+  html.dark-mode .public-shell .border-\[\#d2e2f7\],
+  html.dark-mode .public-shell .border-\[\#d0c7e2\] {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .border-\[\#dce5f2\] {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .hover\:bg-white:hover {
+    background-color: rgb(30 41 59 / 0.65) !important;
+  }
+
+  /**
+   * PrimeVue Select / поля: в dark Aura фон поля часто почти #000 — на публичке приводим к тону карточек (slate).
+   */
+  html.dark-mode .public-shell .p-select,
+  html.dark-mode .public-shell .p-inputtext,
+  html.dark-mode .public-shell .p-textarea {
+    background-color: rgb(30 41 59 / 0.94) !important;
+    border-color: rgb(71 85 105) !important;
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-shell .p-select:hover:not(.p-disabled),
+  html.dark-mode .public-shell .p-inputtext:not(:disabled):hover,
+  html.dark-mode .public-shell .p-textarea:not(:disabled):hover {
+    border-color: rgb(100 116 139) !important;
+  }
+
+  html.dark-mode .public-shell .p-select.p-focus,
+  html.dark-mode .public-shell .p-select.p-inputwrapper-focus,
+  html.dark-mode .public-shell .p-inputtext:focus,
+  html.dark-mode .public-shell .p-textarea:focus {
+    border-color: color-mix(in srgb, var(--public-accent-primary) 48%, rgb(71 85 105)) !important;
+  }
+
+  html.dark-mode .public-shell .p-select:not(.p-disabled).p-focus,
+  html.dark-mode .public-shell .p-select:not(.p-disabled).p-inputwrapper-focus,
+  html.dark-mode .public-shell .p-inputtext:enabled:focus,
+  html.dark-mode .public-shell .p-datepicker:not(.p-disabled).p-focus,
+  html.dark-mode .public-shell .p-multiselect:not(.p-disabled).p-focus {
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--public-accent-primary) 26%, transparent) !important;
+  }
+
+  html.dark-mode .public-shell .p-select .p-select-label {
+    color: rgb(248 250 252) !important;
+    background-color: transparent !important;
+  }
+
+  html.dark-mode .public-shell .p-select .p-select-label.p-placeholder {
+    color: rgb(148 163 184) !important;
+  }
+
+  html.dark-mode .public-shell .p-select .p-select-dropdown,
+  html.dark-mode .public-shell .p-select .p-select-dropdown-icon {
+    color: rgb(203 213 225) !important;
+  }
+
+  /* FloatLabel: фон подписи совпадает с тёмной карточкой, не с чёрным полем */
+  html.dark-mode .public-shell .p-floatlabel label {
+    color: rgb(190 205 224) !important;
+    background-color: rgb(15 23 42 / 0.96) !important;
+  }
+
+  html.dark-mode .public-shell .p-floatlabel:has(.p-inputwrapper-focus) label,
+  html.dark-mode .public-shell .p-floatlabel:has(.p-inputwrapper-filled) label,
+  html.dark-mode .public-shell .p-floatlabel:has(.p-filled) label {
+    color: rgb(226 232 240) !important;
+  }
+
+  /* Overlay списка рендерится в body (специфичность выше .p-select-overlay … из light-правил ниже) */
+  html.dark-mode .p-select-overlay {
+    background: rgb(30 41 59) !important;
+    border: 1px solid rgb(71 85 105) !important;
+    color: rgb(248 250 252) !important;
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48) !important;
+  }
+
+  html.dark-mode .p-select-overlay .p-select-option {
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .p-select-overlay .p-select-option.p-focus,
+  html.dark-mode .p-select-overlay .p-select-option:hover {
+    background: rgb(51 65 85 / 0.92) !important;
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .p-select-overlay .p-select-option.p-select-option-selected {
+    background: color-mix(in srgb, var(--public-accent-primary) 32%, rgb(30 41 59)) !important;
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-shell .ring-white\/80 {
+    --tw-ring-color: rgb(30 41 59 / 0.9) !important;
+  }
+
+  /* Карточки/пустые состояния (в т.ч. календарь, контекст турнира) */
+  html.dark-mode .public-shell .public-card {
+    background-color: rgb(15 23 42 / 0.96) !important;
+    border: 1px solid rgb(51 65 85) !important;
+    box-shadow: 0 4px 22px rgba(0, 0, 0, 0.35);
+  }
+
+  html.dark-mode .public-shell .public-card:hover {
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+
+  html.dark-mode .public-shell .public-hero {
+    background-color: rgb(15 23 42 / 0.96) !important;
+    border: 1px solid rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .public-empty {
+    background-color: rgb(15 23 42 / 0.92) !important;
+    border: 1px solid rgb(51 65 85) !important;
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .public-error {
+    border-color: rgb(127 29 29) !important;
+    background-color: rgb(69 10 10 / 0.45) !important;
+    color: rgb(254 202 202) !important;
+  }
+
+  /* PrimeUI / Tailwind: surface-* на публичных страницах */
+  html.dark-mode .public-shell .bg-surface-0 {
+    background-color: rgb(15 23 42 / 0.96) !important;
+  }
+
+  html.dark-mode .public-shell .bg-surface-50 {
+    background-color: rgb(30 41 59 / 0.72) !important;
+  }
+
+  html.dark-mode .public-shell .bg-surface-100 {
+    background-color: rgb(51 65 85 / 0.55) !important;
+  }
+
+  html.dark-mode .public-shell .border-surface-200 {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .text-surface-900 {
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-shell .text-surface-800 {
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-shell .text-surface-700 {
+    color: rgb(203 213 225) !important;
+  }
+
+  html.dark-mode .public-shell .text-muted-color {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .hover\:bg-surface-50:hover {
+    background-color: rgb(51 65 85 / 0.55) !important;
+  }
+
+  html.dark-mode .public-shell .hover\:bg-\[\#eef5ff\]:hover {
+    background-color: rgb(30 41 59 / 0.9) !important;
+  }
+
+  html.dark-mode .public-shell .hover\:bg-\[\#f4f7fc\]:hover {
+    background-color: rgb(51 65 85 / 0.45) !important;
+  }
+
+  html.dark-mode .public-shell .odd\:bg-white:nth-child(odd) {
+    background-color: rgb(15 23 42 / 0.75) !important;
+  }
+
+  html.dark-mode .public-shell .even\:bg-\[\#f9fbff\]:nth-child(even) {
+    background-color: rgb(30 41 59 / 0.5) !important;
+  }
+
+  /* Сайдбар турнира: таблица топ-3 и слайдер статистики (scoped-классы) */
+  html.dark-mode .public-shell .sb-standings-head {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-row {
+    border-color: rgb(51 65 85) !important;
+    background: rgb(15 23 42 / 0.88) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-row--top-two {
+    border-color: rgb(59 130 246 / 0.35) !important;
+    background: linear-gradient(180deg, rgb(30 41 59) 0%, rgb(15 23 42) 100%) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-rank--top-two {
+    background: rgb(30 58 138 / 0.65) !important;
+    color: rgb(191 219 254) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-team {
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-num {
+    color: rgb(186 230 253) !important;
+  }
+
+  html.dark-mode .public-shell .sb-standings-num--neutral {
+    color: rgb(186 230 253) !important;
+  }
+
+  html.dark-mode .public-shell .sb-group-dot {
+    background: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slider-card {
+    border-color: rgb(51 65 85) !important;
+    background: rgb(15 23 42 / 0.95) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slider-head {
+    border-bottom-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-row {
+    background: rgb(30 41 59 / 0.55) !important;
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-name {
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-team {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-rank {
+    background: rgb(51 65 85) !important;
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-value {
+    background: rgb(131 24 67 / 0.4) !important;
+    color: rgb(251 207 232) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-value--goals {
+    background: rgb(131 24 67 / 0.45) !important;
+    color: rgb(251 207 232) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-value--assists {
+    background: rgb(30 58 138 / 0.45) !important;
+    color: rgb(191 219 254) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-value--yellowCards {
+    background: rgb(120 53 15 / 0.45) !important;
+    color: rgb(253 224 71) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slide-value--redCards {
+    background: rgb(127 29 29 / 0.5) !important;
+    color: rgb(254 202 202) !important;
+  }
+
+  html.dark-mode .public-shell .stats-dot {
+    background: rgb(71 85 105) !important;
+  }
+
+  /* Диалог статистики матча (календарь) — root в body, класс на Prime Dialog */
+  html.dark-mode .match-stats-dialog .p-dialog-content {
+    background-color: rgb(15 23 42) !important;
+    color: rgb(226 232 240) !important;
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .match-stats-dialog .p-dialog-header {
+    background-color: rgb(15 23 42) !important;
+    color: rgb(248 250 252) !important;
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .match-stats-dialog.p-dialog,
+  html.dark-mode .match-stats-dialog .p-dialog {
+    border-color: rgb(51 65 85) !important;
+  }
+
+  /* Вкладки внутри диалога */
+  html.dark-mode .match-stats-dialog .p-tabview-nav {
+    background: transparent !important;
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .match-stats-dialog .p-tabview-nav-link {
+    color: rgb(148 163 184) !important;
+  }
+
+  html.dark-mode .match-stats-dialog .p-tabview-nav-link[aria-selected='true'] {
+    color: rgb(248 250 252) !important;
+  }
+
+  /**
+   * Участники / состав: кнопка «Все игроки» (outlined) — hover без светлого фона и бледного текста.
+   */
+  html.dark-mode .public-shell .public-roster-all-players-btn.p-button.p-button-outlined {
+    border-color: rgb(100 116 139) !important;
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-shell .public-roster-all-players-btn.p-button.p-button-outlined:not(:disabled):hover {
+    background-color: rgb(51 65 85 / 0.85) !important;
+    border-color: rgb(244 63 94 / 0.55) !important;
+    color: rgb(254 205 211) !important;
+  }
+
+  /**
+   * Диалог полного состава (рендерится в body — без .public-shell).
+   */
+  html.dark-mode .public-roster-dialog.p-dialog,
+  html.dark-mode .p-dialog.public-roster-dialog {
+    border-color: rgb(71 85 105) !important;
+    background-color: rgb(30 41 59 / 0.98) !important;
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .p-dialog-header,
+  html.dark-mode .p-dialog.public-roster-dialog .p-dialog-header {
+    background-color: rgb(30 41 59 / 0.98) !important;
+    color: rgb(248 250 252) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .p-dialog-content,
+  html.dark-mode .p-dialog.public-roster-dialog .p-dialog-content {
+    background-color: rgb(30 41 59 / 0.96) !important;
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .p-dialog-header .p-dialog-title,
+  html.dark-mode .p-dialog.public-roster-dialog .p-dialog-title {
+    color: rgb(248 250 252) !important;
+  }
+
+  html.dark-mode .public-roster-dialog-scroll {
+    background-color: rgb(15 23 42 / 0.55) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-roster-dialog-player-row {
+    background-color: rgb(51 65 85 / 0.55) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .text-\[\#123c67\] {
+    color: rgb(241 245 249) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .text-\[\#4f6b8c\] {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-roster-dialog .p-dialog-header-actions .p-button,
+  html.dark-mode .public-roster-dialog .p-dialog-close-button {
+    color: rgb(226 232 240) !important;
+    border-color: rgb(100 116 139) !important;
+  }
+
+  html.dark-mode .public-shell .public-roster-preview-wrap {
+    background-color: rgb(15 23 42 / 0.45) !important;
+    border-color: rgb(71 85 105) !important;
+  }
+
+  html.dark-mode .public-shell .public-roster-preview-row {
+    background-color: rgb(51 65 85 / 0.45) !important;
   }
 
   .public-grid {
@@ -336,11 +882,56 @@
       flex-shrink: 0;
       padding: 0.625rem 0.75rem !important;
     }
+
+    /**
+     * Публичная модалка состава команды не должна разворачиваться на весь экран.
+     * Для неё возвращаем карточный вариант даже на узком экране.
+     */
+    .p-dialog-mask .p-dialog.public-roster-dialog {
+      width: min(32rem, 96vw) !important;
+      max-width: 96vw !important;
+      min-height: auto !important;
+      height: auto !important;
+      max-height: min(88dvh, 42rem) !important;
+      margin: auto !important;
+      border-radius: 0.9rem !important;
+      box-shadow: 0 18px 48px rgba(2, 6, 23, 0.45) !important;
+    }
+
+    .p-dialog-mask .p-dialog.public-roster-dialog .p-dialog-header {
+      padding: 0.7rem 0.9rem !important;
+    }
+
+    .p-dialog-mask .p-dialog.public-roster-dialog .p-dialog-content {
+      padding: 0.7rem 0.9rem 0.9rem !important;
+    }
+
+    .p-dialog-mask .p-dialog.public-roster-dialog .p-dialog-title {
+      font-size: 1.05rem !important;
+      line-height: 1.35 !important;
+    }
+
+    .p-dialog-mask .p-dialog.public-roster-dialog .p-dialog-header-actions .p-button,
+    .p-dialog-mask .p-dialog.public-roster-dialog .p-dialog-close-button {
+      width: 2.25rem !important;
+      height: 2.25rem !important;
+      min-width: 2.25rem !important;
+      border-radius: 999px !important;
+    }
   }
 
+  /**
+   * Внешний блок задаёт скругление и обрезку; горизонтальный скролл — на внутреннем слое,
+   * иначе у thead/tbody и фона обёртки «расходятся» углы в dark/light.
+   */
   .public-table-wrap {
-    @apply overflow-x-auto overflow-y-hidden rounded-2xl bg-white;
+    @apply overflow-hidden rounded-2xl border border-solid bg-white;
     border-color: #b7c7dd;
+  }
+
+  .public-table-wrap__scroll {
+    @apply min-w-0 overflow-x-auto overflow-y-hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
   .public-table {
@@ -390,6 +981,25 @@
 
   .public-link:hover {
     color: #9f083a;
+  }
+
+  /* Day 2 tokens: базовые utility-классы для публички */
+  .public-text-primary {
+    color: var(--public-accent-primary) !important;
+  }
+
+  .public-text-muted {
+    color: var(--public-accent-tertiary) !important;
+  }
+
+  .public-btn-outline-accent {
+    border-color: color-mix(in srgb, var(--public-accent-primary) 22%, white) !important;
+    color: color-mix(in srgb, var(--public-accent-primary) 78%, white) !important;
+  }
+
+  .public-btn-outline-accent:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--public-accent-secondary) 28%, white) !important;
+    color: var(--public-accent-secondary) !important;
   }
 
   .public-shell .p-inputtext:enabled:focus,
@@ -477,6 +1087,47 @@
   .public-shell .border-\[\#c80a48\],
   .public-shell .border-\[\#b10f46\] {
     border-color: var(--public-accent-secondary) !important;
+  }
+
+  /**
+   * Тёмная тема: читаемый текст на slate-фоне.
+   * Перебивает remap выше: иначе text-[#123c67] остаётся цветом бренда (тёмно-синий).
+   */
+  html.dark-mode .public-shell .text-\[\#123c67\],
+  html.dark-mode .public-shell .text-\[\#1a5a8c\] {
+    color: rgb(226 232 240) !important;
+  }
+
+  html.dark-mode .public-shell .text-\[\#4f6b8c\] {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .public-title,
+  html.dark-mode .public-shell .public-section-title {
+    color: color-mix(in srgb, var(--public-accent-primary) 36%, rgb(248 250 252)) !important;
+  }
+
+  html.dark-mode .public-shell .public-subtitle {
+    color: rgb(190 205 224) !important;
+  }
+
+  html.dark-mode .public-shell .stats-slider-head__count {
+    color: rgb(190 205 224) !important;
+  }
+
+  /**
+   * Страница турнира: полоса «Команд / Матчей / Лидер» — scoped-градиент в table.vue
+   * перебивает фон карточки; фиксируем тёмный фон явно (как у .public-card).
+   */
+  html.dark-mode .public-shell .public-card.tournament-facts {
+    background: rgb(15 23 42 / 0.96) !important;
+    border-color: rgb(51 65 85) !important;
+  }
+
+  html.dark-mode .public-shell .tournament-facts .info-card__icon {
+    color: rgb(148 163 184) !important;
+    background: rgb(30 41 59) !important;
+    border-color: rgb(51 65 85) !important;
   }
 }
 

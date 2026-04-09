@@ -31,6 +31,9 @@ import { UpdateTenantSocialLinksDto } from './dto/update-tenant-social-links.dto
 import { UpdateTenantPublicBrandingDto } from './dto/update-tenant-public-branding.dto';
 import { UpdateMyTenantSubscriptionPlanDto } from './dto/update-my-tenant-subscription-plan.dto';
 import { UpdateTenantAllowUserDeletionDto } from './dto/update-tenant-allow-user-deletion.dto';
+import { UpdateTenantTelegramNotificationsDto } from './dto/update-tenant-telegram-notifications.dto';
+import { UpdateTenantEmailNotificationsDto } from './dto/update-tenant-email-notifications.dto';
+import { UpdateTenantShareTableImageDto } from './dto/update-tenant-share-table-image.dto';
 
 @ApiTags('users')
 @UseGuards(
@@ -58,6 +61,31 @@ export class UsersController {
     @Body() dto: UiSettingsDto,
   ) {
     return this.usersService.patchTenantUiSettings(req.user.tenantId, dto);
+  }
+
+  /** Логотип для PNG «таблица для соцсетей» (чтение — любой сотрудник организации). */
+  @Get('me/tenant-share-table-image-settings')
+  async getMyTenantShareTableImageSettings(
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.usersService.getMyTenantShareTableImageSettings(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Patch('me/tenant-share-table-image-settings')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.TENANT_ADMIN, UserRole.SUPER_ADMIN)
+  async patchMyTenantShareTableImageSettings(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateTenantShareTableImageDto,
+  ) {
+    return this.usersService.updateMyTenantShareTableImageSettings(
+      req.user.sub,
+      req.user.tenantId,
+      dto,
+    );
   }
 
   @Get('me')
@@ -149,6 +177,82 @@ export class UsersController {
       req.user.sub,
       req.user.tenantId,
       dto.allowUserDeletion,
+    );
+  }
+
+  @Get('me/tenant-telegram-notifications')
+  async getMyTenantTelegramNotifications(
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.usersService.getMyTenantTelegramNotifications(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Patch('me/tenant-telegram-notifications')
+  async patchMyTenantTelegramNotifications(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateTenantTelegramNotificationsDto,
+  ) {
+    return this.usersService.updateMyTenantTelegramNotifications(
+      req.user.sub,
+      req.user.tenantId,
+      dto,
+    );
+  }
+
+  @Post('me/tenant-telegram-notifications/test')
+  async sendMyTenantTelegramTest(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.sendMyTenantTelegramTest(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Get('me/tenant-telegram-notifications/chats')
+  async listMyTelegramChats(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.listMyTenantTelegramChats(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Get('me/tenant-telegram-notifications/deliveries')
+  async listMyTelegramDeliveries(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.getMyTenantTelegramDeliveryLog(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Get('me/tenant-email-notifications')
+  async getMyTenantEmailNotifications(
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.usersService.getMyTenantEmailNotifications(
+      req.user.sub,
+      req.user.tenantId,
+    );
+  }
+
+  @Patch('me/tenant-email-notifications')
+  async patchMyTenantEmailNotifications(
+    @Req() req: Request & { user: JwtPayload },
+    @Body() dto: UpdateTenantEmailNotificationsDto,
+  ) {
+    return this.usersService.updateMyTenantEmailNotifications(
+      req.user.sub,
+      req.user.tenantId,
+      dto,
+    );
+  }
+
+  @Post('me/tenant-email-notifications/test')
+  async sendMyTenantEmailTest(@Req() req: Request & { user: JwtPayload }) {
+    return this.usersService.sendMyTenantEmailTest(
+      req.user.sub,
+      req.user.tenantId,
     );
   }
 

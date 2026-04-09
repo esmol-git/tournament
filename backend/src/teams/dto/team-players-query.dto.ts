@@ -1,6 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type, Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Min,
+} from 'class-validator';
 
 export class TeamPlayersQueryDto {
   @ApiPropertyOptional({ description: 'Page number (1-based)', example: 1 })
@@ -103,4 +110,17 @@ export class TeamPlayersQueryDto {
   @IsString()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'birthDateTo must be YYYY-MM-DD' })
   birthDateTo?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Если true — только игроки с активной связью (для протокола матча и заявки на турнир)',
+    example: true,
+  })
+  @IsOptional()
+  @Transform(
+    ({ value }) =>
+      value === true || value === 'true' || value === 1 || value === '1',
+  )
+  @IsBoolean()
+  activeOnly?: boolean;
 }

@@ -257,21 +257,21 @@ function matchStatusClass(status: MatchRow['status']) {
     case 'LIVE':
       return 'border-[#f2c5d6] bg-[#fff2f7] text-[#c80a48]'
     case 'SCHEDULED':
-      return 'border-[#d6e0ee] bg-[#f4f7fc] text-[#123c67]'
+      return 'border-[#d6e0ee] bg-[#f4f7fc] public-text-primary'
     case 'POSTPONED':
       return 'border-amber-200 bg-amber-50 text-amber-800'
     case 'CANCELLED':
       return 'border-slate-300 bg-slate-100 text-slate-700'
     default:
-      return 'border-[#d6e0ee] bg-[#f4f7fc] text-[#123c67]'
+      return 'border-[#d6e0ee] bg-[#f4f7fc] public-text-primary'
   }
 }
 
 function teamNameClass(match: MatchRow, side: 'home' | 'away') {
-  if (match.homeScore == null || match.awayScore == null) return 'text-[#123c67]'
+  if (match.homeScore == null || match.awayScore == null) return 'public-text-primary'
   const homeWins = Number(match.homeScore) > Number(match.awayScore)
   const awayWins = Number(match.awayScore) > Number(match.homeScore)
-  if ((side === 'home' && homeWins) || (side === 'away' && awayWins)) return 'text-[#1a5a8c]'
+  if ((side === 'home' && homeWins) || (side === 'away' && awayWins)) return 'public-text-primary'
   return 'text-[#123c67]/75'
 }
 
@@ -471,8 +471,8 @@ onMounted(() => {
 <template>
   <div class="rounded-2xl border border-[#b7c7dd] bg-white p-4">
     <div class="rounded-xl border border-[#d6e0ee] bg-gradient-to-r from-[#f5f9ff] to-[#fff4f8] px-4 py-3">
-      <div class="text-sm font-semibold text-[#123c67]">Плей-офф</div>
-      <div class="mt-1 text-xs text-[#4f6b8c]">
+      <div class="public-text-primary text-sm font-semibold">Плей-офф</div>
+      <div class="public-text-muted mt-1 text-xs">
         Матчи на вылет вынесены отдельно от группового этапа.
       </div>
     </div>
@@ -506,7 +506,7 @@ onMounted(() => {
     </div>
     <div
       v-else-if="!hasPlayoffMatches"
-      class="mt-4 rounded-xl border border-[#b7c7dd] bg-[#f8fbff] p-5 text-center text-[#4f6b8c]"
+      class="public-text-muted mt-4 rounded-xl border border-[#b7c7dd] bg-[#f8fbff] p-5 text-center"
     >
       Сетка плей-офф пока не сформирована.
     </div>
@@ -518,7 +518,7 @@ onMounted(() => {
             <button
               type="button"
               class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-              :class="playoffViewMode === 'list' ? 'bg-[#eef5ff] text-[#1a5a8c]' : 'text-[#4f6b8c] hover:bg-surface-50'"
+              :class="playoffViewMode === 'list' ? 'bg-[#eef5ff] public-text-primary' : 'public-text-muted hover:bg-surface-50'"
               @click="playoffViewMode = 'list'"
             >
               Все матчи
@@ -526,7 +526,7 @@ onMounted(() => {
             <button
               type="button"
               class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-              :class="playoffViewMode === 'bracket' ? 'bg-[#eef5ff] text-[#1a5a8c]' : 'text-[#4f6b8c] hover:bg-surface-50'"
+              :class="playoffViewMode === 'bracket' ? 'bg-[#eef5ff] public-text-primary' : 'public-text-muted hover:bg-surface-50'"
               @click="playoffViewMode = 'bracket'"
             >
               Сетка
@@ -535,7 +535,7 @@ onMounted(() => {
           <button
             v-if="playoffViewMode === 'bracket'"
             type="button"
-            class="rounded-lg border border-[#d6e0ee] bg-white px-3 py-1.5 text-xs font-semibold text-[#123c67] transition-colors hover:bg-[#f4f7fc]"
+            class="public-text-primary rounded-lg border border-[#d6e0ee] bg-white px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-[#f4f7fc]"
             @click="toggleBracketFullscreen"
           >
             {{ isBracketFullscreen ? 'Свернуть' : 'На весь экран' }}
@@ -544,22 +544,22 @@ onMounted(() => {
       </div>
       <div
         v-if="playedMatchesCount === 0"
-        class="rounded-lg border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs text-[#4f6b8c]"
+        class="public-text-muted rounded-lg border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs"
       >
         Матчи плей-офф пока не сыграны. Результаты появятся после завершения игр.
       </div>
       <template v-if="playoffViewMode === 'bracket'">
         <section class="overflow-hidden rounded-xl border border-[#b7c7dd]">
           <header class="border-b border-[#d6e0ee] bg-[#f4f7fc] px-4 py-3">
-            <h3 class="text-sm font-semibold text-[#123c67]">Сетка плей-офф по стадиям</h3>
-            <div class="mt-1 text-xs text-[#4f6b8c]">
+            <h3 class="public-text-primary text-sm font-semibold">Сетка плей-офф по стадиям</h3>
+            <div class="public-text-muted mt-1 text-xs">
               Сыграно {{ playedMatchesCount }} из {{ matchesTotal }} матчей
             </div>
           </header>
           <div class="bg-[#f8fbff] p-2">
             <div
               v-if="canLoadMoreMatches || loadingMore || bracketPriming"
-              class="mb-2 text-xs text-[#4f6b8c]"
+              class="public-text-muted mb-2 text-xs"
             >
               Подготавливаем полную сетку...
             </div>
@@ -597,10 +597,10 @@ onMounted(() => {
                     </template>
                   </Bracket>
                   <template #fallback>
-                    <div class="text-sm text-[#4f6b8c]">Загрузка сетки...</div>
+                    <div class="public-text-muted text-sm">Загрузка сетки...</div>
                   </template>
                 </ClientOnly>
-                <div class="mt-3 max-w-[220px] rounded-lg border border-[#dce5f2] bg-white p-2 text-xs text-[#123c67]">
+                <div class="public-text-primary mt-3 max-w-[220px] rounded-lg border border-[#dce5f2] bg-white p-2 text-xs">
                   <div class="mb-1 font-semibold">Матч за 3 место</div>
                   <template v-if="thirdPlaceMatch">
                     <div class="flex items-center justify-between gap-2">
@@ -611,11 +611,11 @@ onMounted(() => {
                       <span class="truncate">{{ displayedTeamName(thirdPlaceMatch, 'away') }}</span>
                       <span class="font-semibold text-[#1a5a8c]">{{ thirdPlaceMatch.awayScore ?? '-' }}</span>
                     </div>
-                    <div class="mt-1 text-[10px] text-[#4f6b8c]">
+                    <div class="public-text-muted mt-1 text-[10px]">
                       {{ matchNumberLabel(thirdPlaceMatch) }}
                     </div>
                   </template>
-                  <div v-else class="text-[10px] text-[#4f6b8c]">
+                  <div v-else class="public-text-muted text-[10px]">
                     Для этого турнира матч за 3 место не создан.
                   </div>
                 </div>
@@ -629,7 +629,7 @@ onMounted(() => {
         class="overflow-hidden rounded-xl border border-[#b7c7dd]"
       >
         <header class="border-b border-[#d6e0ee] bg-[#f4f7fc] px-4 py-3">
-          <h3 class="text-sm font-semibold text-[#123c67]">Все матчи плей-офф</h3>
+          <h3 class="public-text-primary text-sm font-semibold">Все матчи плей-офф</h3>
         </header>
         <div class="space-y-2 bg-[#f8fbff] p-2">
           <article
@@ -665,8 +665,8 @@ onMounted(() => {
               </div>
             </div>
             <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#eef3fa] pt-2">
-              <div class="flex items-center gap-2 text-xs text-[#4f6b8c]">
-                <span class="rounded-full border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-0.5 font-semibold text-[#123c67]">
+              <div class="public-text-muted flex items-center gap-2 text-xs">
+                <span class="public-text-primary rounded-full border border-[#d6e0ee] bg-[#f4f7fc] px-2 py-0.5 font-semibold">
                   {{ matchNumberLabel(m) }}
                 </span>
                 <span>{{ formatDateTime(m.startTime) }}</span>
@@ -686,10 +686,10 @@ onMounted(() => {
         ref="loadMoreSentinel"
         class="flex flex-col items-center justify-center gap-2 py-2"
       >
-        <div class="text-xs text-[#4f6b8c]">
+        <div class="public-text-muted text-xs">
           Загружено {{ matchesLoaded }} из {{ matchesTotal }} матчей
         </div>
-        <div class="text-xs text-[#4f6b8c]">
+        <div class="public-text-muted text-xs">
           {{ loadingMore ? 'Загружаем еще матчи...' : 'Прокрутите ниже для автодогрузки' }}
         </div>
       </div>

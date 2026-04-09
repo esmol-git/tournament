@@ -9,6 +9,10 @@ import { useTournamentReferences } from '~/composables/admin/useTournamentRefere
 import { getApiErrorMessage, getApiErrorMessages } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import {
+  DEFAULT_TOURNAMENT_CALENDAR_STRIPE,
+  TOURNAMENT_CALENDAR_COLOR_PRESETS,
+} from '~/utils/tournamentCalendarColor'
+import {
   hasSubscriptionFeature,
   subscriptionPlanFromAuthUser,
 } from '~/utils/subscriptionFeatures'
@@ -76,18 +80,9 @@ const templateKindOptions = computed(() => [
 
 const playoffTeamCountOptions = [4, 8, 16, 32, 64, 128, 256, 512]
 
-const tournamentCalendarColorPresets = [
-  '#6366f1',
-  '#10b981',
-  '#f59e0b',
-  '#ef4444',
-  '#8b5cf6',
-  '#ec4899',
-  '#06b6d4',
-  '#84cc16',
-] as const
+const tournamentCalendarColorPresets = TOURNAMENT_CALENDAR_COLOR_PRESETS
 
-const DEFAULT_CALENDAR_PICKER_FALLBACK = '#6366f1'
+const DEFAULT_CALENDAR_PICKER_FALLBACK = DEFAULT_TOURNAMENT_CALENDAR_STRIPE
 
 function buildEmptyForm() {
   return {

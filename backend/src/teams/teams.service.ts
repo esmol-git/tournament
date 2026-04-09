@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, TournamentStatus } from '@prisma/client';
 import { maxTeamsPerTenant } from '../auth/subscription-plan-features.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
@@ -16,9 +16,31 @@ import { TeamPlayersQueryDto } from './dto/team-players-query.dto';
 import { UpdateTeamDto } from './dto/update-team.dto';
 import { UpdateTeamPlayerDto } from './dto/update-team-player.dto';
 import { assertPlayerFitsTeamCategory } from './team-category-player.assert';
+import { parseCsv } from '../players/players-csv.util';
+import { slugifyFromTitle } from '../utils/slugify';
 
 @Injectable()
 export class TeamsService {
+  /** Нельзя убирать из заявки / удалять связь, если есть протокольные события в активном турнире. */
+  private async assertMayDeactivateOrRemoveTeamPlayer(
+    playerId: string,
+  ): Promise<void> {
+    const n = await this.prisma.matchEvent.count({
+      where: {
+        playerId,
+        match: {
+          tournamentId: { not: null },
+          tournament: { status: TournamentStatus.ACTIVE },
+        },
+      },
+    });
+    if (n > 0) {
+      throw new BadRequestException(
+        'Нельзя отключить или убрать игрока из состава: есть записи в протоколах матчей активного турнира. Завершите турнир или снимите события с игрока.',
+      );
+    }
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -395,6 +417,8 @@ export class TeamsService {
       teamCategoryIdToSet ?? null,
       ageGroupIdToSet ?? null,
     );
+    const categoryResolved =
+      categoryLabel ?? (dto.category?.trim() ? dto.category.trim() : null);
 
     let regionIdToSet: string | undefined = undefined;
     const rawReg = dto.regionId?.trim();
@@ -414,7 +438,7 @@ export class TeamsService {
         tenantId,
         name: dto.name,
         slug: dto.slug,
-        category: categoryLabel,
+        category: categoryResolved,
         teamCategoryId: teamCategoryIdToSet,
         logoUrl: logoUrlCreate,
         coachName: dto.coachName,
@@ -677,6 +701,10 @@ export class TeamsService {
       where.player = { is: playerWhere };
     }
 
+    if (query.activeOnly === true) {
+      where.isActive = true;
+    }
+
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 10;
     const skip = (page - 1) * pageSize;
@@ -722,6 +750,7 @@ export class TeamsService {
       items: items.map((tp) => ({
         playerId: tp.playerId,
         id: tp.id,
+        isActive: tp.isActive,
         jerseyNumber: tp.jerseyNumber,
         position: tp.position ?? tp.player.position,
         player: {
@@ -892,6 +921,12 @@ export class TeamsService {
     });
     if (!existing) throw new NotFoundException('Team player not found');
 
+    const willBeActive =
+      dto.isActive !== undefined ? dto.isActive : existing.isActive;
+    if (existing.isActive && !willBeActive) {
+      await this.assertMayDeactivateOrRemoveTeamPlayer(playerId);
+    }
+
     const updated = await this.prisma.teamPlayer.update({
       where: { id: existing.id },
       data: {
@@ -900,6 +935,7 @@ export class TeamsService {
             ? dto.jerseyNumber
             : existing.jerseyNumber,
         position: dto.position !== undefined ? dto.position : existing.position,
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
       include: {
         player: {
@@ -919,6 +955,7 @@ export class TeamsService {
     return {
       playerId: updated.playerId,
       id: updated.id,
+      isActive: updated.isActive,
       jerseyNumber: updated.jerseyNumber,
       position: updated.position ?? updated.player.position,
       player: {
@@ -945,10 +982,235 @@ export class TeamsService {
       actorRole,
       teamId,
     );
-    const res = await this.prisma.teamPlayer.deleteMany({
+    const existing = await this.prisma.teamPlayer.findFirst({
+      where: { teamId, playerId, team: teamWhere },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException('Team player not found');
+
+    await this.assertMayDeactivateOrRemoveTeamPlayer(playerId);
+
+    await this.prisma.teamPlayer.deleteMany({
       where: { teamId, playerId, team: teamWhere },
     });
-    if (!res.count) throw new NotFoundException('Team player not found');
     return { success: true };
+  }
+
+  /**
+   * Импорт команд из CSV (UTF-8). Первая строка — заголовки.
+   * Колонки (любой регистр): name | название | команда (обязательно);
+   * slug; category; ageGroup (имя из справочника); teamCategory; region;
+   * coachName, coachPhone, coachEmail, contactName, contactPhone, description.
+   */
+  async importTeamsCsv(
+    tenantId: string,
+    csvText: string,
+  ): Promise<{
+    created: number;
+    skipped: number;
+    errors: Array<{ row: number; message: string }>;
+  }> {
+    const rows = parseCsv(csvText.trim());
+    if (rows.length < 2) {
+      throw new BadRequestException(
+        'CSV: нужна строка заголовков и хотя бы одна строка данных',
+      );
+    }
+    const rawHeaders = rows[0].map((h) =>
+      String(h ?? '')
+        .trim()
+        .toLowerCase(),
+    );
+    const findCol = (aliases: string[]): number => {
+      for (const a of aliases) {
+        const i = rawHeaders.indexOf(a.toLowerCase());
+        if (i >= 0) return i;
+      }
+      return -1;
+    };
+    const nameIdx = findCol(['name', 'название', 'команда', 'team']);
+    if (nameIdx < 0) {
+      throw new BadRequestException(
+        'CSV: не найдена колонка name (или название, команда)',
+      );
+    }
+    const slugIdx = findCol(['slug', 'код']);
+    const categoryIdx = findCol(['category', 'категория']);
+    const ageGroupIdx = findCol([
+      'agegroup',
+      'age_group',
+      'возрастная_группа',
+      'возраст',
+    ]);
+    const teamCatIdx = findCol([
+      'teamcategory',
+      'team_category',
+      'категория_состава',
+    ]);
+    const regionIdx = findCol(['region', 'регион']);
+    const coachNameIdx = findCol(['coachname', 'coach_name', 'тренер']);
+    const coachPhoneIdx = findCol(['coachphone', 'coach_phone']);
+    const coachEmailIdx = findCol(['coachemail', 'coach_email']);
+    const contactNameIdx = findCol(['contactname', 'contact_name']);
+    const contactPhoneIdx = findCol(['contactphone', 'contact_phone']);
+    const descIdx = findCol(['description', 'описание']);
+
+    const [ageGroups, teamCats, regions] = await Promise.all([
+      this.prisma.ageGroup.findMany({
+        where: { tenantId },
+        select: { id: true, name: true },
+      }),
+      this.prisma.teamCategory.findMany({
+        where: { tenantId },
+        select: { id: true, name: true },
+      }),
+      this.prisma.region.findMany({
+        where: { tenantId },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    const byNameInsensitive = (
+      items: Array<{ id: string; name: string }>,
+      q: string,
+    ): string | undefined => {
+      const t = q.trim().toLowerCase();
+      if (!t) return undefined;
+      const hit = items.find((x) => x.name.toLowerCase() === t);
+      return hit?.id;
+    };
+
+    const errors: Array<{ row: number; message: string }> = [];
+    let created = 0;
+    let skipped = 0;
+
+    const ensureUniqueSlug = async (base: string): Promise<string> => {
+      const b = base.slice(0, 96) || 'team';
+      let n = 0;
+      for (;;) {
+        const slug = n === 0 ? b : `${b}-${n}`;
+        const exists = await this.prisma.team.findFirst({
+          where: { tenantId, slug },
+          select: { id: true },
+        });
+        if (!exists) return slug;
+        n++;
+        if (n > 500)
+          throw new BadRequestException('Не удалось подобрать уникальный slug');
+      }
+    };
+
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const name = String(row[nameIdx] ?? '').trim();
+      if (!name) {
+        skipped++;
+        continue;
+      }
+      try {
+        const slugRaw = slugIdx >= 0 ? String(row[slugIdx] ?? '').trim() : '';
+        const baseSlug = slugRaw
+          ? slugifyFromTitle(slugRaw, 'team')
+          : slugifyFromTitle(name, 'team');
+        const slug = await ensureUniqueSlug(baseSlug);
+
+        const category =
+          categoryIdx >= 0
+            ? String(row[categoryIdx] ?? '').trim() || undefined
+            : undefined;
+
+        let ageGroupId: string | null | undefined = undefined;
+        if (ageGroupIdx >= 0) {
+          const q = String(row[ageGroupIdx] ?? '').trim();
+          if (q) {
+            const id = byNameInsensitive(ageGroups, q);
+            if (!id) {
+              throw new BadRequestException(
+                `Возрастная группа не найдена: "${q}"`,
+              );
+            }
+            ageGroupId = id;
+          }
+        }
+
+        let teamCategoryId: string | null | undefined = undefined;
+        if (teamCatIdx >= 0) {
+          const q = String(row[teamCatIdx] ?? '').trim();
+          if (q) {
+            const id = byNameInsensitive(teamCats, q);
+            if (!id) {
+              throw new BadRequestException(
+                `Категория состава не найдена: "${q}"`,
+              );
+            }
+            teamCategoryId = id;
+          }
+        }
+
+        let regionId: string | null | undefined = undefined;
+        if (regionIdx >= 0) {
+          const q = String(row[regionIdx] ?? '').trim();
+          if (q) {
+            const id = byNameInsensitive(regions, q);
+            if (!id) {
+              throw new BadRequestException(`Регион не найден: "${q}"`);
+            }
+            regionId = id;
+          }
+        }
+
+        const dto: CreateTeamDto = {
+          name,
+          slug,
+          ...(category !== undefined ? { category } : {}),
+          ...(ageGroupId !== undefined ? { ageGroupId } : {}),
+          ...(teamCategoryId !== undefined ? { teamCategoryId } : {}),
+          ...(regionId !== undefined ? { regionId } : {}),
+          ...(coachNameIdx >= 0
+            ? { coachName: String(row[coachNameIdx] ?? '').trim() || undefined }
+            : {}),
+          ...(coachPhoneIdx >= 0
+            ? {
+                coachPhone:
+                  String(row[coachPhoneIdx] ?? '').trim() || undefined,
+              }
+            : {}),
+          ...(coachEmailIdx >= 0
+            ? {
+                coachEmail:
+                  String(row[coachEmailIdx] ?? '').trim() || undefined,
+              }
+            : {}),
+          ...(contactNameIdx >= 0
+            ? {
+                contactName:
+                  String(row[contactNameIdx] ?? '').trim() || undefined,
+              }
+            : {}),
+          ...(contactPhoneIdx >= 0
+            ? {
+                contactPhone:
+                  String(row[contactPhoneIdx] ?? '').trim() || undefined,
+              }
+            : {}),
+          ...(descIdx >= 0
+            ? { description: String(row[descIdx] ?? '').trim() || undefined }
+            : {}),
+        };
+
+        await this.create(tenantId, dto);
+        created++;
+      } catch (e: unknown) {
+        const msg =
+          e instanceof BadRequestException || e instanceof ForbiddenException
+            ? (e as { message: string }).message
+            : e instanceof Error
+              ? e.message
+              : String(e);
+        errors.push({ row: r + 1, message: msg });
+      }
+    }
+
+    return { created, skipped, errors };
   }
 }

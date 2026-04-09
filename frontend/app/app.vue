@@ -52,9 +52,21 @@ const cookieSettings = computed(() => parseSettings(adminSettingsCookie.value))
 const usesPersistedAdminChrome = computed(
   () => route.path.startsWith('/admin') || route.path.startsWith('/platform'),
 )
-const adminHtmlClass = computed(() =>
-  usesPersistedAdminChrome.value && cookieSettings.value.themeMode === 'dark' ? 'dark-mode' : undefined,
-)
+/**
+ * На админке/платформе скролл обычно в `main.overflow-y-auto`, не на document.
+ * Глобальный `scrollbar-gutter: stable` на html + компенсация Prime при модалке дают
+ * «двойную» полосу справа — отключаем stable только для этих зон.
+ */
+const htmlRootClass = computed(() => {
+  const parts: string[] = []
+  if (usesPersistedAdminChrome.value && cookieSettings.value.themeMode === 'dark') {
+    parts.push('dark-mode')
+  }
+  if (usesPersistedAdminChrome.value) {
+    parts.push('admin-chrome-no-scrollbar-gutter')
+  }
+  return parts.length ? parts.join(' ') : undefined
+})
 const adminAccent = computed(() =>
   usesPersistedAdminChrome.value ? cookieSettings.value.accent : undefined,
 )
@@ -66,7 +78,7 @@ const adminAccentInlineStyle = computed(() => {
 
 useHead(() => ({
   htmlAttrs: {
-    class: adminHtmlClass.value,
+    class: htmlRootClass.value,
     'data-accent': adminAccent.value,
   },
   style: adminAccentInlineStyle.value

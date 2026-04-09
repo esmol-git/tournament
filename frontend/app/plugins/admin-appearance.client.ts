@@ -9,17 +9,35 @@ export default defineNuxtPlugin({
   setup(nuxtApp) {
     if (import.meta.server) return
 
+    const router = useRouter()
     const store = useAdminSettingsStore()
-    store.hydrate()
-    applyAdminThemeAndAccent({
-      themeMode: store.themeMode,
-      accent: store.accent,
-    })
 
-    let unbind: (() => void) | undefined
+    let unbindSystem: (() => void) | undefined
+
+    function syncRoute() {
+      const path = router.currentRoute.value.path
+      const isAdmin = path.startsWith('/admin') || path.startsWith('/platform')
+
+      unbindSystem?.()
+      unbindSystem = undefined
+
+      if (isAdmin) {
+        store.hydrate()
+        applyAdminThemeAndAccent({
+          themeMode: store.themeMode,
+          accent: store.accent,
+        })
+        unbindSystem = bindSystemThemeListener()
+      } else {
+        document.documentElement.removeAttribute('data-accent')
+      }
+    }
+
+    syncRoute()
+    router.afterEach(() => syncRoute())
+
     nuxtApp.hook('app:mounted', () => {
-      unbind?.()
-      unbind = bindSystemThemeListener()
+      syncRoute()
     })
   },
 })

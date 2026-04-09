@@ -49,6 +49,11 @@ export class TenantAdminStaffGuard implements CanActivate {
   private isAllowedForRestrictedRole(path: string): boolean {
     if (path === '/auth/me' || path === '/auth/logout') return true;
 
+    /** Судья: календарь матчей организации (совпадает с `PROTOCOL_ROLES` на `MatchesService.listTenantMatches`). */
+    if (/^\/tenants\/[^/]+\/matches\/?$/.test(path)) {
+      return true;
+    }
+
     if (path === '/users/me' || path.startsWith('/users/me/')) {
       if (path.startsWith('/users/me/tenant-subscription-plan')) return false;
       if (path.startsWith('/users/me/tenant-public-branding')) return false;

@@ -73,8 +73,31 @@ model Tenant {
   showSocialInstagramLink Boolean @default(true)
   showSocialTelegramLink Boolean @default(true)
   showSocialMaxLink Boolean @default(true)
+  /** Telegram-канал/чат для уведомлений организации. */
+  telegramNotifyChatId String?
+  /** Включено ли Telegram-уведомление о переносе/изменении времени матча. */
+  telegramNotifyOnMatchRescheduled Boolean @default(true)
+  /** Включено ли Telegram-уведомление о публикации протокола/результата. */
+  telegramNotifyOnProtocolPublished Boolean @default(true)
+  /** Включено ли Telegram-уведомление о старте матча (резерв под v1.1). */
+  telegramNotifyOnMatchStartingSoon Boolean @default(false)
+  /** Email-уведомления организации: список получателей через запятую. */
+  emailNotifyRecipients String?
+  emailNotifyEnabled Boolean @default(false)
+  emailNotifyOnMatchRescheduled Boolean @default(true)
+  emailNotifyOnProtocolPublished Boolean @default(true)
+  /// Добавлять в получатели email тренеров команд-участниц матча.
+  emailNotifyMatchTeamCoachRole Boolean @default(false)
+  /// Добавлять в получатели email администраторов команд-участниц матча.
+  emailNotifyMatchTeamAdminRole Boolean @default(false)
   /** Общие настройки админ-панели (тема, локаль, акцент) для всех пользователей организации. */
   adminUiSettings Json?
+  /** Свой логотип для PNG «таблица для соцсетей»; если null — в картинке используется логотип платформы. */
+  shareTableImageLogoUrl String?
+  /** Показывать логотип на картинке таблицы по умолчанию (переключатель в диалоге экспорта). */
+  shareTableImageShowLogo Boolean @default(true)
+  /** Масштаб шрифта/отступов PNG «таблица для соцсетей» (1.0 = по умолчанию). */
+  shareTableImageFontScale Float @default(1)
   /**
    * Если true — админ организации может удалять учётные записи в разделе «Пользователи».
    * По умолчанию выключено: достаточно блокировки.
@@ -106,6 +129,7 @@ model Tenant {
   seasons             Season[]
   ageGroups           AgeGroup[]
   regions             Region[]
+  awards              Award[]
   referenceDocuments  ReferenceDocument[]
   tournamentReferees TournamentReferee[]
   protocolEventTypes  ProtocolEventType[]
@@ -113,8 +137,37 @@ model Tenant {
   tournamentTemplates       TournamentTemplate[]
   tournamentTemplateReferees TournamentTemplateReferee[]
   tournamentStadiums        TournamentStadium[]
+  telegramNotificationDeliveries TelegramNotificationDelivery[]
 
   @@index([subscriptionEndsAt])
+}
+
+model TelegramNotificationDelivery {
+  id            String   @id @default(cuid())
+  tenantId      String
+  /// TELEGRAM (резерв под другие каналы в будущем).
+  channel       String   @default("TELEGRAM")
+  /// rescheduled | protocol_published | test
+  kind          String
+  chatId        String
+  /// QUEUED | SENT | FAILED
+  status        String   @default("QUEUED")
+  attempts      Int      @default(0)
+  payload       Json?
+  dedupeKey     String?
+  errorMessage  String?  @db.Text
+  matchId       String?
+  tournamentId  String?
+  createdAt     DateTime @default(now())
+  lastAttemptAt DateTime?
+  sentAt        DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, kind, createdAt])
+  @@index([tenantId, channel, dedupeKey, createdAt])
 }
 
 /// Журнал действий в админ-API (права, инциденты, отладка).
@@ -142,6 +195,32 @@ model AdminAuditLog {
   @@index([userId, createdAt])
   @@index([resourceType, resourceId])
   @@index([action, createdAt])
+}
+
+model DemoLead {
+  id        String         @id @default(cuid())
+  name      String
+  contact   String
+  league    String
+  message   String         @db.Text
+  source    String         @default("landing")
+  status    DemoLeadStatus @default(NEW)
+  note      String?        @db.Text
+  userAgent String?
+  referer   String?
+  ip        String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  processedAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+}
+
+enum DemoLeadStatus {
+  NEW
+  IN_PROGRESS
+  CLOSED
 }
 
 /// Расширяемые подписи событий протокола; `mapsToType` хранит семантику для логики и статистики.
@@ -228,6 +307,24 @@ model Region {
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   teams    Team[]
   stadiums Stadium[]
+
+  @@index([tenantId, sortOrder])
+  @@index([tenantId, name])
+}
+
+/// Награды / номинации турнира (MVP, лучший бомбардир и т.д.) — справочник тенанта.
+model Award {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  code      String?
+  note      String?
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, sortOrder])
   @@index([tenantId, name])
@@ -547,6 +644,8 @@ model User {
   tournamentMemberships TournamentMember[]
   /** Турниры, созданные этим пользователем (админ турнира видит только их). */
   createdTournaments Tournament[] @relation("TournamentCreator")
+  /** Турниры, для которых этот пользователь завершил мастер запуска. */
+  completedLaunchChecklistTournaments Tournament[] @relation("TournamentLaunchChecklistCompleter")
   teamAdminOf TeamAdmin[]
   refreshTokens RefreshToken[]
 
@@ -600,6 +699,8 @@ model Tournament {
   tenantId    String
   /** Кто создал турнир в админке; для роли TOURNAMENT_ADMIN — граница доступа. */
   createdByUserId String?
+  launchChecklistCompletedAt DateTime?
+  launchChecklistCompletedByUserId String?
   /** Игровой сезон из справочника (опционально). */
   seasonId       String?
   /** Тип соревнования из справочника: чемпионат, кубок и т.д. (опционально). */
@@ -612,6 +713,7 @@ model Tournament {
 
   tenant      Tenant      @relation(fields: [tenantId], references: [id])
   createdBy   User?       @relation("TournamentCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  launchChecklistCompletedBy User? @relation("TournamentLaunchChecklistCompleter", fields: [launchChecklistCompletedByUserId], references: [id], onDelete: SetNull)
   season      Season?     @relation(fields: [seasonId], references: [id], onDelete: SetNull)
   competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
   ageGroup    AgeGroup?   @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
@@ -631,6 +733,7 @@ model Tournament {
   @@unique([tenantId, slug])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, createdByUserId])
+  @@index([tenantId, launchChecklistCompletedAt])
   @@index([tenantId, seasonId])
   @@index([tenantId, competitionId])
   @@index([tenantId, ageGroupId])
@@ -876,6 +979,8 @@ model Match {
   scheduleChangeNote       String?
   /** Площадка матча; при непустом списке площадок турнира должна входить в него. */
   stadiumId    String?
+  /** Показывать матч на публичном сайте и в публичном ICS (скачивание из админки — полный список). */
+  publishedOnPublic Boolean @default(true)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -890,6 +995,7 @@ model Match {
 
   @@index([tournamentId, startTime])
   @@index([tournamentId, status, startTime])
+  @@index([tournamentId, publishedOnPublic])
   @@index([tenantId, tournamentId])
   @@index([scheduleChangeReasonId])
   @@index([tenantId, stadiumId])

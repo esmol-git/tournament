@@ -7,11 +7,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  SubscriptionStatus,
-  TournamentFormat,
-  UserRole,
-} from '@prisma/client';
+import { SubscriptionStatus, TournamentFormat, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import request from 'supertest';

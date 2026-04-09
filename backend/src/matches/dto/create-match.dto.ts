@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -50,4 +51,11 @@ export class CreateMatchDto {
   @IsOptional()
   @IsString()
   stadiumId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Показывать матч на публичном сайте и в публичном ICS',
+  })
+  @IsOptional()
+  @IsBoolean()
+  publishedOnPublic?: boolean;
 }

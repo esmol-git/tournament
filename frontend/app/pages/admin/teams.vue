@@ -24,6 +24,7 @@ import {
 } from '~/utils/subscriptionFeatures'
 import { useQueryClient } from '@tanstack/vue-query'
 import { invalidateAdminTenantTeamsQueries } from '~/composables/admin/adminTenantQueryKeys'
+import InputSwitch from 'primevue/inputswitch'
 
 definePageMeta({
   layout: 'admin',
@@ -126,6 +127,75 @@ const showNameError = computed(
 const teamSlugGenerated = computed(() => slugifyFromTitle(form.name, 'team'))
 
 const showTeamsPaginator = computed(() => totalTeams.value > TEAMS_TABLE_SKELETON_ROWS)
+
+const canImportTeamsCsv = computed(() =>
+  hasSubscriptionFeature(subscriptionPlan.value, 'data_import_export'),
+)
+const teamCsvImportVisible = ref(false)
+const teamCsvImporting = ref(false)
+const teamCsvFile = ref<File | null>(null)
+
+function openTeamCsvImport() {
+  teamCsvFile.value = null
+  teamCsvImportVisible.value = true
+}
+
+function onTeamCsvFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  teamCsvFile.value = input.files?.[0] ?? null
+  input.value = ''
+}
+
+async function submitTeamCsvImport() {
+  if (!token.value || !teamCsvFile.value) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Файл не выбран',
+      detail: 'Выберите CSV с колонкой name (или название).',
+      life: 4000,
+    })
+    return
+  }
+  teamCsvImporting.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', teamCsvFile.value)
+    const res = await authFetch<{
+      created: number
+      skipped: number
+      errors: Array<{ row: number; message: string }>
+    }>(apiUrl(`/tenants/${tenantId.value}/teams/import/csv`), {
+      method: 'POST',
+      body: fd,
+    })
+    const errPreview =
+      res.errors.length > 0
+        ? ` Ошибки в строках: ${res.errors
+            .slice(0, 5)
+            .map((e) => `${e.row} (${e.message})`)
+            .join('; ')}${res.errors.length > 5 ? '…' : ''}`
+        : ''
+    toast.add({
+      severity: res.errors.length ? 'warn' : 'success',
+      summary: 'Импорт команд',
+      detail: `Создано: ${res.created}, пропущено пустых: ${res.skipped}.${errPreview}`,
+      life: 9000,
+    })
+    teamCsvImportVisible.value = false
+    teamCsvFile.value = null
+    await fetchTeams(currentPage.value, pageSize.value, searchQuery.value)
+    void invalidateAdminTenantTeamsQueries(queryClient, tenantId.value)
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Импорт CSV не удался',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
+  } finally {
+    teamCsvImporting.value = false
+  }
+}
 
 const teamsEmptyDescription = computed(() =>
   isModeratorReadOnly.value
@@ -829,6 +899,40 @@ const saveRosterPlayer = async () => {
   }
 }
 
+const rosterActiveTogglingId = ref<string | null>(null)
+
+async function setTeamPlayerActive(tp: TeamPlayerRow, value: boolean) {
+  if (!token.value || !rosterTeam.value || isModeratorReadOnly.value) return
+  const current = tp.isActive !== false
+  if (value === current) return
+  rosterActiveTogglingId.value = tp.id
+  try {
+    await authFetch(
+      apiUrl(`/tenants/${tenantId.value}/teams/${rosterTeam.value.id}/players/${tp.playerId}`),
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: { isActive: value },
+      },
+    )
+    await fetchRosterPlayers()
+    toast.add({
+      severity: 'success',
+      summary: value ? 'Игрок в заявке' : 'Игрок не в заявке',
+      life: 2200,
+    })
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось изменить статус',
+      detail: getApiErrorMessage(err),
+      life: 7000,
+    })
+  } finally {
+    rosterActiveTogglingId.value = null
+  }
+}
+
 const deleteRosterPlayerConfirmOpen = ref(false)
 const rosterPlayerToDelete = ref<TeamPlayerRow | null>(null)
 const deleteRosterPlayerMessage = computed(() => {
@@ -883,6 +987,15 @@ async function confirmDeleteRosterPlayer() {
           severity="secondary"
           :loading="loading"
           @click="fetchTeams(currentPage, pageSize, searchQuery)"
+        />
+        <Button
+          v-if="!isModeratorReadOnly && canImportTeamsCsv"
+          label="Импорт CSV"
+          icon="pi pi-upload"
+          severity="secondary"
+          outlined
+          :disabled="teamsLimitReached"
+          @click="openTeamCsvImport"
         />
         <Button
           v-if="!isModeratorReadOnly"
@@ -1094,6 +1207,44 @@ async function confirmDeleteRosterPlayer() {
       </Column>
     </DataTable>
     </AdminDataState>
+
+    <Dialog
+      v-model:visible="teamCsvImportVisible"
+      modal
+      header="Импорт команд из CSV"
+      :style="{ width: 'min(32rem, 95vw)' }"
+    >
+      <p class="mb-3 text-sm text-muted-color">
+        Первая строка — заголовки. Обязательная колонка:
+        <code class="rounded bg-surface-100 px-1 dark:bg-surface-800">name</code>
+        (или «название», «команда»). Опционально:
+        slug, category; возрастная группа — колонки
+        <code class="rounded bg-surface-100 px-1 dark:bg-surface-800">agegroup</code>
+        /
+        <code class="rounded bg-surface-100 px-1 dark:bg-surface-800">возраст</code>
+        (имя из справочника); категория состава —
+        <code class="rounded bg-surface-100 px-1 dark:bg-surface-800">teamcategory</code>
+        ; регион —
+        <code class="rounded bg-surface-100 px-1 dark:bg-surface-800">region</code>
+        . Контакты: coachName, coachPhone, coachEmail, contactName, contactPhone, description. UTF-8.
+      </p>
+      <input
+        type="file"
+        accept=".csv,text/csv"
+        class="mb-4 block w-full text-sm"
+        @change="onTeamCsvFileChange"
+      >
+      <div class="flex justify-end gap-2">
+        <Button label="Отмена" severity="secondary" @click="teamCsvImportVisible = false" />
+        <Button
+          label="Загрузить"
+          icon="pi pi-check"
+          :loading="teamCsvImporting"
+          :disabled="!teamCsvFile"
+          @click="submitTeamCsvImport"
+        />
+      </div>
+    </Dialog>
 
     <AdminConfirmDialog
       v-model="deleteTeamConfirmOpen"
@@ -1331,6 +1482,14 @@ async function confirmDeleteRosterPlayer() {
           </div>
         </div>
 
+        <Message v-if="!isModeratorReadOnly" severity="info" :closable="false" class="text-sm">
+          В публичном составе каждого турнира показываются только игроки «в заявке» (активная связь с
+          командой). Одна и та же команда может участвовать в нескольких турнирах одновременно (например,
+          первенство и кубок). Отключить или убрать игрока из состава нельзя, если в протоколах
+          <strong>активного</strong>
+          турнира уже есть события с этим игроком.
+        </Message>
+
         <DataTable
           v-if="rosterLoading"
           :value="rosterSkeletonRows"
@@ -1371,6 +1530,11 @@ async function confirmDeleteRosterPlayer() {
               <Skeleton width="70%" height="1rem" class="rounded-md" />
             </template>
           </Column>
+          <Column v-if="!isModeratorReadOnly" header="В заявке" style="width: 7rem">
+            <template #body>
+              <Skeleton width="2.25rem" height="1.25rem" class="rounded-md" />
+            </template>
+          </Column>
           <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">
             <template #body>
               <div class="flex justify-end gap-2">
@@ -1384,6 +1548,7 @@ async function confirmDeleteRosterPlayer() {
         <DataTable
           v-else
           :value="rosterPlayers"
+          :row-class="(data: TeamPlayerRow) => (data.isActive === false ? 'opacity-70' : undefined)"
           striped-rows
           :paginator="rosterTotal >= 6"
           lazy
@@ -1463,6 +1628,18 @@ async function confirmDeleteRosterPlayer() {
             <template #body="{ data }">
               <span v-if="data.player.phone">{{ data.player.phone }}</span>
               <span v-else class="text-muted-color">—</span>
+            </template>
+          </Column>
+          <Column v-if="!isModeratorReadOnly" header="В заявке" style="width: 7rem">
+            <template #body="{ data }">
+              <div class="flex items-center justify-center">
+                <InputSwitch
+                  :model-value="data.isActive !== false"
+                  :disabled="rosterActiveTogglingId === data.id"
+                  :input-id="`active-${data.id}`"
+                  @update:model-value="(v: boolean) => setTeamPlayerActive(data, v)"
+                />
+              </div>
             </template>
           </Column>
           <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">

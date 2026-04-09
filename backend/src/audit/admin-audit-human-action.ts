@@ -22,6 +22,7 @@ const ACTION_LABELS: Record<AuditHumanActionLang, Record<string, string>> = {
     'tenant.match_schedule_reason_create':
       'Создана причина переноса или отмены матча',
     'tournament.round_reorder': 'Переупорядочены раунды турнира',
+    'tournament.matches_bulk_update': 'Массовое изменение матчей турнира',
     'tournament.match_protocol_update': 'Обновлён протокол матча',
     'tournament.match_update': 'Изменён матч',
     'tournament.match_delete': 'Удалён матч',
@@ -71,6 +72,7 @@ const ACTION_LABELS: Record<AuditHumanActionLang, Record<string, string>> = {
     'tenant.match_schedule_reason_delete': 'Match schedule reason deleted',
     'tenant.match_schedule_reason_create': 'Match schedule reason created',
     'tournament.round_reorder': 'Tournament rounds reordered',
+    'tournament.matches_bulk_update': 'Bulk tournament matches update',
     'tournament.match_protocol_update': 'Match protocol updated',
     'tournament.match_update': 'Match updated',
     'tournament.match_delete': 'Match deleted',

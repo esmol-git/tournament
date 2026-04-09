@@ -903,8 +903,10 @@ export class PlayersService {
     const rowsRaw = XLSX.utils.sheet_to_json(ws, {
       header: 1,
       raw: true,
-    }) as unknown[][];
-    const rows = this.toStringMatrix(rowsRaw);
+    }) as unknown[];
+    const rows = this.toStringMatrix(
+      rowsRaw.filter((r): r is unknown[] => Array.isArray(r)),
+    );
     return this.importRows(
       tenantId,
       actorUserId,

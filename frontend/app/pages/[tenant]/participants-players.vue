@@ -364,8 +364,21 @@ onMounted(async () => {
 
       <div v-else class="mt-4 public-stage">
         <Transition name="public-fade" mode="out-in">
-          <div v-if="loading" key="loading" class="rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-4">
-            <Skeleton width="100%" height="12rem" />
+          <div v-if="loading" key="loading" class="public-card space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <Skeleton class="max-w-[14rem] rounded-md" height="1.35rem" width="100%" />
+              <div class="flex flex-wrap gap-2">
+                <Skeleton height="2.15rem" width="5.5rem" class="rounded-lg" />
+                <Skeleton height="2.15rem" width="6.5rem" class="rounded-lg" />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <Skeleton v-for="i in 3" :key="`pl-sk-f-${i}`" height="2.65rem" width="100%" class="rounded-lg" />
+            </div>
+            <div class="space-y-2 rounded-xl border border-[#d6e0ee] bg-[#f4f7fc] p-3">
+              <Skeleton height="2.25rem" width="100%" class="rounded-md" />
+              <Skeleton v-for="i in 6" :key="`pl-sk-r-${i}`" height="2.5rem" width="100%" class="rounded-md" />
+            </div>
           </div>
           <div
             v-else-if="!hasAnyPlayers"
@@ -382,7 +395,7 @@ onMounted(async () => {
           </div>
           <div v-else key="content" class="public-card space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <h2 class="text-lg font-semibold text-[#123c67]">Реестр игроков</h2>
+              <h2 class="public-text-primary text-lg font-semibold">Реестр игроков</h2>
               <div class="flex flex-wrap items-center gap-2">
                 <Button
                   label="Сброс вида"
@@ -390,7 +403,7 @@ onMounted(async () => {
                   size="small"
                   outlined
                   aria-label="Сброс вида"
-                  class="reset-view-btn !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#f4c8d8] hover:!text-[#c80a48]"
+                  class="reset-view-btn public-btn-outline-accent"
                   @click="resetViewState"
                 />
                 <Button
@@ -399,7 +412,7 @@ onMounted(async () => {
                   size="small"
                   outlined
                   aria-label="Экспорт CSV"
-                  class="export-csv-btn !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#f4c8d8] hover:!text-[#c80a48]"
+                  class="export-csv-btn public-btn-outline-accent"
                   @click="exportCsv"
                 />
               </div>
@@ -447,7 +460,7 @@ onMounted(async () => {
               </p>
             </div>
             <div v-else class="space-y-3">
-              <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-[#4f6b8c]">
+              <div class="public-text-muted flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span>Найдено: {{ totalRows }}</span>
                 <div v-if="showPaginator" class="flex items-center gap-2">
                   <Paginator
@@ -463,6 +476,7 @@ onMounted(async () => {
               </div>
 
             <div class="public-table-wrap players-table-wrap">
+              <div class="public-table-wrap__scroll">
               <table class="public-table public-stagger-tbody">
                 <thead>
                   <tr>
@@ -526,6 +540,7 @@ onMounted(async () => {
                   </tr>
                 </tbody>
               </table>
+              </div>
             </div>
             </div>
           </div>

@@ -64,7 +64,9 @@ const [tabsWrapEl] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
 </script>
 
 <template>
-  <div class="overflow-x-auto rounded-xl border border-[#b7c7dd] bg-[#eaf1fb] p-1">
+  <div
+    class="overflow-x-auto rounded-xl border border-[#b7c7dd] bg-[#eaf1fb] p-1 dark:border-slate-600 dark:bg-slate-900/90"
+  >
     <div ref="tabsWrapEl" class="public-stagger-appear flex min-w-max items-center gap-2">
       <button
         v-for="tab in orderedVisibleTabs"
@@ -74,7 +76,7 @@ const [tabsWrapEl] = useAutoAnimate({ ...PUBLIC_AUTO_ANIMATE })
         :class="
           modelValue === tab
             ? 'bg-[#c80a48] text-white shadow-sm'
-            : 'text-[#123c67] hover:bg-white'
+            : 'text-[#123c67] hover:bg-white dark:text-slate-200 dark:hover:bg-slate-800/85'
         "
         @click="setView(tab)"
       >

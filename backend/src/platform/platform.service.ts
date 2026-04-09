@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { ListDemoLeadsQueryDto } from './dto/list-demo-leads-query.dto';
+import { PatchDemoLeadDto } from './dto/patch-demo-lead.dto';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
 import { PatchTenantDto } from './dto/patch-tenant.dto';
 import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
@@ -272,5 +274,58 @@ export class PlatformService {
     await this.storage.deleteAllForTenant(id);
 
     return { success: true };
+  }
+
+  async listDemoLeads(query: ListDemoLeadsQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const q = query.q?.trim();
+    const where: Prisma.DemoLeadWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: 'insensitive' } },
+              { contact: { contains: q, mode: 'insensitive' } },
+              { league: { contains: q, mode: 'insensitive' } },
+              { message: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.demoLead.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.demoLead.count({ where }),
+    ]);
+    return { items, total, page, pageSize };
+  }
+
+  async patchDemoLead(id: string, dto: PatchDemoLeadDto) {
+    const exists = await this.prisma.demoLead.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException('Lead not found');
+    const data: Prisma.DemoLeadUpdateInput = {};
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.note !== undefined) data.note = dto.note.trim() || null;
+    if (dto.status !== undefined && dto.status !== 'NEW') {
+      data.processedAt = new Date();
+    }
+    if (dto.status !== undefined && dto.status === 'NEW') {
+      data.processedAt = null;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('No lead fields to update');
+    }
+    return this.prisma.demoLead.update({
+      where: { id },
+      data,
+    });
   }
 }

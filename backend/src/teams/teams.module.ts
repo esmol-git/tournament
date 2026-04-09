@@ -29,6 +29,8 @@ import { MatchScheduleReasonsController } from './match-schedule-reasons/match-s
 import { MatchScheduleReasonsService } from './match-schedule-reasons/match-schedule-reasons.service';
 import { TeamCategoriesController } from './team-categories/team-categories.controller';
 import { TeamCategoriesService } from './team-categories/team-categories.service';
+import { AwardsController } from './awards/awards.controller';
+import { AwardsService } from './awards/awards.service';
 import { SubscriptionPlanFeatureGuard } from '../auth/subscription-plan-feature.guard';
 import { TournamentTemplatesModule } from '../tournament-templates/tournament-templates.module';
 
@@ -49,6 +51,7 @@ import { TournamentTemplatesModule } from '../tournament-templates/tournament-te
     ProtocolEventTypesController,
     MatchScheduleReasonsController,
     TeamCategoriesController,
+    AwardsController,
   ],
   providers: [
     SubscriptionPlanFeatureGuard,
@@ -66,6 +69,7 @@ import { TournamentTemplatesModule } from '../tournament-templates/tournament-te
     ProtocolEventTypesService,
     MatchScheduleReasonsService,
     TeamCategoriesService,
+    AwardsService,
   ],
 })
 export class TeamsModule {}

@@ -343,8 +343,8 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <div class="border-b border-[#d6e0ee] bg-[#f4f7fc] p-4">
-        <div class="text-sm uppercase tracking-wide text-[#4f6b8c]">О турнире</div>
-        <div class="mt-2 truncate text-lg font-semibold text-[#123c67]">
+        <div class="public-text-muted text-sm uppercase tracking-wide">О турнире</div>
+        <div class="public-text-primary mt-2 truncate text-lg font-semibold">
           {{ tournamentName || 'Турнир' }}
         </div>
       </div>
@@ -354,11 +354,11 @@ onBeforeUnmount(() => {
           v-for="link in tournamentNavLinks"
           :key="link.key"
           :to="{ path: `/${tenant}/tournaments/${link.suffix}`, query: baseQuery }"
-          class="flex items-center gap-2.5 rounded-xl px-3 py-3 text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c80a48]/30"
+          class="flex items-center gap-2.5 rounded-xl px-3 py-3 text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-accent-secondary)]/30"
           :class="
             active === link.key
               ? 'bg-[#c80a48] text-white shadow-sm'
-              : 'text-[#123c67] hover:bg-[#f4f7fc]'
+              : 'public-text-primary hover:bg-[#f4f7fc]'
           "
         >
           <i :class="['pi', link.icon, 'text-[1rem]']" />
@@ -368,7 +368,7 @@ onBeforeUnmount(() => {
         <div class="mt-3 border-t border-[#d6e0ee] pt-2">
           <button
             type="button"
-            class="mb-1 flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-sm uppercase tracking-wide text-[#4f6b8c] transition-colors hover:bg-[#f4f7fc]"
+            class="public-text-muted mb-1 flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-sm uppercase tracking-wide transition-colors hover:bg-[#f4f7fc]"
             :aria-expanded="extraSectionsOpen"
             @click="extraSectionsOpen = !extraSectionsOpen"
           >
@@ -397,11 +397,11 @@ onBeforeUnmount(() => {
                     ...('query' in link && typeof link.query === 'function' ? link.query() : {}),
                   },
                 }"
-                class="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c80a48]/30"
+                class="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-accent-secondary)]/30"
                 :class="
                   isExtraLinkActive(link)
                     ? 'bg-[#c80a48] text-white shadow-sm'
-                    : 'text-[#123c67] hover:bg-[#f4f7fc]'
+                    : 'public-text-primary hover:bg-[#f4f7fc]'
                 "
               >
                 <i :class="['pi', link.icon, 'text-[1rem]']" />
@@ -415,7 +415,7 @@ onBeforeUnmount(() => {
       <!-- Блок топ-3/таблиц: показываем только на не-`table` вкладках. -->
       <div v-if="hasAnyStandingsPreview && showStandingsPreviewContent" class="border-t border-[#d6e0ee] p-3">
         <div class="min-h-[11.5rem]">
-          <div class="mb-2 px-1 text-sm uppercase tracking-wide text-[#4f6b8c]">
+          <div class="public-text-muted mb-2 px-1 text-sm uppercase tracking-wide">
             {{ hasStandingsGroupPreview ? 'Таблица по группам' : 'Топ-3 таблицы' }}
           </div>
           <div
@@ -424,18 +424,18 @@ onBeforeUnmount(() => {
           >
             <button
               type="button"
-              class="flex h-6 w-6 items-center justify-center rounded-full border border-[#d6e0ee] text-[#4f6b8c] hover:bg-[#f4f7fc]"
+              class="public-text-muted flex h-6 w-6 items-center justify-center rounded-full border border-[#d6e0ee] hover:bg-[#f4f7fc]"
               aria-label="Предыдущая группа"
               @click="showPrevStandingsGroup"
             >
               <i class="pi pi-chevron-left text-[0.65rem]" />
             </button>
-            <div class="min-w-0 text-center text-xs font-semibold text-[#123c67]">
+            <div class="public-text-primary min-w-0 text-center text-xs font-semibold">
               {{ activeStandingsGroup.groupName }}
             </div>
             <button
               type="button"
-              class="flex h-6 w-6 items-center justify-center rounded-full border border-[#d6e0ee] text-[#4f6b8c] hover:bg-[#f4f7fc]"
+              class="public-text-muted flex h-6 w-6 items-center justify-center rounded-full border border-[#d6e0ee] hover:bg-[#f4f7fc]"
               aria-label="Следующая группа"
               @click="showNextStandingsGroup"
             >
@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
               :class="idx < 2 ? 'sb-standings-row--top-two' : ''"
             >
               <span
-                class="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#eef5ff] text-[0.68rem] font-semibold text-[#1a5a8c]"
+                class="public-text-primary inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#eef5ff] text-[0.68rem] font-semibold"
                 :class="idx < 2 ? 'sb-standings-rank--top-two' : ''"
               >
                 {{ idx + 1 }}
@@ -503,7 +503,7 @@ onBeforeUnmount(() => {
             :href="link.url"
             target="_blank"
             rel="noopener noreferrer"
-            class="flex h-8 w-8 items-center justify-center rounded-full border border-[#d6e0ee] text-[#4f6b8c] hover:border-[#c80a48]/30 hover:text-[#c80a48]"
+            class="public-text-muted flex h-8 w-8 items-center justify-center rounded-full border border-[#d6e0ee] hover:border-[#c80a48]/30 hover:text-[#c80a48]"
             :aria-label="link.label"
             :title="link.label"
           >
@@ -524,7 +524,7 @@ onBeforeUnmount(() => {
               <i :class="['pi', currentTopStatsSlide.icon, 'text-sm']" />
             </span>
             <div class="min-w-0 stats-slider-head__meta">
-              <p class="truncate text-sm font-semibold text-[#123c67]">
+              <p class="public-text-primary truncate text-sm font-semibold">
                 {{ currentTopStatsSlide.title }}
               </p>
               <p class="stats-slider-head__count">

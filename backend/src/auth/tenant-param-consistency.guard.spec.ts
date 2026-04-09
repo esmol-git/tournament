@@ -18,9 +18,7 @@ function mockContext(partial: {
           role: UserRole.TENANT_ADMIN,
         }
       : undefined,
-    params: partial.tenantIdParam
-      ? { tenantId: partial.tenantIdParam }
-      : {},
+    params: partial.tenantIdParam ? { tenantId: partial.tenantIdParam } : {},
     path: partial.path ?? '/tenants/x/tournaments',
   };
   return {
@@ -35,7 +33,9 @@ describe('TenantParamConsistencyGuard', () => {
 
   it('allows when JWT has no tenantId', () => {
     expect(
-      guard.canActivate(mockContext({ tenantIdJwt: undefined, tenantIdParam: 't2' })),
+      guard.canActivate(
+        mockContext({ tenantIdJwt: undefined, tenantIdParam: 't2' }),
+      ),
     ).toBe(true);
   });
 

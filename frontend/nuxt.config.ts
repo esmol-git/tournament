@@ -116,6 +116,12 @@ export default defineNuxtConfig({
       charset: 'utf-8',
       viewport: 'width=device-width, initial-scale=1',
       link: [{ rel: 'icon', type: 'image/png', href: '/logo.png' }],
+      style: [
+        {
+          children:
+            "@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@600;700;800&display=swap');",
+        },
+      ],
       htmlAttrs: {
         lang: 'ru',
       },

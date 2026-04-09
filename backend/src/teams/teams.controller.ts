@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,9 +9,12 @@ import {
   Post,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.guard';
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
@@ -65,6 +69,25 @@ export class TeamsController {
     @Body() dto: CreateTeamDto,
   ) {
     return this.teamsService.create(tenantId, dto);
+  }
+
+  @RequireSubscriptionPlanFeature('data_import_export')
+  @Post('tenants/:tenantId/teams/import/csv')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 4 * 1024 * 1024 },
+    }),
+  )
+  async importTeamsCsv(
+    @Param('tenantId') tenantId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Загрузите CSV (поле file)');
+    }
+    const text = file.buffer.toString('utf-8');
+    return this.teamsService.importTeamsCsv(tenantId, text);
   }
 
   @Patch('tenants/:tenantId/teams/:id')

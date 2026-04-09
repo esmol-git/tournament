@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { ApiErrorCode } from '../common/api-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,6 +23,12 @@ import { UpdateTenantPublicBrandingDto } from './dto/update-tenant-public-brandi
 import { UpdateMyTenantSubscriptionPlanDto } from './dto/update-my-tenant-subscription-plan.dto';
 import { UiSettingsDto } from './dto/ui-settings.dto';
 import { normalizeAdminUiSettings } from './normalize-admin-ui-settings';
+import { UpdateTenantTelegramNotificationsDto } from './dto/update-tenant-telegram-notifications.dto';
+import { sendTelegramTenantNotification } from '../notifications/telegram-tenant-notify';
+import { UpdateTenantEmailNotificationsDto } from './dto/update-tenant-email-notifications.dto';
+import { UpdateTenantShareTableImageDto } from './dto/update-tenant-share-table-image.dto';
+import { sendEmailTenantNotification } from '../notifications/email-tenant-notify';
+import { createHash } from 'crypto';
 const PUBLIC_THEME_SET = new Set<string>(['light', 'dark', 'system']);
 const PUBLIC_LANDING_SET = new Set<string>([
   'about',
@@ -38,7 +45,31 @@ const PUBLIC_TAB_ORDER_VALUES = [
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
+
+  private async assertTenantAdminOrSuperAdmin(
+    userId: string,
+    tenantId: string,
+  ) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, role: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    if (u.role !== UserRole.TENANT_ADMIN && u.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException({
+        message:
+          'Управлять Telegram-уведомлениями может только администратор организации',
+        code: ApiErrorCode.INSUFFICIENT_ROLE,
+      });
+    }
+    return u;
+  }
 
   /** Минимальные поля для JWT-валидации (актуальная роль и блокировка). */
   async findForJwtValidation(userId: string) {
@@ -658,6 +689,377 @@ export class UsersService {
     });
   }
 
+  async getMyTenantTelegramNotifications(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        telegramNotifyChatId: true,
+        telegramNotifyOnMatchRescheduled: true,
+        telegramNotifyOnProtocolPublished: true,
+        telegramNotifyOnMatchStartingSoon: true,
+      },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return tenant;
+  }
+
+  async updateMyTenantTelegramNotifications(
+    userId: string,
+    tenantId: string,
+    dto: UpdateTenantTelegramNotificationsDto,
+  ) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const data: Prisma.TenantUpdateInput = {};
+    if (dto.telegramNotifyChatId !== undefined) {
+      const v = dto.telegramNotifyChatId;
+      data.telegramNotifyChatId =
+        v === null ? null : String(v).trim() ? String(v).trim() : null;
+    }
+    if (dto.telegramNotifyOnMatchRescheduled !== undefined) {
+      data.telegramNotifyOnMatchRescheduled =
+        dto.telegramNotifyOnMatchRescheduled;
+    }
+    if (dto.telegramNotifyOnProtocolPublished !== undefined) {
+      data.telegramNotifyOnProtocolPublished =
+        dto.telegramNotifyOnProtocolPublished;
+    }
+    if (dto.telegramNotifyOnMatchStartingSoon !== undefined) {
+      data.telegramNotifyOnMatchStartingSoon =
+        dto.telegramNotifyOnMatchStartingSoon;
+    }
+    if (Object.keys(data).length === 0) {
+      return this.getMyTenantTelegramNotifications(userId, tenantId);
+    }
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data,
+      select: {
+        telegramNotifyChatId: true,
+        telegramNotifyOnMatchRescheduled: true,
+        telegramNotifyOnProtocolPublished: true,
+        telegramNotifyOnMatchStartingSoon: true,
+      },
+    });
+  }
+
+  async sendMyTenantTelegramTest(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, telegramNotifyChatId: true },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    const chatId = tenant.telegramNotifyChatId?.trim();
+    if (!chatId) {
+      throw new BadRequestException('Сначала укажите Telegram chat/channel ID');
+    }
+    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
+    if (!botToken) {
+      throw new BadRequestException(
+        'TELEGRAM_BOT_TOKEN не настроен на сервере',
+      );
+    }
+    const delivery = await this.prisma.telegramNotificationDelivery.create({
+      data: {
+        tenantId,
+        channel: 'TELEGRAM',
+        kind: 'test',
+        chatId,
+        status: 'QUEUED',
+        attempts: 0,
+        payload: { source: 'settings_test' },
+        dedupeKey: createHash('sha1')
+          .update(JSON.stringify({ source: 'settings_test', chatId }))
+          .digest('hex'),
+      },
+      select: { id: true },
+    });
+
+    try {
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { attempts: 1, lastAttemptAt: new Date() },
+      });
+      await sendTelegramTenantNotification({
+        botToken,
+        chatId,
+        lines: [
+          'Тест Telegram-уведомлений',
+          '',
+          `Организация: ${tenant.name}`,
+          'Статус: подключение работает',
+        ],
+      });
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'SENT', sentAt: new Date() },
+      });
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e);
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'FAILED', errorMessage: raw.slice(0, 4000) },
+      });
+      const msg = raw.toLowerCase();
+      if (msg.includes('chat not found')) {
+        throw new BadRequestException(
+          'Telegram chat не найден. Укажите корректный chat/channel ID (например, -100...), добавьте бота в этот чат/канал и дайте ему право писать сообщения.',
+        );
+      }
+      if (msg.includes('bot was blocked by the user')) {
+        throw new BadRequestException(
+          'Бот заблокирован получателем. Разблокируйте бота и отправьте тест повторно.',
+        );
+      }
+      if (msg.includes('not enough rights')) {
+        throw new BadRequestException(
+          'У бота недостаточно прав для отправки в этот чат/канал. Выдайте боту право на публикацию сообщений.',
+        );
+      }
+      throw new BadRequestException(
+        `Не удалось отправить тест в Telegram: ${raw.slice(0, 220)}`,
+      );
+    }
+    return { success: true };
+  }
+
+  async getMyTenantTelegramDeliveryLog(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const items = await this.prisma.telegramNotificationDelivery.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      select: {
+        id: true,
+        channel: true,
+        kind: true,
+        chatId: true,
+        status: true,
+        attempts: true,
+        errorMessage: true,
+        createdAt: true,
+        lastAttemptAt: true,
+        sentAt: true,
+      },
+    });
+    return { items };
+  }
+
+  async getMyTenantEmailNotifications(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        emailNotifyRecipients: true,
+        emailNotifyEnabled: true,
+        emailNotifyOnMatchRescheduled: true,
+        emailNotifyOnProtocolPublished: true,
+        emailNotifyMatchTeamCoachRole: true,
+        emailNotifyMatchTeamAdminRole: true,
+      },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return tenant;
+  }
+
+  async updateMyTenantEmailNotifications(
+    userId: string,
+    tenantId: string,
+    dto: UpdateTenantEmailNotificationsDto,
+  ) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const data: Prisma.TenantUpdateInput = {};
+    if (dto.emailNotifyRecipients !== undefined) {
+      const v = dto.emailNotifyRecipients;
+      data.emailNotifyRecipients =
+        v === null ? null : String(v).trim() ? String(v).trim() : null;
+    }
+    if (dto.emailNotifyEnabled !== undefined) {
+      data.emailNotifyEnabled = dto.emailNotifyEnabled;
+    }
+    if (dto.emailNotifyOnMatchRescheduled !== undefined) {
+      data.emailNotifyOnMatchRescheduled = dto.emailNotifyOnMatchRescheduled;
+    }
+    if (dto.emailNotifyOnProtocolPublished !== undefined) {
+      data.emailNotifyOnProtocolPublished = dto.emailNotifyOnProtocolPublished;
+    }
+    if (dto.emailNotifyMatchTeamCoachRole !== undefined) {
+      data.emailNotifyMatchTeamCoachRole = dto.emailNotifyMatchTeamCoachRole;
+    }
+    if (dto.emailNotifyMatchTeamAdminRole !== undefined) {
+      data.emailNotifyMatchTeamAdminRole = dto.emailNotifyMatchTeamAdminRole;
+    }
+    if (Object.keys(data).length === 0) {
+      return this.getMyTenantEmailNotifications(userId, tenantId);
+    }
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data,
+      select: {
+        emailNotifyRecipients: true,
+        emailNotifyEnabled: true,
+        emailNotifyOnMatchRescheduled: true,
+        emailNotifyOnProtocolPublished: true,
+        emailNotifyMatchTeamCoachRole: true,
+        emailNotifyMatchTeamAdminRole: true,
+      },
+    });
+  }
+
+  private parseRecipients(raw: string | null | undefined): string[] {
+    return String(raw ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .filter((x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+  }
+
+  async sendMyTenantEmailTest(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, emailNotifyRecipients: true },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    const recipients = this.parseRecipients(tenant.emailNotifyRecipients);
+    if (!recipients.length) {
+      throw new BadRequestException(
+        'Сначала укажите хотя бы один корректный email получателя',
+      );
+    }
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
+    const secure = ['1', 'true', 'yes', 'on'].includes(
+      String(this.config.get<string>('SMTP_SECURE') ?? '').toLowerCase(),
+    );
+    const user = this.config.get<string>('SMTP_USER')?.trim();
+    const pass = this.config.get<string>('SMTP_PASS')?.trim();
+    const from =
+      this.config.get<string>('SMTP_FROM')?.trim() ||
+      'Tournament Platform <no-reply@localhost>';
+    if (!host || !Number.isFinite(port)) {
+      throw new BadRequestException('SMTP не настроен на сервере');
+    }
+
+    const delivery = await this.prisma.telegramNotificationDelivery.create({
+      data: {
+        tenantId,
+        channel: 'EMAIL',
+        kind: 'test',
+        chatId: recipients.join(','),
+        status: 'QUEUED',
+        attempts: 0,
+        payload: { source: 'settings_email_test' },
+        dedupeKey: createHash('sha1')
+          .update(
+            JSON.stringify({
+              source: 'settings_email_test',
+              recipients: recipients.join(','),
+            }),
+          )
+          .digest('hex'),
+      },
+      select: { id: true },
+    });
+
+    try {
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { attempts: 1, lastAttemptAt: new Date() },
+      });
+      await sendEmailTenantNotification({
+        transport: { host, port, secure, user, pass },
+        from,
+        to: recipients,
+        subject: 'Тест email-уведомлений Tournament Platform',
+        text: `Организация: ${tenant.name}\nСтатус: подключение email работает.`,
+      });
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'SENT', sentAt: new Date() },
+      });
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e);
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'FAILED', errorMessage: raw.slice(0, 4000) },
+      });
+      throw new BadRequestException(
+        `Не удалось отправить тест на email: ${raw.slice(0, 220)}`,
+      );
+    }
+    return { success: true };
+  }
+
+  async listMyTenantTelegramChats(userId: string, tenantId: string) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
+    if (!botToken) {
+      throw new BadRequestException(
+        'TELEGRAM_BOT_TOKEN не настроен на сервере',
+      );
+    }
+    const url = `https://api.telegram.org/bot${botToken}/getUpdates`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new BadRequestException(
+        `Не удалось получить чаты Telegram: ${body.slice(0, 240)}`,
+      );
+    }
+    const data = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      result?: Array<{
+        message?: {
+          chat?: {
+            id?: number | string;
+            type?: string;
+            title?: string;
+            username?: string;
+            first_name?: string;
+            last_name?: string;
+          };
+        };
+        channel_post?: {
+          chat?: {
+            id?: number | string;
+            type?: string;
+            title?: string;
+            username?: string;
+            first_name?: string;
+            last_name?: string;
+          };
+        };
+      }>;
+    } | null;
+    const rows = Array.isArray(data?.result) ? data.result : [];
+    const unique = new Map<
+      string,
+      { id: string; type: string; title: string; username: string | null }
+    >();
+    for (const row of rows) {
+      const chat = row.message?.chat ?? row.channel_post?.chat;
+      const idRaw = chat?.id;
+      if (idRaw === undefined || idRaw === null) continue;
+      const id = String(idRaw);
+      if (unique.has(id)) continue;
+      const titleParts = [
+        chat?.title ?? '',
+        [chat?.first_name ?? '', chat?.last_name ?? ''].join(' ').trim(),
+      ]
+        .map((x) => x.trim())
+        .filter(Boolean);
+      unique.set(id, {
+        id,
+        type: String(chat?.type ?? 'unknown'),
+        title: titleParts[0] ?? 'Без названия',
+        username: chat?.username ? `@${chat.username}` : null,
+      });
+    }
+    return { items: Array.from(unique.values()) };
+  }
+
   getTenantUiSettings(tenantId: string) {
     return this.prisma.tenant
       .findUnique({
@@ -679,6 +1081,57 @@ export class UsersService {
       data: { adminUiSettings: next as unknown as Prisma.InputJsonValue },
     });
     return next;
+  }
+
+  async getMyTenantShareTableImageSettings(userId: string, tenantId: string) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true },
+    });
+    if (!u || u.tenantId !== tenantId) {
+      throw new NotFoundException('User not found');
+    }
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        shareTableImageLogoUrl: true,
+        shareTableImageShowLogo: true,
+        shareTableImageFontScale: true,
+        publicAccentPrimary: true,
+        publicAccentSecondary: true,
+      },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+    return tenant;
+  }
+
+  async updateMyTenantShareTableImageSettings(
+    userId: string,
+    tenantId: string,
+    dto: UpdateTenantShareTableImageDto,
+  ) {
+    await this.assertTenantAdminOrSuperAdmin(userId, tenantId);
+    const data: Prisma.TenantUpdateInput = {};
+    if (dto.shareTableImageLogoUrl !== undefined) {
+      data.shareTableImageLogoUrl = this.normalizeOptionalLink(
+        dto.shareTableImageLogoUrl,
+      ) as string | null;
+    }
+    if (dto.shareTableImageShowLogo !== undefined) {
+      data.shareTableImageShowLogo = dto.shareTableImageShowLogo;
+    }
+    if (Object.keys(data).length === 0) {
+      return this.getMyTenantShareTableImageSettings(userId, tenantId);
+    }
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data,
+      select: {
+        shareTableImageLogoUrl: true,
+        shareTableImageShowLogo: true,
+        shareTableImageFontScale: true,
+      },
+    });
   }
 
   async findAll(

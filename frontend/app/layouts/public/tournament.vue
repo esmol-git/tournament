@@ -14,9 +14,11 @@ import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch
 import { usePublicTournamentSelection } from '~/composables/usePublicTournamentSelection'
 import { usePublicTournamentSidebarPreviewStore } from '~/composables/usePublicTournamentSidebarPreviewStore'
 import { resolvePublicSidebarActive } from '~/utils/publicTournamentSidebarActive'
+import { usePublicBrandingTheme } from '~/composables/usePublicBrandingTheme'
 
 const { tenantMeta } = await usePublicLayoutSeo()
 usePublicLayoutBranding(tenantMeta)
+const { isDark } = usePublicBrandingTheme(tenantMeta)
 const { showBackToTop, backToTopStyle, scrollToTop } = usePublicBackToTop()
 
 const route = useRoute()
@@ -78,17 +80,28 @@ const tournamentStatusLabel = computed(() => {
 })
 
 const tournamentStatusBadgeClass = computed(() => {
+  const dark = isDark.value
   switch (selectedTournament.value?.status) {
     case 'ACTIVE':
-      return 'bg-[#eef5ff] text-[#1a5a8c] ring-1 ring-[#d2e2f7]'
+      return dark
+        ? 'bg-slate-800/95 text-slate-100 ring-1 ring-[#c80a48]/50'
+        : 'bg-[#eef5ff] text-[#1a5a8c] ring-1 ring-[#d2e2f7]'
     case 'COMPLETED':
-      return 'bg-[#fff2f7] text-[#b10f46] ring-1 ring-[#f4c8d8]'
+      return dark
+        ? 'bg-rose-950/45 text-rose-100 ring-1 ring-rose-800/60'
+        : 'bg-[#fff2f7] text-[#b10f46] ring-1 ring-[#f4c8d8]'
     case 'ARCHIVED':
-      return 'bg-slate-100 text-slate-700 ring-1 ring-slate-300'
+      return dark
+        ? 'bg-slate-800/80 text-slate-300 ring-1 ring-slate-600'
+        : 'bg-slate-100 text-slate-700 ring-1 ring-slate-300'
     case 'DRAFT':
-      return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+      return dark
+        ? 'bg-amber-950/50 text-amber-100 ring-1 ring-amber-800/70'
+        : 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
     default:
-      return 'bg-surface-100 text-surface-700 ring-1 ring-surface-200'
+      return dark
+        ? 'bg-slate-800/80 text-slate-300 ring-1 ring-slate-600'
+        : 'bg-surface-100 text-surface-700 ring-1 ring-surface-200'
   }
 })
 
@@ -205,7 +218,7 @@ watch(
     <button
       v-if="showBackToTop"
       type="button"
-      class="fixed bottom-20 z-[75] inline-flex items-center gap-1.5 rounded-full border border-[#d2e2f7] bg-white/95 px-3 py-2 text-xs font-semibold text-[#1a5a8c] shadow-lg backdrop-blur transition hover:border-[#c80a48]/40 hover:text-[#c80a48]"
+      class="fixed bottom-20 z-[75] inline-flex items-center gap-1.5 rounded-full border border-[#d2e2f7] bg-white/95 px-3 py-2 text-xs font-semibold text-[#1a5a8c] shadow-lg backdrop-blur transition hover:border-[#c80a48]/40 hover:text-[#c80a48] dark:border-slate-600 dark:bg-slate-900/95 dark:text-slate-200 dark:hover:border-[#c80a48]/50 dark:hover:text-[#f472b6]"
       :style="backToTopStyle"
       aria-label="Прокрутить наверх"
       @click="scrollToTop"

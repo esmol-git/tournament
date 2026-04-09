@@ -44,6 +44,21 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+### If you see `EADDRINUSE: 4000`
+
+Это значит, что backend уже запущен на этом порту (второй `npm start` не поднимется).
+
+```bash
+# проверить, кто слушает 4000
+lsof -nP -iTCP:4000 -sTCP:LISTEN
+
+# если нужен перезапуск — остановить текущий процесс и запустить снова
+kill <PID>
+npm run start
+```
+
+Альтернатива: просто вернуться в терминал с уже запущенным backend и нажать `Ctrl+C`, затем стартовать заново.
+
 ## Run tests
 
 ```bash

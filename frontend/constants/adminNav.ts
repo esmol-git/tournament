@@ -131,6 +131,11 @@ export function filterAdminNavForRole(
 export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
   { to: '/admin', labelKey: 'admin.nav.dashboard', icon: 'pi pi-home', exact: true },
   {
+    to: '/admin/docs',
+    labelKey: 'admin.nav.documentation',
+    icon: 'pi pi-info-circle',
+  },
+  {
     to: '/admin/users',
     labelKey: 'admin.nav.users',
     icon: 'pi pi-user',
@@ -157,6 +162,13 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     labelKey: 'admin.nav.group_references',
     icon: 'pi pi-book',
     items: [
+      {
+        to: '/admin/references/awards',
+        labelKey: 'admin.nav.awards',
+        icon: 'pi pi-star',
+        requiredFeature: 'reference_directory_standard',
+        requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
+      },
       {
         to: '/admin/references/competitions',
         labelKey: 'admin.nav.ref_competitions',

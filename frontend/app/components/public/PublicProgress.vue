@@ -49,13 +49,15 @@ type TeamResultToken = {
 }
 
 function resultTokenClass(variant: ResultVariant) {
+  const base =
+    'public-progress-token inline-flex items-center justify-center rounded-md px-2 py-1 text-xs font-semibold'
   switch (variant) {
     case 'wins':
-      return 'inline-flex items-center justify-center rounded-md border border-[#d2e2f7] bg-[#eef5ff] px-2 py-1 text-xs font-semibold text-[#1a5a8c]'
+      return `${base} public-progress-token--wins border border-[#d2e2f7] bg-[#eef5ff] text-[#1a5a8c]`
     case 'draws':
-      return 'inline-flex items-center justify-center rounded-md border border-[#d7c8e8] bg-[#f6f0ff] px-2 py-1 text-xs font-semibold text-[#6f3fa3]'
+      return `${base} public-progress-token--draws border border-[#d7c8e8] bg-[#f6f0ff] text-[#6f3fa3]`
     case 'losses':
-      return 'inline-flex items-center justify-center rounded-md border border-[#f2c5d6] bg-[#fff2f7] px-2 py-1 text-xs font-semibold text-[#c80a48]'
+      return `${base} public-progress-token--losses border border-[#f2c5d6] bg-[#fff2f7] text-[#c80a48]`
   }
 }
 
@@ -177,7 +179,9 @@ watch(
 </script>
 
 <template>
-  <div class="w-full max-w-full rounded-2xl border border-[#b7c7dd] bg-white p-4">
+  <div
+    class="public-progress-panel w-full max-w-full rounded-2xl border border-[#b7c7dd] bg-white p-4"
+  >
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="text-sm font-semibold text-[#123c67]">Прогресс</div>
@@ -189,15 +193,15 @@ watch(
       {{ errorText }}
     </div>
 
-    <div v-else-if="loading" class="mt-4 space-y-2">
-      <div class="grid grid-cols-[1fr_2fr] gap-3 rounded-xl border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2">
+    <div v-else-if="loading" class="public-progress-loading mt-4 space-y-2">
+      <div class="public-progress-loading-head grid grid-cols-[1fr_2fr] gap-3 rounded-xl border border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2">
         <Skeleton width="6rem" height="0.8rem" />
         <Skeleton width="7rem" height="0.8rem" />
       </div>
       <div
         v-for="i in 6"
         :key="`progress-sk-${i}`"
-        class="grid grid-cols-[1fr_2fr] items-start gap-3 rounded-xl border border-[#e1e8f2] bg-white px-3 py-3"
+        class="public-progress-loading-row grid grid-cols-[1fr_2fr] items-start gap-3 rounded-xl border border-[#e1e8f2] bg-white px-3 py-3"
       >
         <Skeleton width="8rem" height="0.9rem" />
         <div class="flex gap-2">
@@ -208,29 +212,33 @@ watch(
       </div>
     </div>
 
-    <div v-else-if="!sortedRows.length" class="mt-4 rounded-xl border border-[#b7c7dd] bg-[#f8fbff] py-10 text-center text-[#4f6b8c]">
+    <div
+      v-else-if="!sortedRows.length"
+      class="public-progress-empty mt-4 rounded-xl border border-[#b7c7dd] bg-[#f8fbff] py-10 text-center text-[#4f6b8c]"
+    >
       Пока нет команд.
     </div>
 
     <div v-else class="mt-4 overflow-hidden rounded-xl border border-[#b7c7dd]">
       <div
         v-if="playedMatchesCount === 0"
-        class="border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs text-[#4f6b8c]"
+        class="public-progress-hint border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs text-[#4f6b8c]"
       >
         Матчей с зафиксированным счетом пока нет. Прогресс заполнится после первых игр.
       </div>
       <div class="grid grid-cols-1">
         <div
-          class="grid grid-cols-[1fr_2fr] gap-3 border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs font-semibold text-[#123c67]"
+          class="public-progress-table-head grid grid-cols-[1fr_2fr] gap-3 border-b border-[#d6e0ee] bg-[#f4f7fc] px-3 py-2 text-xs font-semibold text-[#123c67]"
         >
           <div>Название</div>
           <div>Результаты</div>
         </div>
 
         <div
-          v-for="r in sortedRows"
+          v-for="(r, idx) in sortedRows"
           :key="r.teamId"
-          class="grid grid-cols-[1fr_2fr] items-start gap-3 border-b border-[#e1e8f2] px-3 py-3 odd:bg-white even:bg-[#f9fbff]"
+          class="public-progress-team-row grid grid-cols-[1fr_2fr] items-start gap-3 border-b border-[#e1e8f2] px-3 py-3 odd:bg-white even:bg-[#f9fbff]"
+          :class="idx % 2 === 0 ? 'public-progress-team-row--a' : 'public-progress-team-row--b'"
         >
           <div class="flex min-w-0 items-center gap-2">
             <RemoteImage

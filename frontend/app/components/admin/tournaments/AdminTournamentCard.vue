@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { MenuItem } from 'primevue/menuitem'
 import type { TournamentRow } from '~/types/admin/tournaments-index'
+import { resolveTournamentCalendarStripeColor } from '~/utils/tournamentCalendarColor'
 
 const props = defineProps<{
   tournament: TournamentRow
@@ -183,8 +184,7 @@ const siteLabel = computed(() => {
 
 <template>
   <div
-    class="rounded-lg border border-surface-200 bg-surface-0 sm:rounded-xl dark:border-surface-700 dark:bg-surface-900"
-    :class="hasCalendarAccent ? 'border-l-[5px]' : ''"
+    class="rounded-lg border border-l-[5px] border-surface-200 bg-surface-0 sm:rounded-xl dark:border-surface-700 dark:bg-surface-900"
     :style="accentBorderStyle"
   >
     <div class="flex gap-2 p-2.5 sm:gap-4 sm:p-3.5">
@@ -206,6 +206,7 @@ const siteLabel = computed(() => {
             <div class="min-w-0 flex-1">
               <button
                 type="button"
+                data-testid="tournament-card-open"
                 class="block w-full text-left text-primary hover:underline"
                 @click="emit('open', tournament)"
               >

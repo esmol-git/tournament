@@ -15,6 +15,8 @@ import { TenantParamConsistencyGuard } from '../auth/tenant-param-consistency.gu
 import { TenantSubscriptionGuard } from '../auth/tenant-subscription.guard';
 import { TenantZoneGuard } from '../auth/tenant-zone.guard';
 import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
+import { ListDemoLeadsQueryDto } from './dto/list-demo-leads-query.dto';
+import { PatchDemoLeadDto } from './dto/patch-demo-lead.dto';
 import { PatchTenantDto } from './dto/patch-tenant.dto';
 import { PatchTenantSubscriptionDto } from './dto/patch-tenant-subscription.dto';
 import { PlatformService } from './platform.service';
@@ -62,5 +64,15 @@ export class PlatformController {
   @Delete('tenants/:id')
   async deleteTenant(@Param('id') id: string) {
     return this.platformService.deleteTenant(id);
+  }
+
+  @Get('demo-leads')
+  async listDemoLeads(@Query() query: ListDemoLeadsQueryDto) {
+    return this.platformService.listDemoLeads(query);
+  }
+
+  @Patch('demo-leads/:id')
+  async patchDemoLead(@Param('id') id: string, @Body() dto: PatchDemoLeadDto) {
+    return this.platformService.patchDemoLead(id, dto);
   }
 }

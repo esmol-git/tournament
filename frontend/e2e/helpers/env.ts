@@ -5,6 +5,8 @@
 export const e2eEnv = {
   baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000',
   tenantSlug: process.env.E2E_TENANT_SLUG ?? 'default',
+  /** Опционально: прямой заход на карточку турнира, если в списке нет черновиков */
+  tournamentId: (process.env.E2E_TOURNAMENT_ID ?? '').trim(),
   adminUser: process.env.E2E_ADMIN_USER ?? '',
   adminPassword: process.env.E2E_ADMIN_PASSWORD ?? '',
   moderatorUser: process.env.E2E_MODERATOR_USER ?? '',

@@ -209,14 +209,14 @@ const loadPlayers = async (m: MatchRow) => {
         apiUrl(`/tenants/${tenantId.value}/teams/${m.homeTeam.id}/players`),
         {
           headers: { Authorization: `Bearer ${token.value}` },
-          params: { page: 1, pageSize: 200 },
+          params: { page: 1, pageSize: 200, activeOnly: true },
         },
       ),
       authFetch<{ items: TeamPlayerRow[]; total: number }>(
         apiUrl(`/tenants/${tenantId.value}/teams/${m.awayTeam.id}/players`),
         {
           headers: { Authorization: `Bearer ${token.value}` },
-          params: { page: 1, pageSize: 200 },
+          params: { page: 1, pageSize: 200, activeOnly: true },
         },
       ),
     ])

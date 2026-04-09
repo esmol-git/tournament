@@ -13,6 +13,7 @@ import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import type { MatchRow, TenantTournamentMatchRow } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { toastScheduleWarnings } from '~/utils/scheduleWarningsToast'
 import { toastMatchScheduleCreateApiError } from '~/utils/matchCreateToast'
 import { parseYmdLocal, toYmdLocal } from '~/utils/dateYmd'
 import {
@@ -378,15 +379,19 @@ const submitCreate = async () => {
   }
   createSaving.value = true
   try {
-    await authFetch(apiUrl(`/tenants/${tenantId.value}/standalone-matches`), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token.value}` },
-      body: {
-        homeTeamId: createForm.homeTeamId,
-        awayTeamId: createForm.awayTeamId,
-        startTime: startTime.toISOString(),
+    const created = await authFetch<{ scheduleWarnings?: string[] }>(
+      apiUrl(`/tenants/${tenantId.value}/standalone-matches`),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: {
+          homeTeamId: createForm.homeTeamId,
+          awayTeamId: createForm.awayTeamId,
+          startTime: startTime.toISOString(),
+        },
       },
-    })
+    )
+    toastScheduleWarnings(toast, created)
     createOpen.value = false
     await fetchStandalone()
     toast.add({ severity: 'success', summary: 'Матч создан', life: 2500 })
@@ -438,7 +443,7 @@ const submitEdit = async () => {
     if (editStartChanged.value && editForm.scheduleChangeReasonId.trim()) {
       body.scheduleChangeReasonId = editForm.scheduleChangeReasonId.trim()
     }
-    await authFetch(
+    const updated = await authFetch<{ scheduleWarnings?: string[] }>(
       apiUrl(`/tenants/${tenantId.value}/standalone-matches/${editForm.matchId}`),
       {
         method: 'PATCH',
@@ -446,6 +451,7 @@ const submitEdit = async () => {
         body,
       },
     )
+    toastScheduleWarnings(toast, updated)
     editOpen.value = false
     await fetchStandalone()
     toast.add({ severity: 'success', summary: 'Сохранено', life: 2500 })

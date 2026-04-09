@@ -16,6 +16,7 @@ import { useAdminSettingsStore } from '~/stores/adminSettings'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { adminTooltip } from '~/utils/adminTooltip'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { hasSubscriptionFeature } from '~/utils/subscriptionFeatures'
 
@@ -89,6 +90,61 @@ const publicShowHideSelectOptions = [
   { label: 'Скрыть', value: false },
 ]
 
+const telegramLoading = ref(false)
+const telegramSaving = ref(false)
+const telegramTesting = ref(false)
+const telegramForbidden = ref(false)
+const telegramChatLookupLoading = ref(false)
+const telegramChatOptions = ref<Array<{ label: string; value: string }>>([])
+const telegramDeliveriesLoading = ref(false)
+const telegramDeliveries = ref<
+  Array<{
+    id: string
+    channel?: string
+    kind: string
+    chatId: string
+    status: string
+    attempts: number
+    errorMessage: string | null
+    createdAt: string
+    sentAt: string | null
+  }>
+>([])
+const telegramSettings = ref({
+  telegramNotifyChatId: '',
+  telegramNotifyOnMatchRescheduled: true,
+  telegramNotifyOnProtocolPublished: true,
+  telegramNotifyOnMatchStartingSoon: false,
+})
+const emailLoading = ref(false)
+const emailSaving = ref(false)
+const emailTesting = ref(false)
+const emailForbidden = ref(false)
+const emailSettings = ref({
+  emailNotifyRecipients: '',
+  emailNotifyEnabled: false,
+  emailNotifyOnMatchRescheduled: true,
+  emailNotifyOnProtocolPublished: true,
+  emailNotifyMatchTeamCoachRole: false,
+  emailNotifyMatchTeamAdminRole: false,
+})
+
+const shareTableImageLoading = ref(false)
+const shareTableImageSaving = ref(false)
+const shareTableImageUploading = ref(false)
+const shareTableImageForbidden = ref(false)
+const shareTableImageSettings = ref({
+  shareTableImageLogoUrl: '',
+  shareTableImageShowLogo: true,
+  shareTableImageFontScale: 1,
+})
+
+function clampShareTableFontScale(n: unknown): number {
+  const v = typeof n === 'number' ? n : Number(n)
+  if (!Number.isFinite(v)) return 1
+  return Math.min(1.25, Math.max(0.55, v))
+}
+
 function parseTabOrder(raw: string | null | undefined): Array<'table' | 'chessboard' | 'progress' | 'playoff'> {
   const values = String(raw ?? '')
     .split(',')
@@ -124,6 +180,10 @@ const tenantSubscriptionPlan = computed(() => {
 /** Вкладка «Публичные страницы» — с Premier (Free и Amateur без доступа). */
 const canEditPublicSiteSettings = computed(() =>
   hasSubscriptionFeature(tenantSubscriptionPlan.value, 'public_site_admin_settings'),
+)
+
+const canEditShareTableImageSettings = computed(
+  () => user.value?.role === 'TENANT_ADMIN' || user.value?.role === 'SUPER_ADMIN',
 )
 
 function normalizeHex(value: string, fallback: string) {
@@ -234,6 +294,345 @@ async function saveToServer() {
     })
   } finally {
     saving.value = false
+  }
+}
+
+async function loadShareTableImageSettings() {
+  if (!token.value) return
+  shareTableImageLoading.value = true
+  try {
+    const res = await authFetch<{
+      shareTableImageLogoUrl?: string | null
+      shareTableImageShowLogo?: boolean
+      shareTableImageFontScale?: number | null
+    }>(apiUrl('/users/me/tenant-share-table-image-settings'))
+    shareTableImageSettings.value = {
+      shareTableImageLogoUrl: res.shareTableImageLogoUrl ?? '',
+      shareTableImageShowLogo: res.shareTableImageShowLogo !== false,
+      shareTableImageFontScale: clampShareTableFontScale(
+        res.shareTableImageFontScale ?? 1,
+      ),
+    }
+    shareTableImageForbidden.value = false
+  } catch (e: unknown) {
+    const status = Number((e as { statusCode?: number; status?: number })?.statusCode ?? (e as { status?: number })?.status ?? 0)
+    if (status === 403) {
+      shareTableImageForbidden.value = true
+      return
+    }
+    toast.add({
+      severity: 'error',
+      summary: t('admin.settings.share_table_image.save_error'),
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    shareTableImageLoading.value = false
+  }
+}
+
+async function saveShareTableImageSettings() {
+  if (!token.value || !canEditShareTableImageSettings.value || shareTableImageForbidden.value) return
+  shareTableImageSaving.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-share-table-image-settings'), {
+      method: 'PATCH',
+      body: {
+        shareTableImageLogoUrl: withHttpProtocol(shareTableImageSettings.value.shareTableImageLogoUrl) || null,
+        shareTableImageShowLogo: shareTableImageSettings.value.shareTableImageShowLogo,
+        shareTableImageFontScale: clampShareTableFontScale(
+          shareTableImageSettings.value.shareTableImageFontScale,
+        ),
+      },
+    })
+    toast.add({ severity: 'success', summary: t('admin.settings.share_table_image.saved'), life: 3000 })
+    await loadShareTableImageSettings()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.settings.share_table_image.save_error'),
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    shareTableImageSaving.value = false
+  }
+}
+
+async function uploadShareTableLogo() {
+  if (!token.value || !canEditShareTableImageSettings.value || shareTableImageForbidden.value) return
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/*'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    shareTableImageUploading.value = true
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await authFetch<{ url: string }>(apiUrl('/upload?folder=tenant-branding'), {
+        method: 'POST',
+        body: form,
+      })
+      shareTableImageSettings.value.shareTableImageLogoUrl = res.url
+      toast.add({ severity: 'success', summary: t('admin.settings.share_table_image.saved'), life: 2500 })
+    } catch (e: unknown) {
+      toast.add({
+        severity: 'error',
+        summary: t('admin.settings.share_table_image.save_error'),
+        detail: getApiErrorMessage(e),
+        life: 5000,
+      })
+    } finally {
+      shareTableImageUploading.value = false
+    }
+  }
+  input.click()
+}
+
+function clearShareTableLogo() {
+  shareTableImageSettings.value.shareTableImageLogoUrl = ''
+}
+
+async function loadTelegramSettings() {
+  if (!token.value) return
+  telegramLoading.value = true
+  try {
+    const res = await authFetch<{
+      telegramNotifyChatId?: string | null
+      telegramNotifyOnMatchRescheduled?: boolean | null
+      telegramNotifyOnProtocolPublished?: boolean | null
+      telegramNotifyOnMatchStartingSoon?: boolean | null
+    }>(apiUrl('/users/me/tenant-telegram-notifications'))
+    telegramSettings.value = {
+      telegramNotifyChatId: res.telegramNotifyChatId ?? '',
+      telegramNotifyOnMatchRescheduled: res.telegramNotifyOnMatchRescheduled !== false,
+      telegramNotifyOnProtocolPublished: res.telegramNotifyOnProtocolPublished !== false,
+      telegramNotifyOnMatchStartingSoon: res.telegramNotifyOnMatchStartingSoon === true,
+    }
+    telegramForbidden.value = false
+  } catch (e: unknown) {
+    const status = Number((e as { statusCode?: number; status?: number })?.statusCode ?? (e as { status?: number })?.status ?? 0)
+    if (status === 403) {
+      telegramForbidden.value = true
+      return
+    }
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось загрузить Telegram-настройки',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    telegramLoading.value = false
+  }
+}
+
+async function saveTelegramSettings() {
+  if (!token.value) return
+  telegramSaving.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-telegram-notifications'), {
+      method: 'PATCH',
+      body: {
+        telegramNotifyChatId: telegramSettings.value.telegramNotifyChatId.trim() || null,
+        telegramNotifyOnMatchRescheduled: telegramSettings.value.telegramNotifyOnMatchRescheduled,
+        telegramNotifyOnProtocolPublished: telegramSettings.value.telegramNotifyOnProtocolPublished,
+        telegramNotifyOnMatchStartingSoon: telegramSettings.value.telegramNotifyOnMatchStartingSoon,
+      },
+    })
+    toast.add({ severity: 'success', summary: 'Telegram-настройки сохранены', life: 3000 })
+    void loadTelegramDeliveries()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось сохранить Telegram-настройки',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    telegramSaving.value = false
+  }
+}
+
+async function sendTelegramTestMessage() {
+  if (!token.value) return
+  telegramTesting.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-telegram-notifications/test'), {
+      method: 'POST',
+    })
+    toast.add({ severity: 'success', summary: 'Тестовое сообщение отправлено', life: 3000 })
+    void loadTelegramDeliveries()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось отправить тест',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    telegramTesting.value = false
+  }
+}
+
+async function loadTelegramChatsFromBot() {
+  if (!token.value) return
+  telegramChatLookupLoading.value = true
+  try {
+    const res = await authFetch<{ items?: Array<{ id: string; type: string; title: string; username: string | null }> }>(
+      apiUrl('/users/me/tenant-telegram-notifications/chats'),
+    )
+    const items = Array.isArray(res?.items) ? res.items : []
+    telegramChatOptions.value = items.map((it) => ({
+      value: it.id,
+      label: `${it.title} (${it.type})${it.username ? ` ${it.username}` : ''} · ${it.id}`,
+    }))
+    if (!items.length) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Чаты не найдены',
+        detail:
+          'Отправьте любое сообщение боту или в канал/группу с ботом, затем повторите поиск.',
+        life: 5000,
+      })
+      return
+    }
+    if (!telegramSettings.value.telegramNotifyChatId.trim()) {
+      telegramSettings.value.telegramNotifyChatId = items[0]!.id
+    }
+    toast.add({ severity: 'success', summary: 'Чаты Telegram обновлены', life: 2500 })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось получить список чатов',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    telegramChatLookupLoading.value = false
+  }
+}
+
+async function loadTelegramDeliveries() {
+  if (!token.value) return
+  telegramDeliveriesLoading.value = true
+  try {
+    const res = await authFetch<{
+      items?: Array<{
+        id: string
+        channel?: string
+        kind: string
+        chatId: string
+        status: string
+        attempts: number
+        errorMessage?: string | null
+        createdAt: string
+        sentAt?: string | null
+      }>
+    }>(apiUrl('/users/me/tenant-telegram-notifications/deliveries'))
+    telegramDeliveries.value = (res.items ?? []).map((it) => ({
+      id: it.id,
+      channel: it.channel ?? undefined,
+      kind: it.kind,
+      chatId: it.chatId,
+      status: it.status,
+      attempts: Number(it.attempts ?? 0),
+      errorMessage: it.errorMessage ?? null,
+      createdAt: it.createdAt,
+      sentAt: it.sentAt ?? null,
+    }))
+  } catch {
+    // non-blocking: deliveries panel is auxiliary
+  } finally {
+    telegramDeliveriesLoading.value = false
+  }
+}
+
+async function loadEmailSettings() {
+  if (!token.value) return
+  emailLoading.value = true
+  try {
+    const res = await authFetch<{
+      emailNotifyRecipients?: string | null
+      emailNotifyEnabled?: boolean | null
+      emailNotifyOnMatchRescheduled?: boolean | null
+      emailNotifyOnProtocolPublished?: boolean | null
+      emailNotifyMatchTeamCoachRole?: boolean | null
+      emailNotifyMatchTeamAdminRole?: boolean | null
+    }>(apiUrl('/users/me/tenant-email-notifications'))
+    emailSettings.value = {
+      emailNotifyRecipients: res.emailNotifyRecipients ?? '',
+      emailNotifyEnabled: res.emailNotifyEnabled === true,
+      emailNotifyOnMatchRescheduled: res.emailNotifyOnMatchRescheduled !== false,
+      emailNotifyOnProtocolPublished: res.emailNotifyOnProtocolPublished !== false,
+      emailNotifyMatchTeamCoachRole: res.emailNotifyMatchTeamCoachRole === true,
+      emailNotifyMatchTeamAdminRole: res.emailNotifyMatchTeamAdminRole === true,
+    }
+    emailForbidden.value = false
+  } catch (e: unknown) {
+    const status = Number((e as { statusCode?: number; status?: number })?.statusCode ?? (e as { status?: number })?.status ?? 0)
+    if (status === 403) {
+      emailForbidden.value = true
+      return
+    }
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось загрузить email-настройки',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    emailLoading.value = false
+  }
+}
+
+async function saveEmailSettings() {
+  if (!token.value) return
+  emailSaving.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-email-notifications'), {
+      method: 'PATCH',
+      body: {
+        emailNotifyRecipients: emailSettings.value.emailNotifyRecipients.trim() || null,
+        emailNotifyEnabled: emailSettings.value.emailNotifyEnabled,
+        emailNotifyOnMatchRescheduled: emailSettings.value.emailNotifyOnMatchRescheduled,
+        emailNotifyOnProtocolPublished: emailSettings.value.emailNotifyOnProtocolPublished,
+        emailNotifyMatchTeamCoachRole: emailSettings.value.emailNotifyMatchTeamCoachRole,
+        emailNotifyMatchTeamAdminRole: emailSettings.value.emailNotifyMatchTeamAdminRole,
+      },
+    })
+    toast.add({ severity: 'success', summary: 'Email-настройки сохранены', life: 3000 })
+    void loadTelegramDeliveries()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось сохранить email-настройки',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    emailSaving.value = false
+  }
+}
+
+async function sendEmailTestMessage() {
+  if (!token.value) return
+  emailTesting.value = true
+  try {
+    await authFetch(apiUrl('/users/me/tenant-email-notifications/test'), { method: 'POST' })
+    toast.add({ severity: 'success', summary: 'Тестовое письмо отправлено', life: 3000 })
+    void loadTelegramDeliveries()
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось отправить тестовое письмо',
+      detail: getApiErrorMessage(e),
+      life: 5000,
+    })
+  } finally {
+    emailTesting.value = false
   }
 }
 
@@ -386,6 +785,10 @@ async function savePublicSettings() {
 
 onMounted(() => {
   syncTabFromRoute()
+  void loadShareTableImageSettings()
+  void loadTelegramSettings()
+  void loadEmailSettings()
+  void loadTelegramDeliveries()
   if (canEditPublicSiteSettings.value) void loadPublicSettings()
 })
 
@@ -547,6 +950,106 @@ watch(
     </Card>
 
     <Card class="!shadow-none border border-surface-200 dark:border-surface-700">
+      <template #title>
+        <span class="text-base font-semibold">{{ t('admin.settings.share_table_image.title') }}</span>
+      </template>
+      <template #content>
+        <div v-if="shareTableImageLoading" class="space-y-3">
+          <Skeleton height="2.6rem" width="100%" />
+          <Skeleton height="2.6rem" width="100%" />
+        </div>
+        <Message v-else-if="shareTableImageForbidden" severity="warn" :closable="false">
+          {{ t('admin.settings.share_table_image.forbidden') }}
+        </Message>
+        <div v-else class="space-y-4">
+          <p class="text-sm text-muted-color">
+            {{ t('admin.settings.share_table_image.hint') }}
+          </p>
+          <div class="flex flex-wrap items-center gap-3">
+            <Checkbox
+              v-model="shareTableImageSettings.shareTableImageShowLogo"
+              binary
+              input-id="settings-share-table-show-logo"
+              :disabled="!canEditShareTableImageSettings"
+            />
+            <label for="settings-share-table-show-logo" class="cursor-pointer text-sm">
+              {{ t('admin.settings.share_table_image.show_logo') }}
+            </label>
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium">{{ t('admin.settings.share_table_image.logo_url') }}</label>
+            <div class="flex flex-wrap gap-2">
+              <InputText
+                v-model="shareTableImageSettings.shareTableImageLogoUrl"
+                class="min-w-0 flex-1"
+                placeholder="https://"
+                :disabled="!canEditShareTableImageSettings"
+              />
+              <Button
+                type="button"
+                outlined
+                severity="secondary"
+                icon="pi pi-upload"
+                :label="t('admin.settings.share_table_image.upload')"
+                :loading="shareTableImageUploading"
+                :disabled="!canEditShareTableImageSettings"
+                @click="uploadShareTableLogo"
+              />
+              <Button
+                v-if="shareTableImageSettings.shareTableImageLogoUrl"
+                type="button"
+                text
+                severity="secondary"
+                :label="t('admin.settings.share_table_image.clear')"
+                :disabled="!canEditShareTableImageSettings"
+                @click="clearShareTableLogo"
+              />
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span
+              id="settings-share-table-font-scale-label"
+              class="text-sm font-medium"
+            >
+              {{ t('admin.settings.share_table_image.font_scale') }}
+            </span>
+            <span
+              v-tooltip.top="adminTooltip(t('admin.settings.share_table_image.font_scale_hint'))"
+              class="inline-flex cursor-help text-muted-color hover:text-surface-600 dark:hover:text-surface-300"
+              tabindex="0"
+              role="img"
+              :aria-label="t('admin.settings.share_table_image.font_scale_hint')"
+            >
+              <i class="pi pi-info-circle text-sm leading-none" aria-hidden="true" />
+            </span>
+            <InputNumber
+              v-model="shareTableImageSettings.shareTableImageFontScale"
+              input-id="settings-share-table-font-scale"
+              class="max-w-[11rem] shrink-0"
+              :min="0.55"
+              :max="1.25"
+              :step="0.05"
+              :min-fraction-digits="2"
+              :max-fraction-digits="2"
+              :disabled="!canEditShareTableImageSettings"
+              show-buttons
+              button-layout="horizontal"
+              aria-labelledby="settings-share-table-font-scale-label"
+            />
+          </div>
+          <Button
+            v-if="canEditShareTableImageSettings"
+            type="button"
+            icon="pi pi-save"
+            :label="t('admin.settings.share_table_image.save')"
+            :loading="shareTableImageSaving"
+            @click="saveShareTableImageSettings"
+          />
+        </div>
+      </template>
+    </Card>
+
+    <Card class="!shadow-none border border-surface-200 dark:border-surface-700">
       <template #content>
         <div
           class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
@@ -561,6 +1064,209 @@ watch(
             class="shrink-0"
             @click="saveToServer"
           />
+        </div>
+      </template>
+    </Card>
+
+    <Card class="!shadow-none border border-surface-200 dark:border-surface-700">
+      <template #title>
+        <span class="text-base font-semibold">Telegram-уведомления организации</span>
+      </template>
+      <template #content>
+        <div v-if="telegramLoading" class="space-y-3">
+          <Skeleton height="2.6rem" width="100%" />
+          <Skeleton height="2.6rem" width="100%" />
+          <Skeleton height="2.6rem" width="100%" />
+        </div>
+        <Message v-else-if="telegramForbidden" severity="warn" :closable="false">
+          Управлять Telegram-уведомлениями может только администратор организации.
+        </Message>
+        <div v-else class="space-y-4">
+          <p class="text-sm text-muted-color">
+            Укажите chat/channel ID организации и выберите события, которые нужно отправлять в Telegram.
+            Используется общий токен бота платформы.
+          </p>
+          <p class="text-xs text-muted-color">
+            Важно: сюда нужно вводить ID чата/канала (например, <code>-100...</code>), а не username бота.
+            Сначала добавьте бота в чат/канал и выдайте ему право писать сообщения.
+          </p>
+          <div>
+            <label class="mb-1 block text-sm font-medium">Telegram chat/channel ID</label>
+            <div class="flex flex-wrap gap-2">
+              <InputText
+                v-model="telegramSettings.telegramNotifyChatId"
+                class="w-full max-w-lg"
+                placeholder="-1001234567890"
+              />
+              <Button
+                label="Найти мои чаты"
+                icon="pi pi-search"
+                severity="secondary"
+                outlined
+                :loading="telegramChatLookupLoading"
+                @click="loadTelegramChatsFromBot"
+              />
+            </div>
+            <div v-if="telegramChatOptions.length" class="mt-2 max-w-lg">
+              <Select
+                :model-value="telegramSettings.telegramNotifyChatId"
+                :options="telegramChatOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                placeholder="Выберите чат из найденных"
+                @update:model-value="(v) => (telegramSettings.telegramNotifyChatId = String(v ?? ''))"
+              />
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Перенос/изменение времени матча</span>
+              <ToggleSwitch v-model="telegramSettings.telegramNotifyOnMatchRescheduled" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Публикация протокола</span>
+              <ToggleSwitch v-model="telegramSettings.telegramNotifyOnProtocolPublished" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">
+              <span class="text-sm">Скорый старт матча (резерв под v1.1)</span>
+              <ToggleSwitch v-model="telegramSettings.telegramNotifyOnMatchStartingSoon" />
+            </label>
+          </div>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button
+              label="Тестовое сообщение"
+              icon="pi pi-send"
+              severity="secondary"
+              outlined
+              :loading="telegramTesting"
+              :disabled="telegramTesting || !telegramSettings.telegramNotifyChatId.trim()"
+              @click="sendTelegramTestMessage"
+            />
+            <Button
+              label="Сохранить Telegram"
+              icon="pi pi-save"
+              :loading="telegramSaving"
+                @click="saveTelegramSettings"
+            />
+          </div>
+            <div class="rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <p class="text-sm font-medium">Последние доставки</p>
+                <Button
+                  label="Обновить"
+                  icon="pi pi-refresh"
+                  size="small"
+                  text
+                  :loading="telegramDeliveriesLoading"
+                  @click="loadTelegramDeliveries"
+                />
+              </div>
+              <div v-if="telegramDeliveriesLoading" class="space-y-2">
+                <Skeleton height="1.75rem" width="100%" />
+                <Skeleton height="1.75rem" width="100%" />
+              </div>
+              <div v-else-if="!telegramDeliveries.length" class="text-xs text-muted-color">
+                Пока нет доставок.
+              </div>
+              <div v-else class="space-y-2">
+                <div
+                  v-for="d in telegramDeliveries.slice(0, 8)"
+                  :key="d.id"
+                  class="rounded-md border border-surface-200 px-2 py-1.5 text-xs dark:border-surface-700"
+                >
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="font-medium">{{ d.kind }}</span>
+                    <span
+                      :class="
+                        d.status === 'SENT'
+                          ? 'text-green-600 dark:text-green-400'
+                          : d.status === 'FAILED'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                      "
+                    >
+                      {{ d.status }}
+                    </span>
+                  </div>
+                  <div class="mt-1 text-muted-color">
+                    {{ d.channel ?? 'TELEGRAM' }} · target: {{ d.chatId }} · attempts: {{ d.attempts }} ·
+                    {{ new Date(d.createdAt).toLocaleString() }}
+                  </div>
+                  <div v-if="d.errorMessage" class="mt-1 text-red-500 dark:text-red-400">
+                    {{ d.errorMessage }}
+                  </div>
+                </div>
+              </div>
+            </div>
+        </div>
+      </template>
+    </Card>
+
+    <Card class="!shadow-none border border-surface-200 dark:border-surface-700">
+      <template #title>
+        <span class="text-base font-semibold">Email-уведомления организации</span>
+      </template>
+      <template #content>
+        <div v-if="emailLoading" class="space-y-3">
+          <Skeleton height="2.6rem" width="100%" />
+          <Skeleton height="2.6rem" width="100%" />
+        </div>
+        <Message v-else-if="emailForbidden" severity="warn" :closable="false">
+          Управлять email-уведомлениями может только администратор организации.
+        </Message>
+        <div v-else class="space-y-4">
+          <p class="text-sm text-muted-color">
+            Укажите базовых получателей через запятую и включите события. Дополнительно можно автоматически
+            добавлять роли команд-участниц каждого матча.
+          </p>
+          <div>
+            <label class="mb-1 block text-sm font-medium">Получатели (через запятую)</label>
+            <InputText
+              v-model="emailSettings.emailNotifyRecipients"
+              class="w-full"
+              placeholder="ops@example.com, manager@example.com"
+            />
+          </div>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Включить email-канал</span>
+              <ToggleSwitch v-model="emailSettings.emailNotifyEnabled" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Перенос/изменение времени матча</span>
+              <ToggleSwitch v-model="emailSettings.emailNotifyOnMatchRescheduled" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">
+              <span class="text-sm">Публикация протокола</span>
+              <ToggleSwitch v-model="emailSettings.emailNotifyOnProtocolPublished" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Добавлять тренеров участвующих команд</span>
+              <ToggleSwitch v-model="emailSettings.emailNotifyMatchTeamCoachRole" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700">
+              <span class="text-sm">Добавлять администраторов участвующих команд</span>
+              <ToggleSwitch v-model="emailSettings.emailNotifyMatchTeamAdminRole" />
+            </label>
+          </div>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button
+              label="Тестовое письмо"
+              icon="pi pi-send"
+              severity="secondary"
+              outlined
+              :loading="emailTesting"
+              :disabled="emailTesting || !emailSettings.emailNotifyRecipients.trim()"
+              @click="sendEmailTestMessage"
+            />
+            <Button
+              label="Сохранить Email"
+              icon="pi pi-save"
+              :loading="emailSaving"
+              @click="saveEmailSettings"
+            />
+          </div>
         </div>
       </template>
     </Card>

@@ -15,5 +15,12 @@ export async function loginAdminStaff(page: Page, username: string, password: st
   }
 
   await page.getByRole('button', { name: /Войти/i }).click()
-  await page.waitForURL(/\/admin(\/|$)/, { timeout: 30_000 })
+  // Не использовать `/admin/` — иначе совпадёт `/admin/login` до фактического входа.
+  await page.waitForURL(
+    (url) => {
+      const p = new URL(url).pathname
+      return p === '/admin' || (p.startsWith('/admin/') && !p.startsWith('/admin/login'))
+    },
+    { timeout: 30_000 },
+  )
 }

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import type { PublicTenantMeta } from '~/composables/usePublicTournamentFetch'
+import { usePublicBrandingTheme } from '~/composables/usePublicBrandingTheme'
 
 const props = defineProps<{
   tenant: string
@@ -42,6 +43,27 @@ const settingsByTenant = useState<Record<string, PublicSettings>>(
 const organizationName = ref<string>(organizationNamesByTenant.value[props.tenant] ?? '')
 const organizationBranding = ref<PublicBranding>(brandingByTenant.value[props.tenant] ?? {})
 const organizationSettings = ref<PublicSettings>(settingsByTenant.value[props.tenant] ?? {})
+
+const themeMetaSource = computed<PublicTenantMeta | null>(() => {
+  if (props.tenantMeta) return props.tenantMeta
+  return {
+    name: organizationName.value || props.tenant,
+    slug: props.tenant,
+    branding: organizationBranding.value,
+    publicSettings: organizationSettings.value,
+  }
+})
+
+const { isDark } = usePublicBrandingTheme(themeMetaSource)
+
+/** В тёмной теме шапка не заливается синим primary — тёмный «хром», красный только у активного пункта */
+const PUBLIC_HEADER_BG_DARK_TOP = 'var(--public-chrome-dark-top)'
+/** Полоса меню чуть светлее верхнего блока */
+const PUBLIC_HEADER_BG_DARK_NAV = 'var(--public-chrome-dark-nav)'
+
+const inactiveNavHoverClass = computed(() =>
+  isDark.value ? 'hover:bg-white/10' : 'hover:bg-[#24679e]',
+)
 
 const hasTournamentContext = computed(() => {
   const tid = route.query.tid
@@ -186,8 +208,20 @@ function onDropdownFocusOut(event: FocusEvent, kind: 'media' | 'participants') {
 }
 
 const isActive = (link: { key: 'about' | 'tournaments' | 'participants' | 'media'; to: string; activePrefixes?: string[] }) => {
+  const base = `/${props.tenant}`
   if (hasTournamentContext.value || inTournamentWorkspace.value) {
-    if (link.key === 'tournaments') return true
+    if (link.key === 'tournaments') {
+      const p = route.path
+      if (
+        p === `${base}/participants-teams` ||
+        p === `${base}/participants-players` ||
+        p === `${base}/media-photo` ||
+        p === `${base}/media-video`
+      ) {
+        return false
+      }
+      return true
+    }
     if (link.key === 'participants' || link.key === 'media') return false
   }
   const prefixes = link.activePrefixes?.length ? link.activePrefixes : [link.to]
@@ -212,15 +246,6 @@ function shiftHex(hex: string, amount: number) {
   return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`
 }
 
-function resolveThemeMode(raw: unknown): 'light' | 'dark' {
-  const mode = String(raw ?? '').trim().toLowerCase()
-  if (mode === 'light' || mode === 'dark') return mode
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
-    return 'dark'
-  }
-  return 'light'
-}
-
 const brandPrimary = computed(() =>
   normalizeHex(organizationBranding.value.publicAccentPrimary, '#123c67'),
 )
@@ -236,12 +261,16 @@ const brandTagline = computed(() => {
   const raw = String(organizationBranding.value.publicTagline ?? '').trim()
   return raw || 'Лига и турниры'
 })
-const topBarStyle = computed(() => ({
-  backgroundColor: brandPrimary.value,
-}))
-const navBarStyle = computed(() => ({
-  backgroundColor: shiftHex(brandPrimary.value, -8),
-}))
+const topBarStyle = computed(() =>
+  isDark.value
+    ? { backgroundColor: PUBLIC_HEADER_BG_DARK_TOP }
+    : { backgroundColor: brandPrimary.value },
+)
+const navBarStyle = computed(() =>
+  isDark.value
+    ? { backgroundColor: PUBLIC_HEADER_BG_DARK_NAV }
+    : { backgroundColor: shiftHex(brandPrimary.value, -8) },
+)
 const activeNavStyle = computed(() => ({
   backgroundColor: brandSecondary.value,
 }))
@@ -293,7 +322,6 @@ function applyPublicBranding() {
   root.style.setProperty('--public-accent-primary', brandPrimary.value)
   root.style.setProperty('--public-accent-secondary', brandSecondary.value)
   root.style.setProperty('--public-accent-tertiary', brandTertiary.value)
-  root.setAttribute('data-public-theme', resolveThemeMode(organizationBranding.value.publicThemeMode))
   const faviconUrl = String(organizationBranding.value.publicFaviconUrl ?? '').trim()
   if (faviconUrl) {
     let link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null
@@ -307,7 +335,6 @@ function applyPublicBranding() {
 }
 
 function isMediaActive() {
-  if (hasTournamentContext.value || inTournamentWorkspace.value) return false
   return (
     route.path === `/${props.tenant}/media-photo` ||
     route.path === `/${props.tenant}/media-video`
@@ -315,7 +342,6 @@ function isMediaActive() {
 }
 
 function isParticipantsActive() {
-  if (hasTournamentContext.value || inTournamentWorkspace.value) return false
   return (
     route.path === `/${props.tenant}/participants-teams` ||
     route.path === `/${props.tenant}/participants-players`
@@ -400,7 +426,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header class="w-full border-b border-[#d0d7e2] shadow-[0_6px_14px_rgba(15,23,42,0.1)]">
+  <header
+    class="w-full border-b border-[#d0d7e2] shadow-[0_6px_14px_rgba(15,23,42,0.1)] dark:border-surface-700 dark:shadow-[0_6px_14px_rgba(0,0,0,0.35)]"
+  >
     <div class="text-white" :style="topBarStyle">
       <div class="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
         <div class="flex min-w-0 flex-1 items-center gap-3">
@@ -468,8 +496,8 @@ onBeforeUnmount(() => {
               type="button"
               :aria-expanded="participantsDropdownOpen ? 'true' : 'false'"
               aria-haspopup="menu"
-              class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-              :class="isParticipantsActive() ? 'text-white' : 'hover:bg-[#24679e]'"
+              class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90"
+              :class="[isParticipantsActive() ? 'text-white' : inactiveNavHoverClass]"
               :style="isParticipantsActive() ? activeNavStyle : inactiveNavStyle"
               @click="toggleParticipantsDropdown"
               @keydown.escape.prevent="closeAllDesktopDropdowns"
@@ -513,8 +541,8 @@ onBeforeUnmount(() => {
               type="button"
               :aria-expanded="mediaDropdownOpen ? 'true' : 'false'"
               aria-haspopup="menu"
-              class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-              :class="isMediaActive() ? 'text-white' : 'hover:bg-[#24679e]'"
+              class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90"
+              :class="[isMediaActive() ? 'text-white' : inactiveNavHoverClass]"
               :style="isMediaActive() ? activeNavStyle : inactiveNavStyle"
               @click="toggleMediaDropdown"
               @keydown.escape.prevent="closeAllDesktopDropdowns"
@@ -549,8 +577,8 @@ onBeforeUnmount(() => {
             v-else
             :key="link.to + link.label"
             :to="{ path: link.to, query: link.query }"
-            class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90 transition-colors"
-            :class="isActive(link) ? 'text-white' : 'hover:bg-[#24679e]'"
+            class="relative min-w-[140px] px-6 py-3 text-center text-xs font-semibold tracking-wide text-white/90"
+            :class="[isActive(link) ? 'text-white' : inactiveNavHoverClass]"
             :style="isActive(link) ? activeNavStyle : inactiveNavStyle"
           >
             <span>{{ link.label }}</span>

@@ -136,7 +136,7 @@ function playerNameByEvent(event: MatchEventRow) {
 }
 
 function sideBadgeClass(side?: 'HOME' | 'AWAY' | null) {
-  if (side === 'HOME') return 'bg-[#eef5ff] text-[#1a5a8c]'
+  if (side === 'HOME') return 'bg-[#eef5ff] public-text-primary'
   if (side === 'AWAY') return 'bg-[#fff2f7] text-[#b10f46]'
   return 'bg-surface-100 text-surface-700'
 }
@@ -776,7 +776,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-                :class="calendarViewMode === 'grouped' ? 'bg-[#eef5ff] text-[#1a5a8c]' : 'text-[#4f6b8c] hover:bg-surface-50'"
+                :class="calendarViewMode === 'grouped' ? 'bg-[#eef5ff] public-text-primary' : 'public-text-muted hover:bg-surface-50'"
                 @click="calendarViewMode = 'grouped'"
               >
                 По группам
@@ -784,7 +784,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-                :class="calendarViewMode === 'tour' ? 'bg-[#eef5ff] text-[#1a5a8c]' : 'text-[#4f6b8c] hover:bg-surface-50'"
+                :class="calendarViewMode === 'tour' ? 'bg-[#eef5ff] public-text-primary' : 'public-text-muted hover:bg-surface-50'"
                 @click="calendarViewMode = 'tour'"
               >
                 По турам
@@ -796,7 +796,7 @@ onBeforeUnmount(() => {
               label="Обновить"
               outlined
               size="small"
-              class="ml-auto shrink-0 !border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#c80a48]/35 hover:!text-[#c80a48]"
+              class="ml-auto shrink-0 public-btn-outline-accent"
               :loading="calendarManualRefreshPending"
               :disabled="
                 !selectedTournamentId ||
@@ -851,7 +851,7 @@ onBeforeUnmount(() => {
                     :key="`${r.key}:${bucket.dateKey}`"
                     class="space-y-2 rounded-xl border border-surface-200 bg-surface-50 p-2"
                   >
-                    <div class="px-1 text-xs font-semibold text-[#4f6b8c]">
+                    <div class="public-text-muted px-1 text-xs font-semibold">
                       {{ bucket.dateLabel }}
                     </div>
                     <div
@@ -870,7 +870,7 @@ onBeforeUnmount(() => {
                               class="h-7 w-7 shrink-0 rounded-full"
                             />
                             <span class="truncate">{{ displayedCalendarTeamName(m, 'home') }}</span>
-                            <span class="shrink-0 text-[#4f6b8c]">{{ teamsSeparator(m) }}</span>
+                            <span class="public-text-muted shrink-0">{{ teamsSeparator(m) }}</span>
                             <RemoteImage
                               :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
                               :alt="displayedCalendarTeamName(m, 'away')"
@@ -922,7 +922,7 @@ onBeforeUnmount(() => {
                             class="h-7 w-7 shrink-0 rounded-full"
                           />
                           <span class="truncate">{{ displayedCalendarTeamName(m, 'home') }}</span>
-                          <span class="shrink-0 text-[#4f6b8c]">{{ teamsSeparator(m) }}</span>
+                          <span class="public-text-muted shrink-0">{{ teamsSeparator(m) }}</span>
                           <RemoteImage
                             :src="resolveTeamLogo(displayedCalendarTeamId(m, 'away'))"
                             :alt="displayedCalendarTeamName(m, 'away')"
@@ -966,7 +966,7 @@ onBeforeUnmount(() => {
               <div class="text-xs text-muted-color">
                 Загружено {{ calendarMatchesLoaded }} из {{ calendarMatchesTotal }} матчей
               </div>
-              <div class="text-xs text-[#4f6b8c]">
+              <div class="public-text-muted text-xs">
                 {{ calendarLoadingMore ? 'Загружаем еще матчи...' : 'Прокрутите ниже для автодогрузки' }}
               </div>
             </div>
@@ -1008,8 +1008,8 @@ onBeforeUnmount(() => {
           <TabPanel value="summary" header="Общая">
             <div class="space-y-3">
               <div class="rounded-xl border border-[#d6e0ee] bg-white p-3">
-                <div class="text-xs text-[#4f6b8c]">Счет</div>
-                <div class="mt-1 text-xl font-semibold text-[#123c67]">
+                <div class="public-text-muted text-xs">Счет</div>
+                <div class="public-text-primary mt-1 text-xl font-semibold">
                   <template v-if="selectedMatchForStats && isMatchCountedInPublicStandings(selectedMatchForStats)">
                     {{ formatMatchScoreDisplay(selectedMatchForStats) }}
                   </template>
@@ -1022,8 +1022,8 @@ onBeforeUnmount(() => {
                   :key="fact.key"
                   class="rounded-full border border-[#d6e0ee] bg-[#f8fbff] px-3 py-1.5"
                 >
-                  <span class="text-xs text-[#4f6b8c]">{{ fact.label }}: </span>
-                  <span class="text-sm font-semibold text-[#123c67]">{{ fact.value }}</span>
+                  <span class="public-text-muted text-xs">{{ fact.label }}: </span>
+                  <span class="public-text-primary text-sm font-semibold">{{ fact.value }}</span>
                 </div>
               </div>
               <div v-else class="rounded-xl border border-[#d6e0ee] bg-[#f8fbff] px-3 py-2 text-sm text-[#4f6b8c]">

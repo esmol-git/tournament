@@ -47,9 +47,12 @@ describeOrSkip('Auth login throttling (e2e)', () => {
     };
 
     for (let i = 0; i < 5; i += 1) {
-      await request(http).post('/auth/login').send(body).expect((res) => {
-        expect([401, 403]).toContain(res.status);
-      });
+      await request(http)
+        .post('/auth/login')
+        .send(body)
+        .expect((res) => {
+          expect([401, 403]).toContain(res.status);
+        });
     }
 
     await request(http).post('/auth/login').send(body).expect(429);

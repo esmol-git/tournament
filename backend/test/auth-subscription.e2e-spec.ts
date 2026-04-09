@@ -343,5 +343,4 @@ describeOrSkip('Auth & subscription (e2e)', () => {
       });
     }
   });
-
 });

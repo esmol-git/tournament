@@ -2,8 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import {
   MatchEventType,
   MatchScheduleReasonScope,
@@ -28,7 +31,12 @@ import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
 import { ListStandaloneMatchesQueryDto } from './dto/list-standalone-matches-query.dto';
 import { ProtocolEventDto, UpdateProtocolDto } from './dto/update-protocol.dto';
+import { BulkUpdateMatchesDto } from './dto/bulk-update-matches.dto';
+import { ListMatchSuggestionsQueryDto } from './dto/list-match-suggestions-query.dto';
 import { TournamentsService } from '../tournaments/tournaments.service';
+import { collectScheduleWarningsForMatch } from './schedule-conflict.util';
+import { sendTelegramTenantNotification } from '../notifications/telegram-tenant-notify';
+import { sendEmailTenantNotification } from '../notifications/email-tenant-notify';
 
 const PROTOCOL_ROLES: UserRole[] = [
   UserRole.TENANT_ADMIN,
@@ -73,10 +81,417 @@ const MATCH_DETAIL_INCLUDE = {
 
 @Injectable()
 export class MatchesService {
+  private readonly logger = new Logger(MatchesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tournamentsService: TournamentsService,
+    private readonly config: ConfigService,
   ) {}
+
+  private async sleep(ms: number) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private formatLocalDateTime(date: Date): string {
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    return `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${pad2(
+      date.getHours(),
+    )}:${pad2(date.getMinutes())}`;
+  }
+
+  private async sendTelegramIfEnabled(params: {
+    tenantId: string;
+    kind: 'rescheduled' | 'protocol_published';
+    lines: string[];
+    matchId?: string;
+    tournamentId?: string | null;
+  }) {
+    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
+    if (!botToken) return;
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: params.tenantId },
+      select: {
+        telegramNotifyChatId: true,
+        telegramNotifyOnMatchRescheduled: true,
+        telegramNotifyOnProtocolPublished: true,
+      },
+    });
+    if (!tenant?.telegramNotifyChatId?.trim()) return;
+    if (
+      (params.kind === 'rescheduled' &&
+        !tenant.telegramNotifyOnMatchRescheduled) ||
+      (params.kind === 'protocol_published' &&
+        !tenant.telegramNotifyOnProtocolPublished)
+    ) {
+      return;
+    }
+    const payloadObj = { lines: params.lines };
+    const dedupeKey = createHash('sha1')
+      .update(JSON.stringify(payloadObj))
+      .digest('hex');
+    const dedupeSince = new Date(Date.now() - 5 * 60 * 1000);
+    const duplicated = await this.prisma.telegramNotificationDelivery.findFirst(
+      {
+        where: {
+          tenantId: params.tenantId,
+          channel: 'TELEGRAM',
+          kind: params.kind,
+          chatId: tenant.telegramNotifyChatId.trim(),
+          dedupeKey,
+          createdAt: { gte: dedupeSince },
+          status: { in: ['QUEUED', 'SENT'] },
+        },
+        select: { id: true },
+      },
+    );
+    if (duplicated) return;
+
+    const delivery = await this.prisma.telegramNotificationDelivery.create({
+      data: {
+        tenantId: params.tenantId,
+        channel: 'TELEGRAM',
+        kind: params.kind,
+        chatId: tenant.telegramNotifyChatId.trim(),
+        status: 'QUEUED',
+        attempts: 0,
+        payload: payloadObj,
+        dedupeKey,
+        matchId: params.matchId ?? null,
+        tournamentId: params.tournamentId ?? null,
+      },
+      select: { id: true },
+    });
+
+    const maxAttempts = 3;
+    let lastError = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { attempts: attempt, lastAttemptAt: new Date() },
+      });
+      try {
+        await sendTelegramTenantNotification({
+          botToken,
+          chatId: tenant.telegramNotifyChatId.trim(),
+          lines: params.lines,
+        });
+        await this.prisma.telegramNotificationDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'SENT', sentAt: new Date() },
+        });
+        return;
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e.message : String(e);
+        if (attempt < maxAttempts) {
+          await this.sleep(attempt * 1200);
+        }
+      }
+    }
+
+    await this.prisma.telegramNotificationDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'FAILED', errorMessage: lastError.slice(0, 4000) },
+    });
+    this.logger.warn(
+      `Telegram delivery failed (tenant=${params.tenantId}, kind=${params.kind}): ${lastError}`,
+    );
+  }
+
+  private parseRecipients(raw: string | null | undefined): string[] {
+    return String(raw ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .filter((x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+  }
+
+  private async getMatchRoleBasedEmailRecipients(params: {
+    tenantId: string;
+    matchId: string;
+    includeTeamCoachRole: boolean;
+    includeTeamAdminRole: boolean;
+  }): Promise<string[]> {
+    if (!params.includeTeamCoachRole && !params.includeTeamAdminRole) return [];
+    const match = await this.prisma.match.findUnique({
+      where: { id: params.matchId },
+      select: { homeTeamId: true, awayTeamId: true, tenantId: true },
+    });
+    if (!match || match.tenantId !== params.tenantId) return [];
+    const teamIds = [match.homeTeamId, match.awayTeamId];
+    const emails = new Set<string>();
+
+    if (params.includeTeamCoachRole) {
+      const teams = await this.prisma.team.findMany({
+        where: { tenantId: params.tenantId, id: { in: teamIds } },
+        select: { coachEmail: true },
+      });
+      for (const team of teams) {
+        for (const email of this.parseRecipients(team.coachEmail))
+          emails.add(email);
+      }
+    }
+
+    if (params.includeTeamAdminRole) {
+      const admins = await this.prisma.teamAdmin.findMany({
+        where: { teamId: { in: teamIds } },
+        select: { user: { select: { email: true } } },
+      });
+      for (const admin of admins) {
+        for (const email of this.parseRecipients(admin.user.email))
+          emails.add(email);
+      }
+    }
+
+    return Array.from(emails);
+  }
+
+  private async sendEmailIfEnabled(params: {
+    tenantId: string;
+    kind: 'rescheduled' | 'protocol_published';
+    subject: string;
+    lines: string[];
+    matchId?: string;
+    tournamentId?: string | null;
+  }) {
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
+    const secure = ['1', 'true', 'yes', 'on'].includes(
+      String(this.config.get<string>('SMTP_SECURE') ?? '').toLowerCase(),
+    );
+    const user = this.config.get<string>('SMTP_USER')?.trim();
+    const pass = this.config.get<string>('SMTP_PASS')?.trim();
+    const from =
+      this.config.get<string>('SMTP_FROM')?.trim() ||
+      'Tournament Platform <no-reply@localhost>';
+    if (!host || !Number.isFinite(port)) return;
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: params.tenantId },
+      select: {
+        emailNotifyEnabled: true,
+        emailNotifyRecipients: true,
+        emailNotifyOnMatchRescheduled: true,
+        emailNotifyOnProtocolPublished: true,
+        emailNotifyMatchTeamCoachRole: true,
+        emailNotifyMatchTeamAdminRole: true,
+      },
+    });
+    if (!tenant?.emailNotifyEnabled) return;
+    if (
+      (params.kind === 'rescheduled' &&
+        !tenant.emailNotifyOnMatchRescheduled) ||
+      (params.kind === 'protocol_published' &&
+        !tenant.emailNotifyOnProtocolPublished)
+    ) {
+      return;
+    }
+    const recipients = new Set(
+      this.parseRecipients(tenant.emailNotifyRecipients),
+    );
+    if (params.matchId) {
+      const roleBased = await this.getMatchRoleBasedEmailRecipients({
+        tenantId: params.tenantId,
+        matchId: params.matchId,
+        includeTeamCoachRole: tenant.emailNotifyMatchTeamCoachRole,
+        includeTeamAdminRole: tenant.emailNotifyMatchTeamAdminRole,
+      });
+      for (const email of roleBased) recipients.add(email);
+    }
+    const resolvedRecipients = Array.from(recipients);
+    if (!resolvedRecipients.length) return;
+
+    const payloadObj = { subject: params.subject, lines: params.lines };
+    const dedupeKey = createHash('sha1')
+      .update(JSON.stringify(payloadObj))
+      .digest('hex');
+    const dedupeSince = new Date(Date.now() - 5 * 60 * 1000);
+    const duplicated = await this.prisma.telegramNotificationDelivery.findFirst(
+      {
+        where: {
+          tenantId: params.tenantId,
+          channel: 'EMAIL',
+          kind: params.kind,
+          chatId: resolvedRecipients.join(','),
+          dedupeKey,
+          createdAt: { gte: dedupeSince },
+          status: { in: ['QUEUED', 'SENT'] },
+        },
+        select: { id: true },
+      },
+    );
+    if (duplicated) return;
+
+    const delivery = await this.prisma.telegramNotificationDelivery.create({
+      data: {
+        tenantId: params.tenantId,
+        channel: 'EMAIL',
+        kind: params.kind,
+        chatId: resolvedRecipients.join(','),
+        status: 'QUEUED',
+        attempts: 0,
+        payload: payloadObj,
+        dedupeKey,
+        matchId: params.matchId ?? null,
+        tournamentId: params.tournamentId ?? null,
+      },
+      select: { id: true },
+    });
+
+    const maxAttempts = 3;
+    let lastError = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await this.prisma.telegramNotificationDelivery.update({
+        where: { id: delivery.id },
+        data: { attempts: attempt, lastAttemptAt: new Date() },
+      });
+      try {
+        await sendEmailTenantNotification({
+          transport: { host, port, secure, user, pass },
+          from,
+          to: resolvedRecipients,
+          subject: params.subject,
+          text: params.lines.join('\n'),
+        });
+        await this.prisma.telegramNotificationDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'SENT', sentAt: new Date() },
+        });
+        return;
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e.message : String(e);
+        if (attempt < maxAttempts) await this.sleep(attempt * 1200);
+      }
+    }
+
+    await this.prisma.telegramNotificationDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'FAILED', errorMessage: lastError.slice(0, 4000) },
+    });
+    this.logger.warn(
+      `Email delivery failed (tenant=${params.tenantId}, kind=${params.kind}): ${lastError}`,
+    );
+  }
+
+  private async notifyMatchRescheduledById(params: {
+    matchId: string;
+    previousStartTime: Date;
+  }) {
+    const row = await this.prisma.match.findUnique({
+      where: { id: params.matchId },
+      select: {
+        id: true,
+        tenantId: true,
+        startTime: true,
+        scheduleChangeNote: true,
+        scheduleChangeReason: { select: { name: true } },
+        stadium: { select: { name: true } },
+        homeTeam: { select: { name: true } },
+        awayTeam: { select: { name: true } },
+        tournament: { select: { name: true } },
+      },
+    });
+    if (!row) return;
+    await this.sendTelegramIfEnabled({
+      tenantId: row.tenantId,
+      kind: 'rescheduled',
+      matchId: row.id,
+      lines: [
+        'Матч перенесен',
+        '',
+        `${row.homeTeam.name} - ${row.awayTeam.name}`,
+        `Турнир: ${row.tournament?.name ?? '—'}`,
+        `Было: ${this.formatLocalDateTime(params.previousStartTime)}`,
+        `Стало: ${this.formatLocalDateTime(row.startTime)}`,
+        row.stadium?.name
+          ? `Площадка: ${row.stadium.name}`
+          : 'Площадка: не указана',
+        row.scheduleChangeReason?.name
+          ? `Причина: ${row.scheduleChangeReason.name}`
+          : row.scheduleChangeNote?.trim()
+            ? `Причина: ${row.scheduleChangeNote.trim()}`
+            : 'Причина: не указана',
+      ],
+    });
+    await this.sendEmailIfEnabled({
+      tenantId: row.tenantId,
+      kind: 'rescheduled',
+      matchId: row.id,
+      subject: `Матч перенесен: ${row.homeTeam.name} - ${row.awayTeam.name}`,
+      lines: [
+        'Матч перенесен',
+        '',
+        `${row.homeTeam.name} - ${row.awayTeam.name}`,
+        `Турнир: ${row.tournament?.name ?? '—'}`,
+        `Было: ${this.formatLocalDateTime(params.previousStartTime)}`,
+        `Стало: ${this.formatLocalDateTime(row.startTime)}`,
+        row.stadium?.name
+          ? `Площадка: ${row.stadium.name}`
+          : 'Площадка: не указана',
+        row.scheduleChangeReason?.name
+          ? `Причина: ${row.scheduleChangeReason.name}`
+          : row.scheduleChangeNote?.trim()
+            ? `Причина: ${row.scheduleChangeNote.trim()}`
+            : 'Причина: не указана',
+      ],
+    });
+  }
+
+  private async notifyProtocolPublishedById(params: { matchId: string }) {
+    const row = await this.prisma.match.findUnique({
+      where: { id: params.matchId },
+      select: {
+        id: true,
+        tenantId: true,
+        status: true,
+        startTime: true,
+        homeScore: true,
+        awayScore: true,
+        homeTeam: { select: { name: true } },
+        awayTeam: { select: { name: true } },
+        tournament: { select: { name: true } },
+      },
+    });
+    if (!row) return;
+    if (
+      row.status !== MatchStatus.PLAYED &&
+      row.status !== MatchStatus.FINISHED &&
+      row.status !== MatchStatus.CANCELED
+    ) {
+      return;
+    }
+    const score =
+      row.homeScore !== null && row.awayScore !== null
+        ? `${row.homeScore}:${row.awayScore}`
+        : '—';
+    await this.sendTelegramIfEnabled({
+      tenantId: row.tenantId,
+      kind: 'protocol_published',
+      matchId: row.id,
+      lines: [
+        'Опубликован протокол матча',
+        '',
+        `${row.homeTeam.name} - ${row.awayTeam.name}`,
+        `Счет: ${score}`,
+        `Дата: ${this.formatLocalDateTime(row.startTime)}`,
+        `Турнир: ${row.tournament?.name ?? '—'}`,
+      ],
+    });
+    await this.sendEmailIfEnabled({
+      tenantId: row.tenantId,
+      kind: 'protocol_published',
+      matchId: row.id,
+      subject: `Опубликован протокол: ${row.homeTeam.name} - ${row.awayTeam.name}`,
+      lines: [
+        'Опубликован протокол матча',
+        '',
+        `${row.homeTeam.name} - ${row.awayTeam.name}`,
+        `Счет: ${score}`,
+        `Дата: ${this.formatLocalDateTime(row.startTime)}`,
+        `Турнир: ${row.tournament?.name ?? '—'}`,
+      ],
+    });
+  }
 
   /** Проверка площадки матча: тенант и (если задан белый список у турнира) вхождение в него. */
   private async assertMatchStadiumAllowed(
@@ -136,6 +551,50 @@ export class MatchesService {
         'Завершённый матч нельзя изменять или удалять',
       );
     }
+  }
+
+  /** Длительность слота для проверки пересечений: из турнира или по умолчанию (свободные матчи). */
+  private async resolveMatchDurationMinutes(
+    tournamentId: string | null | undefined,
+  ): Promise<number> {
+    if (tournamentId) {
+      const t = await this.prisma.tournament.findUnique({
+        where: { id: tournamentId },
+        select: { matchDurationMinutes: true },
+      });
+      if (t) return Math.max(1, t.matchDurationMinutes);
+    }
+    return 90;
+  }
+
+  private async withScheduleWarnings<
+    T extends { id: string } & Record<string, unknown>,
+  >(row: T): Promise<T & { scheduleWarnings: string[] }> {
+    const m = row as unknown as {
+      id: string;
+      tenantId: string;
+      startTime: Date;
+      homeTeamId: string;
+      awayTeamId: string;
+      stadiumId: string | null;
+      tournamentId: string | null;
+    };
+    const durationMinutes = await this.resolveMatchDurationMinutes(
+      m.tournamentId,
+    );
+    const scheduleWarnings = await collectScheduleWarningsForMatch(
+      this.prisma,
+      {
+        tenantId: m.tenantId,
+        startTime: m.startTime,
+        homeTeamId: m.homeTeamId,
+        awayTeamId: m.awayTeamId,
+        excludeMatchId: m.id,
+        stadiumId: m.stadiumId,
+        durationMinutes,
+      },
+    );
+    return { ...row, scheduleWarnings };
   }
 
   /**
@@ -573,12 +1032,15 @@ export class MatchesService {
         groupId,
         playoffRound,
         stadiumId: stadiumIdForCreate,
+        ...(dto.publishedOnPublic !== undefined
+          ? { publishedOnPublic: dto.publishedOnPublic }
+          : {}),
       },
     });
 
     await this.recomputeTable(tournamentId);
     await this.syncTournamentLifecycleAfterMatches(tournamentId);
-    return created;
+    return this.withScheduleWarnings(created);
   }
 
   async deleteMatch(
@@ -631,6 +1093,7 @@ export class MatchesService {
       scheduleChangeReasonId?: string;
       scheduleChangeNote?: string;
       stadiumId?: string | null;
+      publishedOnPublic?: boolean;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -678,6 +1141,25 @@ export class MatchesService {
       },
     });
     if (!match) throw new NotFoundException('Match not found');
+
+    const visibilityOnly =
+      data.publishedOnPublic !== undefined &&
+      data.startTime === undefined &&
+      data.homeTeamId === undefined &&
+      data.awayTeamId === undefined &&
+      data.roundNumber === undefined &&
+      data.groupId === undefined &&
+      data.scheduleChangeReasonId === undefined &&
+      data.scheduleChangeNote === undefined &&
+      data.stadiumId === undefined;
+    if (visibilityOnly) {
+      const updated = await this.prisma.match.update({
+        where: { id: matchId },
+        data: { publishedOnPublic: data.publishedOnPublic },
+      });
+      return this.withScheduleWarnings(updated);
+    }
+
     this.assertMatchMutable(match.status);
 
     const startTimeChanged =
@@ -772,6 +1254,11 @@ export class MatchesService {
           }
         : {};
 
+    const visPatch: Prisma.MatchUncheckedUpdateInput =
+      data.publishedOnPublic !== undefined
+        ? { publishedOnPublic: data.publishedOnPublic }
+        : {};
+
     if (!teamsChanged) {
       if (tournament.format === TournamentFormat.MANUAL) {
         const patch: Prisma.MatchUncheckedUpdateInput = {};
@@ -779,28 +1266,39 @@ export class MatchesService {
         if (data.roundNumber !== undefined)
           patch.roundNumber = data.roundNumber;
         if (data.groupId !== undefined) patch.groupId = data.groupId;
-        Object.assign(patch, schedulePatch, stadiumPatch);
+        Object.assign(patch, schedulePatch, stadiumPatch, visPatch);
         if (Object.keys(patch).length === 0) {
-          return this.prisma.match.findUniqueOrThrow({
-            where: { id: matchId },
-          });
+          return this.withScheduleWarnings(
+            await this.prisma.match.findUniqueOrThrow({
+              where: { id: matchId },
+            }),
+          );
         }
         const updated = await this.prisma.match.update({
           where: { id: matchId },
           data: patch,
         });
+        if (startTimeChanged) {
+          void this.notifyMatchRescheduledById({
+            matchId,
+            previousStartTime: match.startTime,
+          }).catch(() => undefined);
+        }
         await this.recomputeTable(tournamentId);
         await this.syncTournamentLifecycleAfterMatches(tournamentId);
-        return updated;
+        return this.withScheduleWarnings(updated);
       }
       if (
         data.startTime === undefined &&
         Object.keys(schedulePatch).length === 0 &&
-        Object.keys(stadiumPatch).length === 0
+        Object.keys(stadiumPatch).length === 0 &&
+        Object.keys(visPatch).length === 0
       ) {
-        return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
+        return this.withScheduleWarnings(
+          await this.prisma.match.findUniqueOrThrow({ where: { id: matchId } }),
+        );
       }
-      return this.prisma.match.update({
+      const updated = await this.prisma.match.update({
         where: { id: matchId },
         data: {
           ...(data.startTime !== undefined
@@ -808,8 +1306,16 @@ export class MatchesService {
             : {}),
           ...schedulePatch,
           ...stadiumPatch,
+          ...visPatch,
         },
       });
+      if (startTimeChanged) {
+        void this.notifyMatchRescheduledById({
+          matchId,
+          previousStartTime: match.startTime,
+        }).catch(() => undefined);
+      }
+      return this.withScheduleWarnings(updated);
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -826,6 +1332,7 @@ export class MatchesService {
           ...(data.groupId !== undefined ? { groupId: data.groupId } : {}),
           ...schedulePatch,
           ...stadiumPatch,
+          ...visPatch,
           homeTeamId: nextHome,
           awayTeamId: nextAway,
           homeScore: null,
@@ -837,7 +1344,422 @@ export class MatchesService {
 
     await this.recomputeTable(tournamentId);
     await this.syncTournamentLifecycleAfterMatches(tournamentId);
-    return this.prisma.match.findUniqueOrThrow({ where: { id: matchId } });
+    if (startTimeChanged) {
+      void this.notifyMatchRescheduledById({
+        matchId,
+        previousStartTime: match.startTime,
+      }).catch(() => undefined);
+    }
+    return this.withScheduleWarnings(
+      await this.prisma.match.findUniqueOrThrow({ where: { id: matchId } }),
+    );
+  }
+
+  async bulkUpdateTournamentMatches(
+    tournamentId: string,
+    actorRole: UserRole,
+    dto: BulkUpdateMatchesDto,
+  ) {
+    if (!PROTOCOL_ROLES.includes(actorRole)) {
+      throwInsufficientRole();
+    }
+
+    const uniqueIds = Array.from(
+      new Set(
+        (dto.matchIds ?? []).map((id) => String(id).trim()).filter(Boolean),
+      ),
+    );
+    if (!uniqueIds.length) {
+      throw new BadRequestException('Не выбраны матчи для массового изменения');
+    }
+    const hasScheduleBulkPatch =
+      dto.shiftMinutes !== undefined ||
+      dto.stadiumId !== undefined ||
+      dto.scheduleChangeReasonId !== undefined ||
+      dto.scheduleChangeNote !== undefined;
+    const hasAnyPatch =
+      hasScheduleBulkPatch || dto.publishedOnPublic !== undefined;
+    if (!hasAnyPatch) {
+      throw new BadRequestException('Не указаны поля для массового изменения');
+    }
+
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { id: true, tenantId: true },
+    });
+    if (!tournament) throwTournamentNotFound();
+
+    const rows = await this.prisma.match.findMany({
+      where: { tournamentId, id: { in: uniqueIds } },
+      select: { id: true, status: true, startTime: true, tenantId: true },
+    });
+    if (rows.length !== uniqueIds.length) {
+      throw new NotFoundException(
+        'Один или несколько матчей не найдены в этом турнире',
+      );
+    }
+
+    const visibilityOnly =
+      dto.publishedOnPublic !== undefined && !hasScheduleBulkPatch;
+    if (visibilityOnly) {
+      const res = await this.prisma.match.updateMany({
+        where: { tournamentId, id: { in: uniqueIds } },
+        data: { publishedOnPublic: dto.publishedOnPublic },
+      });
+      return {
+        success: true,
+        updatedCount: res.count,
+        ids: uniqueIds,
+      };
+    }
+
+    const locked = rows.filter((m) => MUTATION_LOCKED_STATUSES.has(m.status));
+    if (locked.length) {
+      throw new BadRequestException(
+        `Нельзя изменить ${locked.length} матч(ей): есть завершенные/сыгранные/отмененные`,
+      );
+    }
+
+    if (dto.scheduleChangeReasonId?.trim()) {
+      await this.validateScheduleReason(
+        tournament.tenantId,
+        dto.scheduleChangeReasonId.trim(),
+        'POSTPONE',
+      );
+    }
+
+    let normalizedStadiumId: string | null | undefined = undefined;
+    if (dto.stadiumId !== undefined) {
+      normalizedStadiumId =
+        dto.stadiumId && String(dto.stadiumId).trim()
+          ? String(dto.stadiumId).trim()
+          : null;
+      await this.assertMatchStadiumAllowed(
+        this.prisma,
+        tournament.tenantId,
+        tournamentId,
+        normalizedStadiumId,
+      );
+    }
+
+    const shift = Number(dto.shiftMinutes ?? 0);
+    const updatedIds: string[] = [];
+    await this.prisma.$transaction(async (tx) => {
+      for (const row of rows) {
+        const patch: Prisma.MatchUncheckedUpdateInput = {};
+        if (dto.shiftMinutes !== undefined && shift !== 0) {
+          patch.startTime = new Date(row.startTime.getTime() + shift * 60_000);
+        }
+        if (dto.scheduleChangeReasonId !== undefined) {
+          patch.scheduleChangeReasonId = dto.scheduleChangeReasonId || null;
+        }
+        if (dto.scheduleChangeNote !== undefined) {
+          patch.scheduleChangeNote = dto.scheduleChangeNote?.trim()
+            ? dto.scheduleChangeNote.trim()
+            : null;
+        }
+        if (dto.stadiumId !== undefined) {
+          patch.stadiumId = normalizedStadiumId;
+        }
+        if (dto.publishedOnPublic !== undefined) {
+          patch.publishedOnPublic = dto.publishedOnPublic;
+        }
+        if (Object.keys(patch).length === 0) continue;
+        await tx.match.update({ where: { id: row.id }, data: patch });
+        updatedIds.push(row.id);
+      }
+    });
+
+    if (dto.shiftMinutes !== undefined && shift !== 0) {
+      for (const row of rows) {
+        void this.notifyMatchRescheduledById({
+          matchId: row.id,
+          previousStartTime: row.startTime,
+        }).catch(() => undefined);
+      }
+    }
+
+    return { success: true, updatedCount: updatedIds.length, ids: updatedIds };
+  }
+
+  async quickUpdateTournamentMatchStatus(
+    tournamentId: string,
+    matchId: string,
+    actorRole: UserRole,
+    status: MatchStatus,
+  ) {
+    if (
+      status !== MatchStatus.SCHEDULED &&
+      status !== MatchStatus.LIVE &&
+      status !== MatchStatus.FINISHED
+    ) {
+      throw new BadRequestException(
+        'Разрешены только статусы SCHEDULED, LIVE, FINISHED',
+      );
+    }
+    if (!PROTOCOL_ROLES.includes(actorRole)) {
+      throwInsufficientRole();
+    }
+    const match = await this.prisma.match.findFirst({
+      where: { id: matchId, tournamentId },
+      select: { id: true, status: true },
+    });
+    if (!match) throw new NotFoundException('Match not found');
+    this.assertMatchMutable(match.status);
+    const updated = await this.prisma.match.update({
+      where: { id: matchId },
+      data: { status },
+    });
+    await this.syncTournamentLifecycleAfterMatches(tournamentId);
+    return updated;
+  }
+
+  async listMatchConflictSuggestions(
+    tournamentId: string,
+    matchId: string,
+    actorRole: UserRole,
+    query: ListMatchSuggestionsQueryDto,
+  ) {
+    if (!PROTOCOL_ROLES.includes(actorRole)) {
+      throwInsufficientRole();
+    }
+    const limit = Math.max(1, Math.min(10, Number(query.limit ?? 5)));
+    const target = await this.prisma.match.findFirst({
+      where: { id: matchId, tournamentId },
+      select: {
+        id: true,
+        tenantId: true,
+        tournamentId: true,
+        startTime: true,
+        stadiumId: true,
+        homeTeamId: true,
+        awayTeamId: true,
+        status: true,
+      },
+    });
+    if (!target) throw new NotFoundException('Match not found');
+    this.assertMatchMutable(target.status);
+
+    const durationMinutes = await this.resolveMatchDurationMinutes(
+      target.tournamentId,
+    );
+    const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
+    const baseTs = target.startTime.getTime();
+    /** Сдвиги времени на той же площадке: короткие пресеты + сетка до 6 ч + реже до 24 ч. */
+    const shiftOffsetsMin = (() => {
+      const out = new Set<number>();
+      for (const m of [15, 30, 45, 60, 90, 120, 180, 240, 360]) out.add(m);
+      for (let m = 15; m <= 6 * 60; m += 15) out.add(m);
+      for (let m = 6 * 60 + 30; m <= 12 * 60; m += 30) out.add(m);
+      for (let m = 13 * 60; m <= 23 * 60; m += 60) out.add(m);
+      out.add(24 * 60);
+      return [...out].sort((a, b) => a - b);
+    })();
+
+    const [tourLinks, tournament, tenantStadiums] = await Promise.all([
+      this.prisma.tournamentStadium.findMany({
+        where: { tournamentId },
+        select: { stadiumId: true },
+      }),
+      this.prisma.tournament.findUnique({
+        where: { id: tournamentId },
+        select: { stadiumId: true },
+      }),
+      this.prisma.stadium.findMany({
+        where: { tenantId: target.tenantId },
+        select: { id: true, name: true },
+      }),
+    ]);
+    const allowedStadiumIds = new Set<string>();
+    for (const row of tourLinks) allowedStadiumIds.add(row.stadiumId);
+    if (tournament?.stadiumId) allowedStadiumIds.add(tournament.stadiumId);
+    const stadiumPool =
+      allowedStadiumIds.size > 0
+        ? tenantStadiums.filter((s) => allowedStadiumIds.has(s.id))
+        : tenantStadiums;
+    const stadiumNameById = new Map(stadiumPool.map((s) => [s.id, s.name]));
+
+    type Candidate = {
+      key: string;
+      kind: 'shift' | 'next_day' | 'alt_stadium';
+      label: string;
+      startTime: Date;
+      stadiumId: string | null;
+    };
+    const candidatesRaw: Candidate[] = shiftOffsetsMin.map((m) => ({
+      key: `shift:${m}`,
+      kind: m >= 24 * 60 ? 'next_day' : 'shift',
+      label:
+        m >= 24 * 60
+          ? 'Следующий день'
+          : m >= 60 && m % 60 === 0
+            ? `+${m / 60} ч`
+            : `+${m} мин`,
+      startTime: new Date(baseTs + m * 60_000),
+      stadiumId: target.stadiumId,
+    }));
+    for (const st of stadiumPool) {
+      if (target.stadiumId && st.id === target.stadiumId) continue;
+      candidatesRaw.push({
+        key: `stadium:${st.id}`,
+        kind: 'alt_stadium',
+        label: `Площадка: ${st.name}`,
+        startTime: new Date(baseTs),
+        stadiumId: st.id,
+      });
+    }
+
+    const dedupeKey = (c: Candidate) =>
+      `${c.startTime.getTime()}|${c.stadiumId ?? ''}`;
+    const candidates: Candidate[] = [];
+    const bestByKey = new Map<string, Candidate>();
+    for (const c of candidatesRaw) {
+      const k = dedupeKey(c);
+      const prev = bestByKey.get(k);
+      if (!prev || c.label.length < prev.label.length) {
+        bestByKey.set(k, c);
+      }
+    }
+    for (const c of bestByKey.values()) candidates.push(c);
+
+    const minCandidateTs = Math.min(
+      ...candidates.map((c) => c.startTime.getTime()),
+    );
+    const maxCandidateTs = Math.max(
+      ...candidates.map((c) => c.startTime.getTime()),
+    );
+    const windowMin = new Date(minCandidateTs - durationMs);
+    const windowMax = new Date(maxCandidateTs + durationMs);
+    const others = await this.prisma.match.findMany({
+      where: {
+        tenantId: target.tenantId,
+        id: { not: target.id },
+        status: { in: [MatchStatus.SCHEDULED, MatchStatus.LIVE] },
+        startTime: { gte: windowMin, lte: windowMax },
+      },
+      select: {
+        id: true,
+        startTime: true,
+        stadiumId: true,
+        homeTeamId: true,
+        awayTeamId: true,
+        tournamentId: true,
+      },
+    });
+
+    const overlaps = (a0: number, a1: number, b0: number, b1: number) =>
+      a0 < b1 && b0 < a1;
+    /** Окно ±90 мин от начала слота: вес сильнее для ближних к центру слота матчей. */
+    const NEARBY_WINDOW_MS = 90 * 60 * 1000;
+    const ranked = candidates
+      .map((c) => {
+        const c0 = c.startTime.getTime();
+        const c1 = c0 + durationMs;
+        let teamConflicts = 0;
+        let stadiumConflicts = 0;
+        let crossTournamentConflicts = 0;
+        let nearbyCount = 0;
+        let nearbyLoadWeighted = 0;
+        for (const m of others) {
+          const m0 = m.startTime.getTime();
+          const m1 = m0 + durationMs;
+          const dist = Math.abs(m0 - c0);
+          if (dist <= NEARBY_WINDOW_MS) {
+            nearbyCount += 1;
+            nearbyLoadWeighted += 1 - dist / NEARBY_WINDOW_MS;
+          }
+          if (!overlaps(c0, c1, m0, m1)) continue;
+          const isTeamConflict =
+            m.homeTeamId === target.homeTeamId ||
+            m.awayTeamId === target.homeTeamId ||
+            m.homeTeamId === target.awayTeamId ||
+            m.awayTeamId === target.awayTeamId;
+          if (isTeamConflict) {
+            teamConflicts += 1;
+          } else if (
+            c.stadiumId &&
+            m.stadiumId &&
+            c.stadiumId === m.stadiumId
+          ) {
+            stadiumConflicts += 1;
+          }
+          if (m.tournamentId && m.tournamentId !== tournamentId) {
+            crossTournamentConflicts += 1;
+          }
+        }
+        const totalConflicts = teamConflicts + stadiumConflicts;
+        const score =
+          totalConflicts * 100 +
+          teamConflicts * 20 +
+          stadiumConflicts * 12 +
+          crossTournamentConflicts * 5 +
+          Math.round(nearbyLoadWeighted * 14);
+        const explain: string[] = [];
+        if (c.kind === 'alt_stadium') {
+          explain.push('Смена площадки при том же времени начала');
+        } else if (c.kind === 'next_day') {
+          explain.push('Старт на следующий календарный день от текущего времени');
+        } else {
+          explain.push('Сдвиг времени начала в пределах суток');
+        }
+        if (teamConflicts > 0) {
+          explain.push(`пересечения по командам: ${teamConflicts}`);
+        }
+        if (stadiumConflicts > 0) {
+          explain.push(`пересечения по площадке: ${stadiumConflicts}`);
+        }
+        if (crossTournamentConflicts > 0) {
+          explain.push(
+            `пересечения с другими турнирами: ${crossTournamentConflicts}`,
+          );
+        }
+        if (nearbyCount > 0) {
+          explain.push(
+            `матчей в окне ±90 мин: ${nearbyCount} (вес загрузки: ${nearbyLoadWeighted.toFixed(1)})`,
+          );
+        }
+        if (totalConflicts === 0) {
+          explain.push('нет пересечений по командам и площадке в этом слоте');
+        }
+        return {
+          id: c.key,
+          kind: c.kind,
+          label: c.label,
+          startTime: c.startTime,
+          stadiumId: c.stadiumId,
+          stadiumName: c.stadiumId
+            ? (stadiumNameById.get(c.stadiumId) ?? null)
+            : null,
+          conflicts: {
+            total: totalConflicts,
+            team: teamConflicts,
+            stadium: stadiumConflicts,
+            crossTournament: crossTournamentConflicts,
+            nearbyLoad: nearbyCount,
+            nearbyLoadWeighted,
+          },
+          explain,
+          score,
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.score - b.score || a.startTime.getTime() - b.startTime.getTime(),
+      )
+      .slice(0, limit);
+
+    return {
+      items: ranked.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        label: row.label,
+        startTime: row.startTime,
+        stadiumId: row.stadiumId,
+        stadiumName: row.stadiumName,
+        conflicts: row.conflicts,
+        explain: row.explain,
+      })),
+    };
   }
 
   async updateProtocol(
@@ -924,6 +1846,16 @@ export class MatchesService {
     }
 
     await this.syncTournamentLifecycleAfterMatches(tournamentId);
+    if (
+      match.status !== MatchStatus.PLAYED &&
+      match.status !== MatchStatus.FINISHED &&
+      match.status !== MatchStatus.CANCELED &&
+      (updated.status === MatchStatus.PLAYED ||
+        updated.status === MatchStatus.FINISHED ||
+        updated.status === MatchStatus.CANCELED)
+    ) {
+      void this.notifyProtocolPublishedById({ matchId }).catch(() => undefined);
+    }
     return updated;
   }
 
@@ -1100,7 +2032,7 @@ export class MatchesService {
       });
     }
 
-    return this.prisma.match.create({
+    const created = await this.prisma.match.create({
       data: {
         tenantId,
         tournamentId: null,
@@ -1121,6 +2053,7 @@ export class MatchesService {
         },
       },
     });
+    return this.withScheduleWarnings(created);
   }
 
   async listStandaloneMatches(
@@ -1182,7 +2115,31 @@ export class MatchesService {
       tenantId,
       tournamentId: { not: null },
     };
-    if (query.tournamentId) {
+
+    if (actorRole === UserRole.MODERATOR) {
+      const memberships = await this.prisma.tournamentMember.findMany({
+        where: {
+          userId: actorUserId,
+          role: TournamentMemberRole.MODERATOR,
+          tournament: { tenantId },
+        },
+        select: { tournamentId: true },
+      });
+      const allowedTournamentIds = [
+        ...new Set(memberships.map((m) => m.tournamentId).filter(Boolean)),
+      ] as string[];
+      if (!allowedTournamentIds.length) {
+        return { items: [], total: 0, page, pageSize };
+      }
+      if (query.tournamentId) {
+        if (!allowedTournamentIds.includes(query.tournamentId)) {
+          return { items: [], total: 0, page, pageSize };
+        }
+        where.tournamentId = query.tournamentId;
+      } else {
+        where.tournamentId = { in: allowedTournamentIds };
+      }
+    } else if (query.tournamentId) {
       where.tournamentId = query.tournamentId;
     }
     if (query.teamId) {
@@ -1442,22 +2399,26 @@ export class MatchesService {
         Object.keys(schedulePatch).length === 0 &&
         Object.keys(stadiumPatch).length === 0
       ) {
-        return this.prisma.match.findUniqueOrThrow({
-          where: { id: matchId },
-          include: MATCH_DETAIL_INCLUDE,
-        });
+        return this.withScheduleWarnings(
+          await this.prisma.match.findUniqueOrThrow({
+            where: { id: matchId },
+            include: MATCH_DETAIL_INCLUDE,
+          }),
+        );
       }
-      return this.prisma.match.update({
-        where: { id: matchId },
-        data: {
-          ...(data.startTime !== undefined
-            ? { startTime: data.startTime }
-            : {}),
-          ...schedulePatch,
-          ...stadiumPatch,
-        },
-        include: MATCH_DETAIL_INCLUDE,
-      });
+      return this.withScheduleWarnings(
+        await this.prisma.match.update({
+          where: { id: matchId },
+          data: {
+            ...(data.startTime !== undefined
+              ? { startTime: data.startTime }
+              : {}),
+            ...schedulePatch,
+            ...stadiumPatch,
+          },
+          include: MATCH_DETAIL_INCLUDE,
+        }),
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -1479,10 +2440,12 @@ export class MatchesService {
       });
     });
 
-    return this.prisma.match.findUniqueOrThrow({
-      where: { id: matchId },
-      include: MATCH_DETAIL_INCLUDE,
-    });
+    return this.withScheduleWarnings(
+      await this.prisma.match.findUniqueOrThrow({
+        where: { id: matchId },
+        include: MATCH_DETAIL_INCLUDE,
+      }),
+    );
   }
 
   async deleteStandaloneMatch(

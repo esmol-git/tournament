@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   MatchStage,
   PlayoffRound,
@@ -15,6 +16,7 @@ import {
   TournamentStatus,
   UserRole,
 } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'crypto';
 import {
   maxNewsPerTournament,
   maxTournamentsForPlan,
@@ -38,6 +40,7 @@ import { ReorderGalleryDto } from './dto/reorder-gallery.dto';
 import { CreateNewsTagDto } from './dto/create-news-tag.dto';
 import { UpdateNewsTagDto } from './dto/update-news-tag.dto';
 import { TournamentTemplatesService } from '../tournament-templates/tournament-templates.service';
+import { collectScheduleWarningsAfterCalendarGeneration } from '../matches/schedule-conflict.util';
 
 @Injectable()
 export class TournamentsService {
@@ -45,7 +48,180 @@ export class TournamentsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly tournamentTemplates: TournamentTemplatesService,
+    private readonly config: ConfigService,
   ) {}
+
+  private getCalendarFeedSigningSecret(): string {
+    const secret = this.config.get<string>('JWT_SECRET')?.trim();
+    if (!secret) throw new Error('JWT_SECRET is not configured');
+    return secret;
+  }
+
+  private b64urlEncodeUtf8(value: string): string {
+    return Buffer.from(value, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
+  private b64urlDecodeUtf8(value: string): string {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = `${normalized}${'='.repeat((4 - (normalized.length % 4)) % 4)}`;
+    return Buffer.from(padded, 'base64').toString('utf8');
+  }
+
+  private signCalendarFeedPayload(payloadRaw: string): string {
+    return createHmac('sha256', this.getCalendarFeedSigningSecret())
+      .update(payloadRaw)
+      .digest('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+  }
+
+  private verifyCalendarFeedToken(
+    token: string,
+    tournamentId: string,
+  ): boolean {
+    const raw = String(token ?? '').trim();
+    if (!raw) return false;
+    const [payloadPart, signaturePart] = raw.split('.');
+    if (!payloadPart || !signaturePart) return false;
+    let payloadRaw: string;
+    try {
+      payloadRaw = this.b64urlDecodeUtf8(payloadPart);
+    } catch {
+      return false;
+    }
+    const expectedSig = this.signCalendarFeedPayload(payloadRaw);
+    try {
+      const a = Buffer.from(signaturePart);
+      const b = Buffer.from(expectedSig);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+    } catch {
+      return false;
+    }
+    const [tid, expRaw] = payloadRaw.split(':');
+    if (!tid || !expRaw) return false;
+    if (tid !== tournamentId) return false;
+    const exp = Number(expRaw);
+    if (!Number.isFinite(exp)) return false;
+    return Date.now() <= exp;
+  }
+
+  createTournamentCalendarFeedToken(
+    tournamentId: string,
+    ttlMs = 180 * 24 * 60 * 60 * 1000,
+  ) {
+    const exp = Date.now() + Math.max(60_000, ttlMs);
+    const payloadRaw = `${tournamentId}:${exp}`;
+    const payloadPart = this.b64urlEncodeUtf8(payloadRaw);
+    const signaturePart = this.signCalendarFeedPayload(payloadRaw);
+    return {
+      token: `${payloadPart}.${signaturePart}`,
+      expiresAt: new Date(exp),
+    };
+  }
+
+  private icsEscape(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/\r\n/g, '\\n')
+      .replace(/\n/g, '\\n')
+      .replace(/,/g, '\\,')
+      .replace(/;/g, '\\;');
+  }
+
+  private toIcsUtcDate(date: Date): string {
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    return (
+      `${date.getUTCFullYear()}${pad2(date.getUTCMonth() + 1)}${pad2(date.getUTCDate())}` +
+      `T${pad2(date.getUTCHours())}${pad2(date.getUTCMinutes())}${pad2(date.getUTCSeconds())}Z`
+    );
+  }
+
+  private foldIcsLine(line: string): string {
+    const max = 73;
+    if (line.length <= max) return line;
+    const parts: string[] = [];
+    let cursor = line;
+    while (cursor.length > max) {
+      parts.push(cursor.slice(0, max));
+      cursor = cursor.slice(max);
+    }
+    if (cursor.length) parts.push(cursor);
+    return parts.join('\r\n ');
+  }
+
+  private buildTournamentCalendarIcs(params: {
+    tournamentId: string;
+    tournamentName: string;
+    matches: Array<{
+      id: string;
+      startTime: Date;
+      homeTeamName: string;
+      awayTeamName: string;
+      homeScore?: number | null;
+      awayScore?: number | null;
+      stadiumName?: string | null;
+      stadiumAddress?: string | null;
+      status: MatchStatus;
+    }>;
+    durationMinutes: number;
+  }): string {
+    const now = this.toIcsUtcDate(new Date());
+    const lines: string[] = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Tournament Platform//Admin Calendar//RU',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      `X-WR-CALNAME:${this.icsEscape(params.tournamentName)}`,
+    ];
+
+    const eventDurationMs = Math.max(1, params.durationMinutes) * 60 * 1000;
+
+    for (const match of params.matches) {
+      const start = new Date(match.startTime);
+      const end = new Date(start.getTime() + eventDurationMs);
+      const hasFinalScore =
+        (match.status === MatchStatus.PLAYED ||
+          match.status === MatchStatus.FINISHED) &&
+        match.homeScore !== null &&
+        match.homeScore !== undefined &&
+        match.awayScore !== null &&
+        match.awayScore !== undefined;
+      const title = hasFinalScore
+        ? `${match.homeTeamName} ${match.homeScore}:${match.awayScore} ${match.awayTeamName}`
+        : `${match.homeTeamName} - ${match.awayTeamName}`;
+      const locationParts = [
+        match.stadiumName ?? '',
+        match.stadiumAddress ?? '',
+      ]
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const description = `Турнир: ${params.tournamentName}`;
+
+      lines.push('BEGIN:VEVENT');
+      lines.push(`UID:match-${match.id}@tournament-platform`);
+      lines.push(`DTSTAMP:${now}`);
+      lines.push(`DTSTART:${this.toIcsUtcDate(start)}`);
+      lines.push(`DTEND:${this.toIcsUtcDate(end)}`);
+      lines.push(`SUMMARY:${this.icsEscape(title)}`);
+      lines.push(`DESCRIPTION:${this.icsEscape(description)}`);
+      if (locationParts.length) {
+        lines.push(`LOCATION:${this.icsEscape(locationParts.join(', '))}`);
+      }
+      if (match.status === MatchStatus.CANCELED) {
+        lines.push('STATUS:CANCELLED');
+      }
+      lines.push('END:VEVENT');
+    }
+
+    lines.push('END:VCALENDAR');
+    return `${lines.map((l) => this.foldIcsLine(l)).join('\r\n')}\r\n`;
+  }
 
   private async resolveMergedCreateTournamentDto(
     tenantId: string,
@@ -940,7 +1116,9 @@ export class TournamentsService {
       tenantSlug,
       tournamentId,
     );
-    const detail = await this.getById(tournamentId, filters);
+    const detail = await this.getById(tournamentId, filters, {
+      onlyPublicMatches: true,
+    });
     if (!detail) throwTournamentNotFound();
     const { members, ...rest } = detail as typeof detail & {
       members?: unknown;
@@ -978,7 +1156,9 @@ export class TournamentsService {
     limit?: number,
   ) {
     await this.assertPublicTournament(tenantSlug, tournamentId);
-    return this.getTable(tournamentId, groupId, offset, limit);
+    return this.getTable(tournamentId, groupId, offset, limit, {
+      onlyPublicMatches: true,
+    });
   }
 
   async getPublicTableCached(
@@ -1233,27 +1413,32 @@ export class TournamentsService {
     ).trim();
   }
 
-  async listPublicOrganizationPlayers(tenantSlug: string) {
-    const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
-    const tournaments = await this.prisma.tournament.findMany({
-      where: {
-        tenantId: tenant.id,
-        published: true,
-        status: { in: this.publicTournamentStatuses },
-      },
-      select: { id: true, name: true },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
-    if (!tournaments.length) {
-      return {
-        tournaments: [] as Array<{ id: string; name: string }>,
-        rows: [],
-      };
+  /** Агрегация голов/передач/карточек по протоколам матчей (PLAYED/FINISHED) для списка турниров. */
+  private async aggregatePlayerStatsRowsForTournaments(
+    tournamentIds: string[],
+    tournamentNameById: Map<string, string>,
+  ): Promise<
+    Array<{
+      tournamentId: string;
+      tournamentName: string;
+      playerId: string;
+      firstName: string;
+      lastName: string;
+      birthDate: Date | null;
+      teamId: string | null;
+      teamName: string | null;
+      teamLogoUrl: string | null;
+      playerPhotoUrl: string | null;
+      goals: number;
+      assists: number;
+      yellowCards: number;
+      redCards: number;
+    }>
+  > {
+    if (!tournamentIds.length) {
+      return [];
     }
 
-    const tournamentIds = tournaments.map((t) => t.id);
-    const tournamentNameById = new Map(tournaments.map((t) => [t.id, t.name]));
     const tournamentTeams = await this.prisma.tournamentTeam.findMany({
       where: { tournamentId: { in: tournamentIds } },
       select: {
@@ -1295,6 +1480,27 @@ export class TournamentsService {
       arr.push(tp);
       playersByTeamId.set(tp.teamId, arr);
     }
+
+    const allTeamPlayers = await this.prisma.teamPlayer.findMany({
+      where: { teamId: { in: teamIds } },
+      select: {
+        teamId: true,
+        playerId: true,
+        player: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            birthDate: true,
+            photoUrl: true,
+            position: true,
+          },
+        },
+      },
+    });
+    const teamPlayerByTeamAndPlayerId = new Map(
+      allTeamPlayers.map((tp) => [`${tp.teamId}:${tp.playerId}`, tp]),
+    );
 
     type PublicPlayerStatsRow = {
       tournamentId: string;
@@ -1339,6 +1545,53 @@ export class TournamentsService {
       }
     }
 
+    const ttByTournamentAndTeam = new Map(
+      tournamentTeams.map((tt) => [`${tt.tournamentId}:${tt.teamId}`, tt]),
+    );
+
+    const ensureStatsRowForPlayer = (
+      tournamentId: string,
+      playerId: string,
+      teamId: string,
+    ) => {
+      const key = `${tournamentId}:${playerId}`;
+      if (rowByTournamentAndPlayer.has(key)) return;
+      const tt = ttByTournamentAndTeam.get(`${tournamentId}:${teamId}`);
+      if (!tt) return;
+      const tp = teamPlayerByTeamAndPlayerId.get(`${teamId}:${playerId}`);
+      if (!tp) return;
+      const tournamentName = tournamentNameById.get(tournamentId) ?? 'Турнир';
+      rowByTournamentAndPlayer.set(key, {
+        tournamentId,
+        tournamentName,
+        playerId: tp.player.id,
+        firstName: tp.player.firstName,
+        lastName: tp.player.lastName,
+        birthDate: tp.player.birthDate,
+        teamId: tt.team.id,
+        teamName: tt.team.name,
+        teamLogoUrl: tt.team.logoUrl,
+        playerPhotoUrl: tp.player.photoUrl,
+        goals: 0,
+        assists: 0,
+        yellowCards: 0,
+        redCards: 0,
+      });
+    };
+
+    const resolveTeamIdForPlayer = (
+      match: { homeTeamId: string; awayTeamId: string },
+      playerId: string,
+    ): string | null => {
+      if (teamPlayerByTeamAndPlayerId.has(`${match.homeTeamId}:${playerId}`)) {
+        return match.homeTeamId;
+      }
+      if (teamPlayerByTeamAndPlayerId.has(`${match.awayTeamId}:${playerId}`)) {
+        return match.awayTeamId;
+      }
+      return null;
+    };
+
     const matches = await this.prisma.match.findMany({
       where: {
         tournamentId: { in: tournamentIds },
@@ -1346,6 +1599,8 @@ export class TournamentsService {
       },
       select: {
         tournamentId: true,
+        homeTeamId: true,
+        awayTeamId: true,
         events: {
           select: {
             type: true,
@@ -1356,6 +1611,35 @@ export class TournamentsService {
         },
       },
     });
+
+    const extraPlayerIdsFromPayload = (payload: Prisma.JsonValue | null) => {
+      const ids: string[] = [];
+      const data =
+        payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>)
+          : {};
+      const playerInId = String(data.playerInId ?? '').trim();
+      if (playerInId) ids.push(playerInId);
+      return ids;
+    };
+
+    for (const match of matches) {
+      const tid = match.tournamentId;
+      if (!tid) continue;
+      for (const event of match.events) {
+        const ids = new Set<string>();
+        if (event.playerId) ids.add(event.playerId);
+        for (const x of extraPlayerIdsFromPayload(event.payload)) ids.add(x);
+        if (event.type === 'GOAL') {
+          const assistId = this.parsePublicAssistPlayerId(event.payload);
+          if (assistId) ids.add(assistId);
+        }
+        for (const pid of ids) {
+          const teamId = resolveTeamIdForPlayer(match, pid);
+          if (teamId) ensureStatsRowForPlayer(tid, pid, teamId);
+        }
+      }
+    }
 
     for (const match of matches) {
       for (const event of match.events) {
@@ -1386,10 +1670,51 @@ export class TournamentsService {
       }
     }
 
+    return Array.from(rowByTournamentAndPlayer.values());
+  }
+
+  async listPublicOrganizationPlayers(tenantSlug: string) {
+    const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
+    const tournaments = await this.prisma.tournament.findMany({
+      where: {
+        tenantId: tenant.id,
+        published: true,
+        status: { in: this.publicTournamentStatuses },
+      },
+      select: { id: true, name: true },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    if (!tournaments.length) {
+      return {
+        tournaments: [] as Array<{ id: string; name: string }>,
+        rows: [],
+      };
+    }
+
+    const tournamentIds = tournaments.map((t) => t.id);
+    const tournamentNameById = new Map(tournaments.map((t) => [t.id, t.name]));
+    const rows = await this.aggregatePlayerStatsRowsForTournaments(
+      tournamentIds,
+      tournamentNameById,
+    );
     return {
       tournaments: tournaments.map((t) => ({ id: t.id, name: t.name })),
-      rows: Array.from(rowByTournamentAndPlayer.values()),
+      rows,
     };
+  }
+
+  async getTournamentPlayerStats(tournamentId: string) {
+    const t = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { id: true, name: true },
+    });
+    if (!t) throwTournamentNotFound();
+    const rows = await this.aggregatePlayerStatsRowsForTournaments(
+      [t.id],
+      new Map([[t.id, t.name]]),
+    );
+    return rows;
   }
 
   async listPublicOrganizationPlayersCached(tenantSlug: string) {
@@ -2401,7 +2726,62 @@ export class TournamentsService {
     return tournament;
   }
 
-  async getById(id: string, filters?: MatchesFilterQueryDto) {
+  /**
+   * Добавляет к событиям матча объекты игроков (основной, ассист, выход при замене) для протокола в UI.
+   */
+  private async attachPlayersToMatchEvents(matches: unknown[]): Promise<unknown[]> {
+    if (!Array.isArray(matches) || matches.length === 0) return matches;
+    const ids = new Set<string>();
+    for (const m of matches as Array<{
+      events?: Array<{ playerId?: string | null; payload?: unknown }>;
+    }>) {
+      for (const ev of m.events ?? []) {
+        if (ev.playerId) ids.add(String(ev.playerId));
+        const pl = ev.payload;
+        if (pl && typeof pl === 'object' && !Array.isArray(pl)) {
+          const p = pl as Record<string, unknown>;
+          const a = String(p.assistId ?? p.assistPlayerId ?? '').trim();
+          if (a) ids.add(a);
+          const pi = String(p.playerInId ?? '').trim();
+          if (pi) ids.add(pi);
+        }
+      }
+    }
+    if (ids.size === 0) return matches;
+
+    const players = await this.prisma.player.findMany({
+      where: { id: { in: [...ids] } },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    const byId = new Map(players.map((p) => [p.id, p]));
+
+    return (matches as Array<{ events: Array<Record<string, unknown>> }>).map((m) => ({
+      ...m,
+      events: (m.events ?? []).map((ev) => {
+        const pl = ev.payload;
+        let assistId = '';
+        let playerInId = '';
+        if (pl && typeof pl === 'object' && !Array.isArray(pl)) {
+          const p = pl as Record<string, unknown>;
+          assistId = String(p.assistId ?? p.assistPlayerId ?? '').trim();
+          playerInId = String(p.playerInId ?? '').trim();
+        }
+        const pid = ev.playerId ? String(ev.playerId) : '';
+        return {
+          ...ev,
+          player: pid ? byId.get(pid) ?? null : null,
+          assistPlayer: assistId ? byId.get(assistId) ?? null : null,
+          playerIn: playerInId ? byId.get(playerInId) ?? null : null,
+        };
+      }),
+    }));
+  }
+
+  async getById(
+    id: string,
+    filters?: MatchesFilterQueryDto,
+    options?: { onlyPublicMatches?: boolean },
+  ) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id },
       include: { groups: { orderBy: { sortOrder: 'asc' } } },
@@ -2511,7 +2891,10 @@ export class TournamentsService {
     // Stable match numbering independent of filters.
     // Order rule matches existing frontend behavior: by startTime, then by id.
     const allMatchesForNumbering = await this.prisma.match.findMany({
-      where: { tournamentId: id },
+      where: {
+        tournamentId: id,
+        ...(options?.onlyPublicMatches ? { publishedOnPublic: true } : {}),
+      },
       select: { id: true, startTime: true },
       orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
     });
@@ -2574,6 +2957,9 @@ export class TournamentsService {
         ageGroup: {
           select: { id: true, name: true, shortLabel: true, code: true },
         },
+        launchChecklistCompletedBy: {
+          select: { id: true, name: true, lastName: true, username: true },
+        },
         tournamentReferees: {
           orderBy: { sortOrder: 'asc' },
           include: {
@@ -2594,6 +2980,7 @@ export class TournamentsService {
 
     const matchWhere = {
       tournamentId: id,
+      ...(options?.onlyPublicMatches ? { publishedOnPublic: true } : {}),
       ...(dateFrom || dateTo
         ? {
             startTime: {
@@ -2708,9 +3095,13 @@ export class TournamentsService {
       }
     }
 
+    const matchesWithPlayers = (await this.attachPlayersToMatchEvents(
+      filteredMatches as unknown[],
+    )) as typeof filteredMatches;
+
     return {
       ...base,
-      matches: filteredMatches,
+      matches: matchesWithPlayers,
       matchNumberById,
       matchesTotal,
       matchesOffset: matchesLimit ? matchesOffset : 0,
@@ -2723,6 +3114,32 @@ export class TournamentsService {
         championTeamName,
       },
     };
+  }
+
+  async updateLaunchChecklist(id: string, completed: boolean, userId: string) {
+    const existing = await this.prisma.tournament.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) throwTournamentNotFound();
+    return this.prisma.tournament.update({
+      where: { id },
+      data: completed
+        ? {
+            launchChecklistCompletedAt: new Date(),
+            launchChecklistCompletedByUserId: userId,
+          }
+        : {
+            launchChecklistCompletedAt: null,
+            launchChecklistCompletedByUserId: null,
+          },
+      select: {
+        launchChecklistCompletedAt: true,
+        launchChecklistCompletedBy: {
+          select: { id: true, name: true, lastName: true, username: true },
+        },
+      },
+    });
   }
 
   async update(id: string, dto: UpdateTournamentDto) {
@@ -2895,6 +3312,14 @@ export class TournamentsService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const playedMatchesCount = await tx.match.count({
+        where: {
+          tournamentId: id,
+          status: { in: [MatchStatus.PLAYED, MatchStatus.FINISHED] },
+        },
+      });
+      const lockAssignmentsRemoval = playedMatchesCount > 0;
+
       let stadiumIdForUpdate: string | null | undefined = undefined;
       let stadiumLinksToReplace:
         | { stadiumId: string; sortOrder: number }[]
@@ -2903,6 +3328,22 @@ export class TournamentsService {
       if (dto.stadiumIds !== undefined) {
         const ordered = this.dedupeOrderedStadiumIds(dto.stadiumIds);
         await this.assertStadiumIdsBelongToTenant(tx, tenantId, ordered);
+        if (lockAssignmentsRemoval) {
+          const existing = await tx.tournamentStadium.findMany({
+            where: { tournamentId: id },
+            select: { stadiumId: true },
+          });
+          const existingSet = new Set(existing.map((x) => x.stadiumId));
+          const nextSet = new Set(ordered);
+          const missingUsed = Array.from(existingSet).filter(
+            (sid) => !nextSet.has(sid),
+          );
+          if (missingUsed.length) {
+            throw new BadRequestException(
+              'После ввода результатов можно добавлять площадки, но нельзя удалять уже назначенные',
+            );
+          }
+        }
         stadiumIdForUpdate = ordered[0] ?? null;
         stadiumLinksToReplace = ordered.map((stadiumId, sortOrder) => ({
           stadiumId,
@@ -3044,6 +3485,22 @@ export class TournamentsService {
       }
 
       if (dto.refereeIds !== undefined) {
+        if (lockAssignmentsRemoval) {
+          const existingRefs = await tx.tournamentReferee.findMany({
+            where: { tournamentId: id },
+            select: { refereeId: true },
+          });
+          const existingSet = new Set(existingRefs.map((x) => x.refereeId));
+          const nextSet = new Set(dto.refereeIds);
+          const missingAssigned = Array.from(existingSet).filter(
+            (rid) => !nextSet.has(rid),
+          );
+          if (missingAssigned.length) {
+            throw new BadRequestException(
+              'После ввода результатов можно добавлять судей, но нельзя удалять уже назначенных',
+            );
+          }
+        }
         await tx.tournamentReferee.deleteMany({ where: { tournamentId: id } });
         if (dto.refereeIds.length) {
           const refs = await tx.referee.findMany({
@@ -3174,6 +3631,7 @@ export class TournamentsService {
     groupId?: string,
     offset?: number,
     limit?: number,
+    opts?: { onlyPublicMatches?: boolean },
   ) {
     const safeOffset = Math.max(0, Number(offset ?? 0) || 0);
     const safeLimitRaw = Number(limit);
@@ -3215,6 +3673,7 @@ export class TournamentsService {
       const groupMatches = await this.prisma.match.findMany({
         where: {
           tournamentId,
+          ...(opts?.onlyPublicMatches ? { publishedOnPublic: true } : {}),
           stage: MatchStage.GROUP,
           OR: [
             { groupId },
@@ -3557,6 +4016,73 @@ export class TournamentsService {
     });
 
     return { deleted };
+  }
+
+  async exportTournamentCalendarIcs(
+    tournamentId: string,
+    opts?: { onlyPublicMatches?: boolean },
+  ) {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: {
+        id: true,
+        name: true,
+        matchDurationMinutes: true,
+      },
+    });
+
+    if (!tournament) throw new BadRequestException('Tournament not found');
+
+    const matches = await this.prisma.match.findMany({
+      where: {
+        tournamentId,
+        ...(opts?.onlyPublicMatches ? { publishedOnPublic: true } : {}),
+      },
+      orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        startTime: true,
+        status: true,
+        homeScore: true,
+        awayScore: true,
+        homeTeam: { select: { name: true } },
+        awayTeam: { select: { name: true } },
+        stadium: {
+          select: { name: true, address: true },
+        },
+      },
+    });
+
+    return this.buildTournamentCalendarIcs({
+      tournamentId: tournament.id,
+      tournamentName: tournament.name,
+      matches: matches.map((m) => ({
+        id: m.id,
+        startTime: m.startTime,
+        homeTeamName: m.homeTeam.name,
+        awayTeamName: m.awayTeam.name,
+        homeScore: m.homeScore,
+        awayScore: m.awayScore,
+        stadiumName: m.stadium?.name,
+        stadiumAddress: m.stadium?.address,
+        status: m.status,
+      })),
+      durationMinutes: tournament.matchDurationMinutes ?? 50,
+    });
+  }
+
+  async exportPublicTournamentCalendarIcs(
+    tenantSlug: string,
+    tournamentId: string,
+    token: string,
+  ) {
+    const ok = this.verifyCalendarFeedToken(token, tournamentId);
+    if (!ok)
+      throw new ForbiddenException('Invalid or expired calendar feed token');
+    await this.assertPublicTournament(tenantSlug, tournamentId);
+    return this.exportTournamentCalendarIcs(tournamentId, {
+      onlyPublicMatches: true,
+    });
   }
 
   private computeStandings(
@@ -5481,7 +6007,14 @@ export class TournamentsService {
     });
 
     await this.syncTournamentLifecycleStatus(tournamentId);
-    return calendarTxResult;
+    const scheduleWarnings =
+      await collectScheduleWarningsAfterCalendarGeneration(
+        this.prisma,
+        tournamentId,
+        tournament.tenantId,
+        matchDurationMinutes,
+      );
+    return { ...calendarTxResult, scheduleWarnings };
   }
 
   async recomputeTable(tournamentId: string) {

@@ -1044,6 +1044,7 @@ onBeforeUnmount(() => {
                 v-else
                 class="public-table-wrap"
               >
+                <div class="public-table-wrap__scroll">
                 <table class="public-table public-stagger-tbody">
                   <thead>
                     <tr>
@@ -1089,6 +1090,7 @@ onBeforeUnmount(() => {
                     </tr>
                   </tbody>
                 </table>
+                </div>
               </div>
             </div>
           </template>
@@ -1099,7 +1101,8 @@ onBeforeUnmount(() => {
             >
               Таблица пока пуста. Матчи еще не сыграны.
             </div>
-            <table v-else class="public-table public-stagger-tbody">
+            <div v-else class="public-table-wrap__scroll">
+            <table class="public-table public-stagger-tbody">
               <thead>
                 <tr>
                   <th class="text-center" style="width: 3rem">#</th>
@@ -1144,6 +1147,7 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+            </div>
             <div
               v-if="canLoadMoreTableRows || tableLoadingMore"
               ref="tableLoadMoreSentinel"

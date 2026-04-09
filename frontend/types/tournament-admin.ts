@@ -12,6 +12,13 @@ export interface TournamentDetails {
   status: string
   /** Показ на публичном сайте (независимо от статуса жизненного цикла). */
   published?: boolean
+  launchChecklistCompletedAt?: string | null
+  launchChecklistCompletedBy?: {
+    id: string
+    name: string
+    lastName?: string | null
+    username?: string | null
+  } | null
   startsAt?: string | null
   endsAt?: string | null
   intervalDays: number
@@ -123,6 +130,8 @@ export interface TournamentDetails {
       scope: string
     } | null
     stadiumId?: string | null
+    /** Показывать на публичном сайте и в публичном ICS (по умолчанию true). */
+    publishedOnPublic?: boolean
     stadium?: {
       id: string
       name: string

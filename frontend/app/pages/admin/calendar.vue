@@ -18,8 +18,10 @@ import {
   statusLabel,
 } from '~/utils/tournamentAdminUi'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { toastScheduleWarnings } from '~/utils/scheduleWarningsToast'
 import { toastMatchScheduleCreateApiError } from '~/utils/matchCreateToast'
 import { displayTeamNameForUi } from '~/utils/teamDisplayName'
+import { resolveTournamentCalendarStripeColor } from '~/utils/tournamentCalendarColor'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
 
@@ -174,9 +176,9 @@ function defaultColor(locked: boolean, source: 'standalone' | 'tournament') {
 }
 
 function tournamentMatchStripeColor(m: TenantTournamentMatchRow) {
-  const tc = m.tournament?.calendarColor?.trim()
-  if (tc && /^#[0-9A-Fa-f]{6}$/.test(tc)) return tc
-  return null
+  const tid = m.tournament?.id
+  if (!tid) return defaultColor(false, 'tournament')
+  return resolveTournamentCalendarStripeColor(m.tournament?.calendarColor, tid)
 }
 
 function defaultDurationMin() {
@@ -472,15 +474,23 @@ async function saveEventEdit() {
       const newStartIso = newStartDate.toISOString()
       if (newStartIso !== model.startIso) {
         if (model.source === 'standalone') {
-          await authFetch(apiUrl(`/tenants/${tenantId.value}/standalone-matches/${model.matchId}`), {
-            method: 'PATCH',
-            body: { startTime: newStartIso },
-          })
+          const res = await authFetch<{ scheduleWarnings?: string[] }>(
+            apiUrl(`/tenants/${tenantId.value}/standalone-matches/${model.matchId}`),
+            {
+              method: 'PATCH',
+              body: { startTime: newStartIso },
+            },
+          )
+          toastScheduleWarnings(toast, res)
         } else if (model.tournamentId) {
-          await authFetch(apiUrl(`/tournaments/${model.tournamentId}/matches/${model.matchId}`), {
-            method: 'PATCH',
-            body: { startTime: newStartIso },
-          })
+          const res = await authFetch<{ scheduleWarnings?: string[] }>(
+            apiUrl(`/tournaments/${model.tournamentId}/matches/${model.matchId}`),
+            {
+              method: 'PATCH',
+              body: { startTime: newStartIso },
+            },
+          )
+          toastScheduleWarnings(toast, res)
         }
       }
     }
@@ -528,7 +538,7 @@ async function createMatchFromSlot() {
 
   createSaving.value = true
   try {
-    const created = await authFetch<MatchRow>(
+    const created = await authFetch<MatchRow & { scheduleWarnings?: string[] }>(
       apiUrl(`/tenants/${tenantId.value}/standalone-matches`),
       {
         method: 'POST',
@@ -539,6 +549,7 @@ async function createMatchFromSlot() {
         },
       },
     )
+    toastScheduleWarnings(toast, created)
 
     const eventId = `standalone:${created.id}`
     eventColors.value[eventId] = m.color
@@ -586,15 +597,23 @@ async function onEventDrop(arg: any) {
 
   try {
     if (meta.source === 'standalone') {
-      await authFetch(apiUrl(`/tenants/${tenantId.value}/standalone-matches/${meta.matchId}`), {
-        method: 'PATCH',
-        body: { startTime: start.toISOString() },
-      })
+      const res = await authFetch<{ scheduleWarnings?: string[] }>(
+        apiUrl(`/tenants/${tenantId.value}/standalone-matches/${meta.matchId}`),
+        {
+          method: 'PATCH',
+          body: { startTime: start.toISOString() },
+        },
+      )
+      toastScheduleWarnings(toast, res)
     } else if (meta.tournamentId) {
-      await authFetch(apiUrl(`/tournaments/${meta.tournamentId}/matches/${meta.matchId}`), {
-        method: 'PATCH',
-        body: { startTime: start.toISOString() },
-      })
+      const res = await authFetch<{ scheduleWarnings?: string[] }>(
+        apiUrl(`/tournaments/${meta.tournamentId}/matches/${meta.matchId}`),
+        {
+          method: 'PATCH',
+          body: { startTime: start.toISOString() },
+        },
+      )
+      toastScheduleWarnings(toast, res)
     }
     await fetchMatches()
     toast.add({

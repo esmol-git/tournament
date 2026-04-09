@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Query, UseInterceptors } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Header,
+  Param,
+  Query,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TournamentsService } from '../tournaments/tournaments.service';
 import { ListTenantTournamentsQueryDto } from '../tournaments/dto/list-tenant-tournaments-query.dto';
@@ -135,6 +142,21 @@ export class PublicController {
     @Param('tournamentId') tournamentId: string,
   ) {
     return this.tournaments.listPublicDocumentsCached(tenantSlug, tournamentId);
+  }
+
+  @Get('tournaments/:tournamentId/calendar-feed.ics')
+  @Header('Content-Type', 'text/calendar; charset=utf-8')
+  @ApiOperation({ summary: 'Публичный ICS feed турнира (по подписной ссылке)' })
+  async tournamentCalendarFeed(
+    @Param('tenantSlug') tenantSlug: string,
+    @Param('tournamentId') tournamentId: string,
+    @Query('token') token: string,
+  ) {
+    return this.tournaments.exportPublicTournamentCalendarIcs(
+      tenantSlug,
+      tournamentId,
+      token,
+    );
   }
 
   @Get('media')

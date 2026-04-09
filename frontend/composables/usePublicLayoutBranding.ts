@@ -15,12 +15,6 @@ function shiftHex(hex: string, amount: number) {
   return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`
 }
 
-function resolveThemeMode(raw: unknown): 'light' | 'dark' | 'system' {
-  const mode = String(raw ?? '').trim().toLowerCase()
-  if (mode === 'light' || mode === 'dark' || mode === 'system') return mode
-  return 'system'
-}
-
 /**
  * Применяет брендинг/тему/фавикон из настроек тенанта на уровне layout.
  * Так все публичные страницы получают одинаковый внешний вид без "флэша" дефолтов.
@@ -39,13 +33,8 @@ export function usePublicLayoutBranding(tenantMeta: Ref<PublicTenantMeta | null>
     return raw || undefined
   })
 
-  const themeMode = computed(() => resolveThemeMode(tenantMeta.value?.branding?.publicThemeMode))
-
   useHead({
     link: () => (faviconHref.value ? [{ rel: 'icon', href: faviconHref.value }] : []),
-    htmlAttrs: (() => ({
-      'data-public-theme': themeMode.value,
-    })) as any,
   })
 
   watchEffect(() => {
@@ -58,6 +47,6 @@ export function usePublicLayoutBranding(tenantMeta: Ref<PublicTenantMeta | null>
     root.style.setProperty('--public-accent-tertiary', brandTertiary.value)
   })
 
-  return { brandPrimary, brandSecondary, brandTertiary, faviconHref, themeMode }
+  return { brandPrimary, brandSecondary, brandTertiary, faviconHref }
 }
 

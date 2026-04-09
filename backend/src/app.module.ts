@@ -28,6 +28,7 @@ import {
 import { AuditModule } from './audit/audit.module';
 import { PlansModule } from './plans/plans.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { LeadsModule } from './leads/leads.module';
 
 function truthyEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
@@ -130,6 +131,7 @@ function skipThrottlingUnderJest(): boolean {
     StorageModule,
     PlatformModule,
     PublicModule,
+    LeadsModule,
     AuditModule,
     PlansModule,
   ],

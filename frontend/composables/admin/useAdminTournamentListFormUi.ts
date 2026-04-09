@@ -6,6 +6,10 @@ import {
   maxTournamentTeams,
   playoffTeamCountOptions,
 } from '~/utils/tournamentAdminFormShared'
+import {
+  DEFAULT_TOURNAMENT_CALENDAR_STRIPE,
+  TOURNAMENT_CALENDAR_COLOR_PRESETS,
+} from '~/utils/tournamentCalendarColor'
 import type { Ref } from 'vue'
 import { computed, watch } from 'vue'
 
@@ -66,18 +70,9 @@ export function useAdminTournamentListFormUi(options: {
     return 'md:col-start-1'
   })
 
-  const tournamentCalendarColorPresets = [
-    '#6366f1',
-    '#10b981',
-    '#f59e0b',
-    '#ef4444',
-    '#8b5cf6',
-    '#ec4899',
-    '#06b6d4',
-    '#84cc16',
-  ] as const
+  const tournamentCalendarColorPresets = TOURNAMENT_CALENDAR_COLOR_PRESETS
 
-  const DEFAULT_CALENDAR_PICKER_FALLBACK = '#6366f1'
+  const DEFAULT_CALENDAR_PICKER_FALLBACK = DEFAULT_TOURNAMENT_CALENDAR_STRIPE
 
   const calendarColorPickerModel = computed({
     get() {

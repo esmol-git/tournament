@@ -101,7 +101,10 @@ const loadingWrapperClass = computed(() =>
       >
         {{ emptyDescription }}
       </p>
-      <div class="mt-6 flex flex-wrap justify-center gap-2">
+      <div
+        v-if="$slots['empty-actions']"
+        class="mt-6 flex flex-wrap justify-center gap-2"
+      >
         <slot name="empty-actions" />
       </div>
     </div>

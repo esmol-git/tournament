@@ -2,6 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import type { PublicTenantMeta } from '~/composables/usePublicTournamentFetch'
+import { usePublicBrandingTheme } from '~/composables/usePublicBrandingTheme'
+
+const PUBLIC_CHROME_BG_DARK = 'var(--public-chrome-dark-top)'
 
 const props = defineProps<{
   tenantMeta?: PublicTenantMeta | null
@@ -28,6 +31,10 @@ type PublicSettings = {
 const footerBranding = ref<PublicBranding>({})
 const footerSettings = ref<PublicSettings>({})
 const footerName = ref('Tournament Platform')
+const lastTenantMeta = ref<PublicTenantMeta | null>(null)
+
+const themeMetaSource = computed<PublicTenantMeta | null>(() => props.tenantMeta ?? lastTenantMeta.value)
+const { isDark } = usePublicBrandingTheme(themeMetaSource)
 
 const pendingDocuments = [
   'Политика конфиденциальности',
@@ -60,10 +67,19 @@ const hasFooterContacts = computed(() =>
       footerContacts.value.hours,
   ),
 )
-const footerStyle = computed(() => ({
-  backgroundColor: brandPrimary.value,
-  borderTopColor: brandSecondary.value,
-}))
+const footerStyle = computed(() => {
+  const accentBorder = brandSecondary.value
+  if (isDark.value) {
+    return {
+      backgroundColor: PUBLIC_CHROME_BG_DARK,
+      borderTopColor: accentBorder,
+    }
+  }
+  return {
+    backgroundColor: brandPrimary.value,
+    borderTopColor: accentBorder,
+  }
+})
 
 async function loadFooterBranding() {
   const tenant = String(route.params.tenant ?? '').trim()
@@ -79,6 +95,7 @@ async function loadFooterBranding() {
 }
 
 function applyMeta(meta: PublicTenantMeta | null | undefined) {
+  if (meta) lastTenantMeta.value = meta
   const displayName = String(meta?.publicSettings?.publicOrganizationDisplayName ?? '').trim()
   footerName.value = displayName || String(meta?.name ?? '').trim() || footerName.value || 'Tournament Platform'
   footerBranding.value = meta?.branding ?? footerBranding.value

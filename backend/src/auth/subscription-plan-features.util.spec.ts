@@ -47,15 +47,20 @@ describe('subscription-plan-features.util', () => {
 
     it('AMATEUR has reference_directory_basic but not audit_log', () => {
       expect(
-        tenantHasSubscriptionPlanFeature('AMATEUR', 'reference_directory_basic'),
+        tenantHasSubscriptionPlanFeature(
+          'AMATEUR',
+          'reference_directory_basic',
+        ),
       ).toBe(true);
-      expect(tenantHasSubscriptionPlanFeature('AMATEUR', 'audit_log')).toBe(false);
+      expect(tenantHasSubscriptionPlanFeature('AMATEUR', 'audit_log')).toBe(
+        false,
+      );
     });
 
     it('WORLD_CUP has audit_log', () => {
-      expect(
-        tenantHasSubscriptionPlanFeature('WORLD_CUP', 'audit_log'),
-      ).toBe(true);
+      expect(tenantHasSubscriptionPlanFeature('WORLD_CUP', 'audit_log')).toBe(
+        true,
+      );
     });
   });
 

@@ -14,7 +14,7 @@ const { showBackToTop, backToTopStyle, scrollToTop } = usePublicBackToTop()
     <button
       v-if="showBackToTop"
       type="button"
-      class="fixed bottom-20 z-[75] inline-flex items-center gap-1.5 rounded-full border border-[#d2e2f7] bg-white/95 px-3 py-2 text-xs font-semibold text-[#1a5a8c] shadow-lg backdrop-blur transition hover:border-[#c80a48]/40 hover:text-[#c80a48]"
+      class="fixed bottom-20 z-[75] inline-flex items-center gap-1.5 rounded-full border border-[#d2e2f7] bg-white/95 px-3 py-2 text-xs font-semibold text-[#1a5a8c] shadow-lg backdrop-blur transition hover:border-[#c80a48]/40 hover:text-[#c80a48] dark:border-slate-600 dark:bg-slate-900/95 dark:text-slate-200 dark:hover:border-[#c80a48]/50 dark:hover:text-[#f472b6]"
       :style="backToTopStyle"
       aria-label="Прокрутить наверх"
       @click="scrollToTop"

@@ -159,15 +159,15 @@ onMounted(() => {
 
           <template v-else>
           <div class="public-card !p-3 flex flex-wrap items-center justify-between gap-3">
-            <span class="text-sm font-medium text-[#4f6b8c]">Порядок в составах</span>
+            <span class="public-text-muted text-sm font-medium">Порядок в составах</span>
             <div class="inline-flex rounded-xl border border-[#d6e0ee] bg-[#f8fbff] p-1">
               <button
                 type="button"
                 class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors sm:text-sm"
                 :class="
                   rosterSortMode === 'alpha'
-                    ? 'bg-white text-[#123c67] shadow-sm'
-                    : 'text-[#4f6b8c] hover:bg-white/80'
+                    ? 'bg-white public-text-primary shadow-sm'
+                    : 'public-text-muted hover:bg-white/80'
                 "
                 @click="rosterSortMode = 'alpha'"
               >
@@ -178,8 +178,8 @@ onMounted(() => {
                 class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors sm:text-sm"
                 :class="
                   rosterSortMode === 'jersey'
-                    ? 'bg-white text-[#123c67] shadow-sm'
-                    : 'text-[#4f6b8c] hover:bg-white/80'
+                    ? 'bg-white public-text-primary shadow-sm'
+                    : 'public-text-muted hover:bg-white/80'
                 "
                 @click="rosterSortMode = 'jersey'"
               >
@@ -198,22 +198,25 @@ onMounted(() => {
                   class="h-12 w-12 shrink-0 rounded-full"
                 />
                 <div class="min-w-0">
-                  <h2 class="truncate text-base font-semibold text-[#123c67]">{{ team.teamName }}</h2>
-                  <p class="mt-1 text-xs text-[#4f6b8c]">
+                  <h2 class="public-text-primary truncate text-base font-semibold">{{ team.teamName }}</h2>
+                  <p class="public-text-muted mt-1 text-xs">
                     {{ team.category || 'Категория не указана' }}
                   </p>
                 </div>
               </div>
-              <p v-if="team.coachName" class="mt-3 text-sm text-[#4f6b8c]">
-                Тренер: <span class="font-medium text-[#123c67]">{{ team.coachName }}</span>
+              <p v-if="team.coachName" class="public-text-muted mt-3 text-sm">
+                Тренер: <span class="public-text-primary font-medium">{{ team.coachName }}</span>
               </p>
 
-              <div v-if="team.players.length" class="mt-3 rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2">
+              <div
+                v-if="team.players.length"
+                class="public-roster-preview-wrap mt-3 rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2"
+              >
                 <ul class="space-y-2">
                   <li
                     v-for="player in previewPlayers(team)"
                     :key="player.id"
-                    class="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+                    class="public-roster-preview-row flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
                   >
                     <div class="flex min-w-0 items-center gap-2">
                       <RemoteImage
@@ -223,11 +226,11 @@ onMounted(() => {
                         icon-class="text-sm"
                         class="h-8 w-8 shrink-0 rounded-full"
                       />
-                      <span class="truncate text-sm text-[#123c67]">
+                      <span class="public-text-primary truncate text-sm">
                         {{ player.lastName }} {{ player.firstName }}
                       </span>
                     </div>
-                    <span class="shrink-0 text-xs text-[#4f6b8c]">
+                    <span class="public-text-muted shrink-0 text-xs">
                       <template v-if="player.jerseyNumber !== null">#{{ player.jerseyNumber }}</template>
                       <template v-if="player.position"> · {{ player.position }}</template>
                     </span>
@@ -242,7 +245,7 @@ onMounted(() => {
                   outlined
                   icon="pi pi-users"
                   :label="`Все игроки (${team.players.length})`"
-                  class="!border-[#d2e2f7] !text-[#1a5a8c] hover:!border-[#c80a48]/35 hover:!text-[#c80a48]"
+                  class="public-roster-all-players-btn public-btn-outline-accent"
                   :aria-label="`Полный состав команды ${team.teamName}`"
                   @click="openRosterDialog(team)"
                 />
@@ -265,22 +268,22 @@ onMounted(() => {
       @update:visible="(v) => !v && closeRosterDialog()"
     >
       <div v-if="rosterDialogTeam" class="space-y-3">
-        <p v-if="rosterDialogTeam.category" class="text-sm text-[#4f6b8c]">
+        <p v-if="rosterDialogTeam.category" class="public-text-muted text-sm">
           {{ rosterDialogTeam.category }}
         </p>
-        <p v-if="rosterDialogTeam.coachName" class="text-sm text-[#4f6b8c]">
+        <p v-if="rosterDialogTeam.coachName" class="public-text-muted text-sm">
           Тренер:
-          <span class="font-medium text-[#123c67]">{{ rosterDialogTeam.coachName }}</span>
+          <span class="public-text-primary font-medium">{{ rosterDialogTeam.coachName }}</span>
         </p>
         <div
           v-if="rosterDialogTeam.players.length"
-          class="max-h-[min(28rem,70vh)] overflow-y-auto rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2"
+          class="public-roster-dialog-scroll max-h-[min(28rem,70vh)] overflow-y-auto rounded-xl border border-[#d6e0ee] bg-[#f7f9fc] p-2"
         >
           <ul class="space-y-2">
             <li
               v-for="player in sortedPlayers(rosterDialogTeam.players)"
               :key="player.id"
-              class="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+              class="public-roster-dialog-player-row flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
             >
               <div class="flex min-w-0 items-center gap-2">
                 <RemoteImage
@@ -290,18 +293,18 @@ onMounted(() => {
                   icon-class="text-sm"
                   class="h-8 w-8 shrink-0 rounded-full"
                 />
-                <span class="truncate text-sm text-[#123c67]">
+                <span class="public-text-primary truncate text-sm">
                   {{ player.lastName }} {{ player.firstName }}
                 </span>
               </div>
-              <span class="shrink-0 text-xs text-[#4f6b8c]">
+              <span class="public-text-muted shrink-0 text-xs">
                 <template v-if="player.jerseyNumber !== null">#{{ player.jerseyNumber }}</template>
                 <template v-if="player.position"> · {{ player.position }}</template>
               </span>
             </li>
           </ul>
         </div>
-        <p v-else class="text-sm text-[#4f6b8c]">В заявке пока нет игроков.</p>
+        <p v-else class="public-text-muted text-sm">В заявке пока нет игроков.</p>
       </div>
     </Dialog>
   </div>
