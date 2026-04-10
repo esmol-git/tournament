@@ -207,7 +207,7 @@ export SEED_BATCH=optional-batch-label
 npm run seed:tenant-teams-players:prod
 ```
 
-Номера на майках: случайные **1–99** внутри команды **без повторов**, если игроков в команде не больше 99. `birthDate` не заполняется, если **`SEED_PLAYER_BIRTH_YEAR`** не задан.
+У игрока в карточке: **`bioNumber`** («Номер игрока» в UI) и опционально **`birthDate`** — оба на модели **Player**. Случайное целое **1–99** пишется в **`bioNumber`** и дублируется в **номер в составе** (`TeamPlayer.jerseyNumber`) для согласованности. Внутри одной команды номера **не повторяются**, если игроков ≤ 99. `birthDate` не ставится, если не задан **`SEED_PLAYER_BIRTH_YEAR`**.
 
 **Удалить тот же батч** (те же `SEED_TENANT_SLUG` и **`SEED_BATCH`**, что при создании):
 

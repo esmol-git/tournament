@@ -321,11 +321,14 @@ async function main() {
 
     const jerseys = jerseyNumbersForTeam(playersPerTeam);
     for (let pi = 1; pi <= playersPerTeam; pi++) {
+      const number = jerseys[pi - 1]!;
       const player = await prisma.player.create({
         data: {
           tenantId: tenant.id,
           firstName: pick(FIRST_NAMES),
           lastName: pick(LAST_NAMES),
+          /** «Номер игрока» в админке — поле Player.bioNumber */
+          bioNumber: String(number),
           ...(birthYearRange
             ? { birthDate: randomBirthDate(birthYearRange) }
             : {}),
@@ -338,7 +341,7 @@ async function main() {
         data: {
           teamId: team.id,
           playerId: player.id,
-          jerseyNumber: jerseys[pi - 1],
+          jerseyNumber: number,
           isActive: true,
         },
       });
