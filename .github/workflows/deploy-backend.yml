@@ -75,6 +75,7 @@ jobs:
             CURRENT_LINK="$APP_ROOT/current"
             PROCESS_NAME="api"
             HEALTHCHECK_URL="http://127.0.0.1:4000/api"
+            SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-}"
             STAMP="$(date +%Y%m%d%H%M%S)"
             NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
             PREVIOUS_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
@@ -98,10 +99,9 @@ jobs:
             ln -sfn "$NEW_RELEASE_DIR" "$CURRENT_LINK"
             cd "$CURRENT_LINK"
             if pm2 describe "$PROCESS_NAME" >/dev/null 2>&1; then
-              pm2 restart "$PROCESS_NAME" --update-env
-            else
-              pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
+              pm2 delete "$PROCESS_NAME"
             fi
+            pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
 
             # Fail-fast: process can be "online" in PM2 but still not accept connections.
             HEALTH_OK=0
@@ -115,37 +115,44 @@ jobs:
 
             if [[ "$HEALTH_OK" -ne 1 ]]; then
               echo "Backend healthcheck failed after deploy: $HEALTHCHECK_URL" >&2
+              echo "Diagnostic: listeners on backend port" >&2
+              ss -ltnp | rg ":4000" || true
+              echo "Diagnostic: PM2 backend logs (last 80 lines)" >&2
+              pm2 logs "$PROCESS_NAME" --lines 80 --nostream || true
               if [[ -n "$PREVIOUS_RELEASE_DIR" && -d "$PREVIOUS_RELEASE_DIR" ]]; then
                 echo "Rolling back to previous release: $PREVIOUS_RELEASE_DIR" >&2
                 ln -sfn "$PREVIOUS_RELEASE_DIR" "$CURRENT_LINK"
                 cd "$CURRENT_LINK"
                 if pm2 describe "$PROCESS_NAME" >/dev/null 2>&1; then
-                  pm2 restart "$PROCESS_NAME" --update-env
-                else
-                  pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
+                  pm2 delete "$PROCESS_NAME"
                 fi
+                pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
               fi
               ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-              {
-                echo "## Backend deploy status"
-                echo ""
-                echo "- Result: ❌ failed"
-                echo "- Rollback: ✅ performed"
-                echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
-                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-              } >> "$GITHUB_STEP_SUMMARY"
+              if [[ -n "$SUMMARY_FILE" ]]; then
+                {
+                  echo "## Backend deploy status"
+                  echo ""
+                  echo "- Result: ❌ failed"
+                  echo "- Rollback: ✅ performed"
+                  echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
+                  echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
+                } >> "$SUMMARY_FILE"
+              fi
               exit 1
             fi
 
             ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-            {
-              echo "## Backend deploy status"
-              echo ""
-              echo "- Result: ✅ success"
-              echo "- Rollback: ❌ not needed"
-              echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
-              echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "$SUMMARY_FILE" ]]; then
+              {
+                echo "## Backend deploy status"
+                echo ""
+                echo "- Result: ✅ success"
+                echo "- Rollback: ❌ not needed"
+                echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
+                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
+              } >> "$SUMMARY_FILE"
+            fi
 
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf
