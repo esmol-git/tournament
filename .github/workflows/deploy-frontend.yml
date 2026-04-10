@@ -101,16 +101,22 @@ jobs:
             HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
 
             HEALTH_OK=0
-            for _ in {1..15}; do
+            # Nuxt server can need extra warm-up time right after PM2 start.
+            # Allow up to 120s before declaring deployment unhealthy.
+            for _ in {1..40}; do
               if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
                 HEALTH_OK=1
                 break
               fi
-              sleep 2
+              sleep 3
             done
 
             if [[ "$HEALTH_OK" -ne 1 ]]; then
               echo "Frontend healthcheck failed after deploy: $HEALTHCHECK_URL" >&2
+              echo "Diagnostic: listeners on frontend port" >&2
+              ss -ltnp | rg ":${FRONTEND_PORT}" || true
+              echo "Diagnostic: PM2 frontend logs (last 80 lines)" >&2
+              pm2 logs "$PROCESS_NAME" --lines 80 --nostream || true
               if [[ -n "$PREVIOUS_RELEASE_DIR" && -d "$PREVIOUS_RELEASE_DIR" ]]; then
                 echo "Rolling back to previous release: $PREVIOUS_RELEASE_DIR" >&2
                 ln -sfn "$PREVIOUS_RELEASE_DIR" "$CURRENT_LINK"
