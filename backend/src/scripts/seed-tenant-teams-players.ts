@@ -258,11 +258,10 @@ async function main() {
 
   for (let ti = 1; ti <= teamsCount; ti++) {
     const teamSlug = `${tenant.slug}-seed-${batch}-t-${String(ti).padStart(2, '0')}`;
-    const displayName = `${teamNames[ti - 1]!} · ${batch}`;
     const team = await prisma.team.create({
       data: {
         tenantId: tenant.id,
-        name: displayName,
+        name: teamNames[ti - 1]!,
         slug: teamSlug,
         rating: (ti % 5) + 1,
       },
