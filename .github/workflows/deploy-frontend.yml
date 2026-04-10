@@ -66,7 +66,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
-          envs: DEPLOY_PATH,REMOTE_ARCHIVE,FRONTEND_PORT,FRONTEND_HOST
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE,FRONTEND_PORT,FRONTEND_HOST,GITHUB_STEP_SUMMARY
           script: |
             set -euo pipefail
             APP_ROOT="${DEPLOY_PATH}"
@@ -75,6 +75,7 @@ jobs:
             CURRENT_LINK="$APP_ROOT/current"
             PROCESS_NAME="frontend"
             HEALTHCHECK_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}/"
+            SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-}"
             STAMP="$(date +%Y%m%d%H%M%S)"
             NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
             PREVIOUS_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
@@ -100,10 +101,17 @@ jobs:
             set +a
             HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
 
+            # Wait until the TCP port is listening (Nuxt binds after process start).
+            for _ in $(seq 1 90); do
+              if ss -ltn 2>/dev/null | grep -qE ":${FRONTEND_PORT}\\s"; then
+                break
+              fi
+              sleep 2
+            done
+
             HEALTH_OK=0
-            # Nuxt server can need extra warm-up time right after PM2 start.
-            # Allow up to 120s before declaring deployment unhealthy.
-            for _ in {1..40}; do
+            # After bind, HTTP can still warm up; allow up to ~180s of curl retries.
+            for _ in $(seq 1 60); do
               if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
                 HEALTH_OK=1
                 break
@@ -126,26 +134,30 @@ jobs:
                 HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
               fi
               ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-              {
-                echo "## Frontend deploy status"
-                echo ""
-                echo "- Result: ❌ failed"
-                echo "- Rollback: ✅ performed"
-                echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
-                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-              } >> "$GITHUB_STEP_SUMMARY"
+              if [[ -n "$SUMMARY_FILE" ]]; then
+                {
+                  echo "## Frontend deploy status"
+                  echo ""
+                  echo "- Result: ❌ failed"
+                  echo "- Rollback: ✅ performed"
+                  echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
+                  echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
+                } >> "$SUMMARY_FILE"
+              fi
               exit 1
             fi
 
             ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-            {
-              echo "## Frontend deploy status"
-              echo ""
-              echo "- Result: ✅ success"
-              echo "- Rollback: ❌ not needed"
-              echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
-              echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "$SUMMARY_FILE" ]]; then
+              {
+                echo "## Frontend deploy status"
+                echo ""
+                echo "- Result: ✅ success"
+                echo "- Rollback: ❌ not needed"
+                echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
+                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
+              } >> "$SUMMARY_FILE"
+            fi
 
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf

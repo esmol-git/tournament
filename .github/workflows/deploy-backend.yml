@@ -66,7 +66,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
-          envs: DEPLOY_PATH,REMOTE_ARCHIVE
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE,GITHUB_STEP_SUMMARY
           script: |
             set -euo pipefail
             APP_ROOT="${DEPLOY_PATH}"
