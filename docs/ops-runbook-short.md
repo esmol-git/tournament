@@ -20,6 +20,24 @@ curl -I https://tournament-platform.ru
 curl -I https://api.tournament-platform.ru/api
 ```
 
+## 2.1) Пост-деплой: проверить, что релиз реально встал
+
+1. Открыть run в GitHub Actions (`Deploy backend` / `Deploy frontend`) и посмотреть **Summary**:
+   - `Result: ✅ success`
+   - `Rollback: ❌ not needed`
+   - `Active release: /opt/tournament/.../releases/<STAMP>`
+2. Если в Summary есть `Rollback: ✅ performed`, считать релиз неуспешным:
+   - новая версия не поднялась;
+   - активной осталась предыдущая версия (`Active release` в Summary).
+3. На сервере подтвердить состояние (опционально):
+
+```bash
+readlink -f /opt/tournament/api/current
+readlink -f /opt/tournament/frontend/current
+curl -f http://127.0.0.1:4000/api
+curl -f http://127.0.0.1:3000/
+```
+
 ## 3) Если деплой упал
 
 1. Открыть GitHub Actions и посмотреть красный step.
@@ -82,3 +100,75 @@ df -h
 - **Загрузки (S3 / MinIO)** — в Git их нет; нужны **бэкап бакета** или репликация.
 
 **Восстановление с нуля:** новый VPS, снова настроить nginx/pm2/pути как в runbook деплоя, **восстановить БД из бэкапа**, положить `.env`, затем **push в `main` или ручной запуск Deploy** — CI соберёт новые каталоги в `releases/`. Старые штампы на диске не вернуться, но **версия кода** снова будет из Git.
+
+## 8) Отладка через консоль (создание команд/игроков)
+
+На сервере можно быстро создавать тестовые сущности через API без UI.
+Скрипт лежит в репозитории: `scripts/server/debug-api.sh` (если на сервере нет клона репо — скопируйте файл один раз через `scp`).
+
+```bash
+cd <path-to-repo>
+export API_BASE=https://api.tournament-platform.ru
+export TENANT_SLUG=<tenant-slug>
+export USERNAME=<tenant-admin-username>
+export PASSWORD=<tenant-admin-password>
+
+# 1) Логин (токен сохранится в /tmp/tp-debug-api-token)
+./scripts/server/debug-api.sh login
+
+# 2) Быстро создать команду + игрока + привязку
+./scripts/server/debug-api.sh seed \
+  --team-name "Debug Team" \
+  --team-slug "debug-team-01" \
+  --first-name "Ivan" \
+  --last-name "Ivanov" \
+  --jersey 10
+```
+
+Отдельные команды:
+
+```bash
+./scripts/server/debug-api.sh list-teams
+./scripts/server/debug-api.sh list-players
+./scripts/server/debug-api.sh list-teams --json
+./scripts/server/debug-api.sh list-players --json
+./scripts/server/debug-api.sh create-team "Debug Team 2" "debug-team-02"
+./scripts/server/debug-api.sh create-player "Petr" "Petrov"
+./scripts/server/debug-api.sh attach-player <teamId> <playerId> 11
+./scripts/server/debug-api.sh delete-team <teamId>
+./scripts/server/debug-api.sh delete-player <playerId>
+
+# удалить последние сущности, созданные через seed
+./scripts/server/debug-api.sh cleanup-seed
+```
+
+## 9) Recovery SUPER_ADMIN
+
+Если вход в `/platform/login` не проходит с ошибкой `INVALID_CREDENTIALS`, восстановите пользователя штатным скриптом backend.
+
+```bash
+cd /opt/tournament/api/current
+set -a
+source /opt/tournament/api/shared/.env
+set +a
+
+# при необходимости задайте новый пароль
+export SUPER_ADMIN_PASSWORD='NewStrongPassword123!'
+
+# создать/обновить SUPER_ADMIN
+node dist/scripts/bootstrap-super-admin.js
+```
+
+Ожидаемый результат:
+- `Updated SUPER_ADMIN user: platform_admin` или
+- `Created SUPER_ADMIN user: platform_admin`
+
+Проверка входа:
+
+```bash
+curl -sS -X POST "https://api.tournament-platform.ru/auth/platform/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"platform_admin","password":"NewStrongPassword123!"}'
+```
+
+Должен вернуться `accessToken`. В UI входить через `https://tournament-platform.ru/platform/login`.
