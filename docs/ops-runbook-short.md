@@ -200,9 +200,14 @@ export SEED_TENANT_SLUG=<tenant-slug>
 export SEED_TEAMS=40
 export SEED_PLAYERS_PER_TEAM=10
 export SEED_BATCH=optional-batch-label
+# опционально: год рождения — одно число или диапазон (случайный год и дата внутри года)
+# export SEED_PLAYER_BIRTH_YEAR=2018
+# export SEED_PLAYER_BIRTH_YEAR=2018-2019
 
 npm run seed:tenant-teams-players:prod
 ```
+
+Номера на майках: случайные **1–99** внутри команды **без повторов**, если игроков в команде не больше 99. `birthDate` не заполняется, если **`SEED_PLAYER_BIRTH_YEAR`** не задан.
 
 **Удалить тот же батч** (те же `SEED_TENANT_SLUG` и **`SEED_BATCH`**, что при создании):
 

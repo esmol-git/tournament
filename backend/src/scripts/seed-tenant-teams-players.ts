@@ -217,6 +217,52 @@ function pick<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
+/**
+ * `2018` — только 2018 год; `2018-2019` — случайный год в диапазоне включительно.
+ * День/месяц случайные внутри выбранного года.
+ */
+function parseBirthYearRange(raw: string | undefined): { min: number; max: number } | null {
+  const s = raw?.trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{4})(?:-(\d{4}))?$/);
+  if (!m) {
+    throw new Error(
+      `Invalid SEED_PLAYER_BIRTH_YEAR="${raw}". Use 2018 or 2018-2019`,
+    );
+  }
+  const y1 = Number(m[1]);
+  const y2 = m[2] ? Number(m[2]) : y1;
+  if (!Number.isInteger(y1) || !Number.isInteger(y2) || y2 < y1) {
+    throw new Error(
+      `Invalid SEED_PLAYER_BIRTH_YEAR="${raw}". End year must be >= start year.`,
+    );
+  }
+  if (y1 < 1900 || y2 > 2100) {
+    throw new Error(
+      `SEED_PLAYER_BIRTH_YEAR years must be between 1900 and 2100.`,
+    );
+  }
+  return { min: y1, max: y2 };
+}
+
+function randomBirthDate(range: { min: number; max: number }): Date {
+  const year =
+    range.min + Math.floor(Math.random() * (range.max - range.min + 1));
+  const t0 = Date.UTC(year, 0, 1);
+  const t1 = Date.UTC(year + 1, 0, 1);
+  return new Date(t0 + Math.floor(Math.random() * (t1 - t0)));
+}
+
+/** Случайные номера 1–99; внутри команды без повторов, если игроков не больше 99. */
+function jerseyNumbersForTeam(count: number): number[] {
+  if (count > 99) {
+    return Array.from({ length: count }, () => 1 + Math.floor(Math.random() * 99));
+  }
+  const nums = Array.from({ length: 99 }, (_, i) => i + 1);
+  shuffleInPlace(nums);
+  return nums.slice(0, count);
+}
+
 /** Уникальные в рамках прогона отображаемые имена команд при teamsCount > длины пула. */
 function teamDisplayNames(count: number): string[] {
   const pool = [...TEAM_NAMES];
@@ -237,6 +283,7 @@ async function main() {
   const teamsCount = toInt(process.env.SEED_TEAMS, 20);
   const playersPerTeam = toInt(process.env.SEED_PLAYERS_PER_TEAM, 10);
   const batch = (process.env.SEED_BATCH ?? '').trim() || String(Date.now());
+  const birthYearRange = parseBirthYearRange(process.env.SEED_PLAYER_BIRTH_YEAR);
 
   const tenant = await prisma.tenant.findUnique({
     where: { slug: tenantSlug },
@@ -247,7 +294,10 @@ async function main() {
   }
 
   console.log(
-    `Seeding tenant "${tenant.name}" (${tenant.slug}): ${teamsCount} teams × ${playersPerTeam} players (batch=${batch})`,
+    `Seeding tenant "${tenant.name}" (${tenant.slug}): ${teamsCount} teams × ${playersPerTeam} players (batch=${batch})` +
+      (birthYearRange
+        ? `; birth years ${birthYearRange.min}${birthYearRange.min === birthYearRange.max ? '' : `–${birthYearRange.max}`}`
+        : '; birthDate omitted (set SEED_PLAYER_BIRTH_YEAR)'),
   );
 
   const teamNames = teamDisplayNames(teamsCount);
@@ -269,12 +319,16 @@ async function main() {
     });
     teamsCreated += 1;
 
+    const jerseys = jerseyNumbersForTeam(playersPerTeam);
     for (let pi = 1; pi <= playersPerTeam; pi++) {
       const player = await prisma.player.create({
         data: {
           tenantId: tenant.id,
           firstName: pick(FIRST_NAMES),
           lastName: pick(LAST_NAMES),
+          ...(birthYearRange
+            ? { birthDate: randomBirthDate(birthYearRange) }
+            : {}),
         },
         select: { id: true },
       });
@@ -284,7 +338,7 @@ async function main() {
         data: {
           teamId: team.id,
           playerId: player.id,
-          jerseyNumber: pi,
+          jerseyNumber: jerseys[pi - 1],
           isActive: true,
         },
       });
