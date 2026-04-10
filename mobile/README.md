@@ -14,7 +14,9 @@ npm start
 
 ## API
 
-Скопируйте `.env.example` в `.env`. Укажите `EXPO_PUBLIC_API_BASE_URL` (на **реальном устройстве** — IP вашего Mac в Wi‑Fi, не `127.0.0.1`).
+Создайте файл **`.env`** (например `cp .env.example .env`). **Expo читает только `.env`**, не `.env.example` — иначе останется дефолт `http://127.0.0.1:4000` (в т.ч. в подписи «API: …» на экране входа). После правок `.env` перезапустите `npm start`.
+
+Укажите `EXPO_PUBLIC_API_BASE_URL` (на **реальном устройстве** к локальному API — IP вашего Mac в Wi‑Fi, не `127.0.0.1`).
 
 Продакшен: **`https://api.tournament-platform.ru`** (как `NUXT_PUBLIC_API_BASE` у Nuxt-фронта). Лендинг `https://tournament-platform.ru` — это не API.
 
