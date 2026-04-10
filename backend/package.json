@@ -22,6 +22,7 @@
     "seed:tournament-results": "ts-node src/scripts/seed-tournament-results.ts",
     "seed:spanish-cup-like": "ts-node src/scripts/seed-spanish-cup-like.ts",
     "seed:tenant-teams-players": "ts-node src/scripts/seed-tenant-teams-players.ts",
+    "seed:tenant-teams-players:prod": "node dist/scripts/seed-tenant-teams-players.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",

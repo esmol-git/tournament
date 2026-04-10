@@ -161,7 +161,7 @@ export PASSWORD=<tenant-admin-password>
 ./scripts/server/debug-api.sh cleanup-seed
 ```
 
-**Массовый сид (команды + игроки через Prisma).** Скрипт `npm run seed:tenant-teams-players` использует `ts-node` из **devDependencies**. После `source shared/.env` у вас часто **`NODE_ENV=production`**, и тогда обычный `npm ci` **не ставит dev-зависимости** → `ts-node: not found`. Ставьте явно: **`npm ci --include=dev`**. После сида при желании верните продовый `node_modules`: `rm -rf node_modules && npm ci --omit=dev` (или дождитесь следующего деплоя).
+**Массовый сид (команды + игроки через Prisma).** В релиз на сервер попадает только **`dist/`** (без `src/`), поэтому на проде нужно запускать **скомпилированный** скрипт — **`npm run seed:tenant-teams-players:prod`** (или `node dist/scripts/seed-tenant-teams-players.js`). Обычного **`npm ci --omit=dev`** достаточно; **`ts-node` не нужен**. Локально при разработке можно по-прежнему `npm run seed:tenant-teams-players` (через `ts-node`).
 
 ```bash
 cd /opt/tournament/api/current
@@ -169,14 +169,15 @@ set -a
 source /opt/tournament/api/shared/.env
 set +a
 
-npm ci --include=dev
+# как при деплое, без devDependencies
+npm ci --omit=dev
 
 export SEED_TENANT_SLUG=<tenant-slug>
 export SEED_TEAMS=40
 export SEED_PLAYERS_PER_TEAM=10
 export SEED_BATCH=optional-batch-label
 
-npm run seed:tenant-teams-players
+npm run seed:tenant-teams-players:prod
 ```
 
 ## 9) Recovery SUPER_ADMIN
