@@ -1,6 +1,7 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { useState } from 'react'
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { AppLogo } from '../../components/brand/AppLogo'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ApiError, getErrorMessage } from '../../api/errors'
 import { useAuth } from '../../auth/AuthContext'
@@ -40,6 +41,9 @@ export function LoginScreen(_props: Props) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
+          <View style={styles.logoWrap}>
+            <AppLogo size={88} />
+          </View>
           <Text style={styles.title}>Вход</Text>
           <Text style={styles.subtitle}>
             Регистрации в приложении нет — используйте учётную запись организации. Роль (админ, модератор,
@@ -81,6 +85,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 24,
+  },
+  logoWrap: {
+    alignItems: 'center',
+    marginBottom: 16,
   },
   title: {
     fontSize: 26,

@@ -2,6 +2,7 @@ import type { CompositeScreenProps } from '@react-navigation/native'
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { StyleSheet, Text, View } from 'react-native'
+import { AppLogo } from '../../components/brand/AppLogo'
 import { useAuth } from '../../auth/AuthContext'
 import { canAccessMatchResultsFlow, ROLE_LABELS } from '../../auth/roleLabels'
 import { PrimaryButton } from '../../components/ui/PrimaryButton'
@@ -21,7 +22,12 @@ export function HomeScreen({ navigation }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.org}>{tenant.name}</Text>
+      <View style={styles.headerRow}>
+        <AppLogo size={48} style={styles.headerLogo} />
+        <View style={styles.headerText}>
+          <Text style={styles.org}>{tenant.name}</Text>
+        </View>
+      </View>
       <Text style={styles.slug}>@{tenant.slug}</Text>
       <View style={styles.card}>
         <Text style={styles.label}>Пользователь</Text>
@@ -58,6 +64,18 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 20,
     backgroundColor: colors.background,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  headerLogo: {
+    marginRight: 12,
+  },
+  headerText: {
+    flex: 1,
+    minWidth: 0,
   },
   org: {
     fontSize: 20,

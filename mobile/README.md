@@ -2,6 +2,12 @@
 
 Expo + React Native + TypeScript, навигация `@react-navigation/native`, токены в `expo-secure-store`.
 
+## Иконка и логотип в UI
+
+Файлы в **`assets/`**: `icon.png` (иконка приложения iOS/Android), `adaptive-icon.png`, `splash-icon.png`, `favicon.png`. Для сторов лучше подставить **квадрат PNG 1024×1024** с запасом по краям (safe zone для Android adaptive icon).
+
+Внутри приложения тот же файл подключается через компонент **`AppLogo`** (`src/components/brand/AppLogo.tsx`): `import { AppLogo } from '.../components/brand/AppLogo'` и `<AppLogo size={64} />`.
+
 ## Запуск
 
 ```bash
