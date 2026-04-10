@@ -4,11 +4,18 @@
 
 ## 1) Деплой
 
-- Изменяешь код локально.
-- Делаешь `git push origin main`.
-- GitHub Actions автоматически деплоит:
-  - `backend/**` -> `Deploy backend`
-  - `frontend/**` -> `Deploy frontend`
+**Обычный путь**
+
+1. Коммит в ветку **`main`** и **`git push origin main`**.
+2. В GitHub → **Actions** смотрите нужный workflow:
+   - меняли только **`backend/**`** (или workflow бэкенда) → отрабатывает **Deploy backend**;
+   - меняли только **`frontend/**`** (или workflow фронта) → **Deploy frontend**;
+   - меняли и то и другое → оба.
+3. Пока workflow **зелёный**, на сервер уже уехал новый каталог в `releases/<штамп>` и symlink **`current`** переключён (см. §2.1).
+
+**Что не триггерит деплой:** правки только в `docs/**`, корне README и т.п. — пайплайны выката не стартуют, пока не затронуты пути из `on.push.paths` в `.github/workflows/deploy-*.yml`.
+
+**Ручной запуск:** в Actions откройте **Deploy backend** / **Deploy frontend** → **Run workflow** → ветка **`main`** (если в файле включён `workflow_dispatch`). Удобно, когда нужно перекатить без нового коммита.
 
 ## 2) Быстрая проверка
 
@@ -120,7 +127,24 @@ df -h
 
 **Восстановление с нуля:** новый VPS, снова настроить nginx/pm2/pути как в runbook деплоя, **восстановить БД из бэкапа**, положить `.env`, затем **push в `main` или ручной запуск Deploy** — CI соберёт новые каталоги в `releases/`. Старые штампы на диске не вернуться, но **версия кода** снова будет из Git.
 
-## 8) Отладка через консоль (создание команд/игроков)
+## 8) Данные на проде: создать и удалить
+
+Кратко, **чем пользоваться:**
+
+| Задача | Инструмент |
+|--------|------------|
+| Одна команда + один игрок (разовая проверка) | `scripts/server/debug-api.sh` (через API) |
+| Много команд и игроков (например 40×10) | `npm run seed:tenant-teams-players:prod` на сервере |
+| Убрать весь батч, созданный этим сидером | `npm run cleanup:tenant-seed-batch:prod` с **тем же** `SEED_BATCH` |
+| Убрать последнюю пару из `debug-api.sh seed` | `debug-api.sh cleanup-seed` |
+
+**Правила безопасности**
+
+- Перед массовым сидом и удалением сделайте **бэкап БД**, если данные ценные.
+- Для сидера **задавайте осмысленный `SEED_BATCH`** (например `load-2026-04-10`): по нему потом удаляется только этот набор команд (по префиксу slug).
+- Удаление команды через API снимает связи и матчи этой команды; игроки, созданные только под этот батч, удаляются отдельным шагом в **`cleanup:tenant-seed-batch`**. Если команды уже участвовали в «живых» турнирах, удаление может упереться в ограничения — тогда разбирать точечно или через админку.
+
+### 8.1) Через API (`debug-api.sh`)
 
 На сервере можно быстро создавать тестовые сущности через API без UI.
 Скрипт лежит в репозитории: `scripts/server/debug-api.sh` (если на сервере нет клона репо — скопируйте файл один раз через `scp`).
@@ -179,6 +203,23 @@ export SEED_BATCH=optional-batch-label
 
 npm run seed:tenant-teams-players:prod
 ```
+
+**Удалить тот же батч** (те же `SEED_TENANT_SLUG` и **`SEED_BATCH`**, что при создании):
+
+```bash
+cd /opt/tournament/api/current
+set -a
+source /opt/tournament/api/shared/.env
+set +a
+
+export SEED_TENANT_SLUG=<tenant-slug>
+export SEED_BATCH=<тот-же-batch-что-при-seed>
+
+npm run cleanup:tenant-seed-batch:prod
+# или: node dist/scripts/cleanup-tenant-seed-batch.js
+```
+
+Если префикс slug ни одной команды не совпал, скрипт ничего не удалит и так и напишет в лог.
 
 ## 9) Recovery SUPER_ADMIN
 
