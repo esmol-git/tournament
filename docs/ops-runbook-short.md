@@ -38,6 +38,25 @@ curl -f http://127.0.0.1:4000/api
 curl -f http://127.0.0.1:3000/
 ```
 
+## 2.2) Обязательный smoke-check логина (после каждого релиза)
+
+Проверяем два критичных сценария авторизации:
+
+1. **Platform login (SUPER_ADMIN):**
+   - открыть `https://tournament-platform.ru/platform/login`;
+   - выполнить вход под `platform_admin`;
+   - убедиться, что вход успешен и нет `INVALID_CREDENTIALS`.
+
+2. **Tenant admin login:**
+   - открыть `https://<tenant>.tournament-platform.ru/admin/login`;
+   - выполнить вход под админом организации;
+   - убедиться, что грузятся базовые страницы (`/admin`, список команд/игроков).
+
+Если любой шаг не проходит:
+- релиз считать неуспешным;
+- проверить Summary в GitHub Actions (`Rollback`, `Active release`);
+- при необходимости выполнить recovery из раздела `9) Recovery SUPER_ADMIN`.
+
 ## 3) Если деплой упал
 
 1. Открыть GitHub Actions и посмотреть красный step.
