@@ -161,6 +161,24 @@ export PASSWORD=<tenant-admin-password>
 ./scripts/server/debug-api.sh cleanup-seed
 ```
 
+**Массовый сид (команды + игроки через Prisma).** Скрипт `npm run seed:tenant-teams-players` использует `ts-node` из **devDependencies**. После `source shared/.env` у вас часто **`NODE_ENV=production`**, и тогда обычный `npm ci` **не ставит dev-зависимости** → `ts-node: not found`. Ставьте явно: **`npm ci --include=dev`**. После сида при желании верните продовый `node_modules`: `rm -rf node_modules && npm ci --omit=dev` (или дождитесь следующего деплоя).
+
+```bash
+cd /opt/tournament/api/current
+set -a
+source /opt/tournament/api/shared/.env
+set +a
+
+npm ci --include=dev
+
+export SEED_TENANT_SLUG=<tenant-slug>
+export SEED_TEAMS=40
+export SEED_PLAYERS_PER_TEAM=10
+export SEED_BATCH=optional-batch-label
+
+npm run seed:tenant-teams-players
+```
+
 ## 9) Recovery SUPER_ADMIN
 
 Если вход в `/platform/login` не проходит с ошибкой `INVALID_CREDENTIALS`, восстановите пользователя штатным скриптом backend.
