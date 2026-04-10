@@ -59,6 +59,7 @@ jobs:
           target: /tmp/
 
       - name: Run deploy script on server
+        id: remote_deploy
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -66,7 +67,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
-          envs: DEPLOY_PATH,REMOTE_ARCHIVE,GITHUB_STEP_SUMMARY
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE
           script: |
             set -euo pipefail
             APP_ROOT="${DEPLOY_PATH}"
@@ -75,7 +76,6 @@ jobs:
             CURRENT_LINK="$APP_ROOT/current"
             PROCESS_NAME="api"
             HEALTHCHECK_URL="http://127.0.0.1:4000/api"
-            SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-}"
             STAMP="$(date +%Y%m%d%H%M%S)"
             NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
             PREVIOUS_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
@@ -103,20 +103,27 @@ jobs:
             fi
             pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
 
-            # Fail-fast: process can be "online" in PM2 but still not accept connections.
-            HEALTH_OK=0
-            for _ in {1..12}; do
-              if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
-                HEALTH_OK=1
+            # Wait for Nest to bind :4000 (PM2 "online" is not enough).
+            for _ in $(seq 1 90); do
+              if ss -ltn 2>/dev/null | grep -qE ":4000\\s"; then
                 break
               fi
               sleep 2
             done
 
+            HEALTH_OK=0
+            for _ in $(seq 1 60); do
+              if curl -fsS "$HEALTHCHECK_URL" >/dev/null; then
+                HEALTH_OK=1
+                break
+              fi
+              sleep 3
+            done
+
             if [[ "$HEALTH_OK" -ne 1 ]]; then
               echo "Backend healthcheck failed after deploy: $HEALTHCHECK_URL" >&2
               echo "Diagnostic: listeners on backend port" >&2
-              ss -ltnp | rg ":4000" || true
+              ss -ltnp | grep ':4000' || true
               echo "Diagnostic: PM2 backend logs (last 80 lines)" >&2
               pm2 logs "$PROCESS_NAME" --lines 80 --nostream || true
               if [[ -n "$PREVIOUS_RELEASE_DIR" && -d "$PREVIOUS_RELEASE_DIR" ]]; then
@@ -129,30 +136,37 @@ jobs:
                 pm2 start dist/main.js --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
               fi
               ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-              if [[ -n "$SUMMARY_FILE" ]]; then
-                {
-                  echo "## Backend deploy status"
-                  echo ""
-                  echo "- Result: ❌ failed"
-                  echo "- Rollback: ✅ performed"
-                  echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
-                  echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-                } >> "$SUMMARY_FILE"
-              fi
+              echo "## Backend deploy status (remote)" >&2
+              echo "- Result: failed" >&2
+              echo "- Rollback: performed" >&2
+              echo "- Active release: ${ACTIVE_RELEASE_DIR}" >&2
               exit 1
             fi
 
             ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-            if [[ -n "$SUMMARY_FILE" ]]; then
-              {
-                echo "## Backend deploy status"
-                echo ""
-                echo "- Result: ✅ success"
-                echo "- Rollback: ❌ not needed"
-                echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
-                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-              } >> "$SUMMARY_FILE"
-            fi
+            echo "## Backend deploy status (remote)" >&2
+            echo "- Result: success" >&2
+            echo "- Rollback: not needed" >&2
+            echo "- Active release: ${ACTIVE_RELEASE_DIR}" >&2
 
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          if [ "${{ steps.remote_deploy.outcome }}" = "success" ]; then
+            {
+              echo "## Backend deploy"
+              echo ""
+              echo "- Result: success"
+              echo "- Note: \`Active release\` and diagnostics are in the SSH step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Backend deploy"
+              echo ""
+              echo "- Result: failed"
+              echo "- Note: see SSH step log for rollback and diagnostics."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

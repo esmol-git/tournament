@@ -59,6 +59,7 @@ jobs:
           target: /tmp/
 
       - name: Deploy release on server
+        id: remote_deploy
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -66,7 +67,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
-          envs: DEPLOY_PATH,REMOTE_ARCHIVE,FRONTEND_PORT,FRONTEND_HOST,GITHUB_STEP_SUMMARY
+          envs: DEPLOY_PATH,REMOTE_ARCHIVE,FRONTEND_PORT,FRONTEND_HOST
           script: |
             set -euo pipefail
             APP_ROOT="${DEPLOY_PATH}"
@@ -75,7 +76,6 @@ jobs:
             CURRENT_LINK="$APP_ROOT/current"
             PROCESS_NAME="frontend"
             HEALTHCHECK_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}/"
-            SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-}"
             STAMP="$(date +%Y%m%d%H%M%S)"
             NEW_RELEASE_DIR="$RELEASES_DIR/$STAMP"
             PREVIOUS_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
@@ -122,7 +122,7 @@ jobs:
             if [[ "$HEALTH_OK" -ne 1 ]]; then
               echo "Frontend healthcheck failed after deploy: $HEALTHCHECK_URL" >&2
               echo "Diagnostic: listeners on frontend port" >&2
-              ss -ltnp | rg ":${FRONTEND_PORT}" || true
+              ss -ltnp | grep ":${FRONTEND_PORT}" || true
               echo "Diagnostic: PM2 frontend logs (last 80 lines)" >&2
               pm2 logs "$PROCESS_NAME" --lines 80 --nostream || true
               if [[ -n "$PREVIOUS_RELEASE_DIR" && -d "$PREVIOUS_RELEASE_DIR" ]]; then
@@ -134,30 +134,37 @@ jobs:
                 HOST="$FRONTEND_HOST" PORT="$FRONTEND_PORT" pm2 start "$CURRENT_LINK/.output/server/index.mjs" --name "$PROCESS_NAME" --cwd "$CURRENT_LINK"
               fi
               ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-              if [[ -n "$SUMMARY_FILE" ]]; then
-                {
-                  echo "## Frontend deploy status"
-                  echo ""
-                  echo "- Result: ❌ failed"
-                  echo "- Rollback: ✅ performed"
-                  echo "- Reason: healthcheck failed for \`$HEALTHCHECK_URL\`"
-                  echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-                } >> "$SUMMARY_FILE"
-              fi
+              echo "## Frontend deploy status (remote)" >&2
+              echo "- Result: failed" >&2
+              echo "- Rollback: performed" >&2
+              echo "- Active release: ${ACTIVE_RELEASE_DIR}" >&2
               exit 1
             fi
 
             ACTIVE_RELEASE_DIR="$(readlink -f "$CURRENT_LINK" 2>/dev/null || echo "unknown")"
-            if [[ -n "$SUMMARY_FILE" ]]; then
-              {
-                echo "## Frontend deploy status"
-                echo ""
-                echo "- Result: ✅ success"
-                echo "- Rollback: ❌ not needed"
-                echo "- Healthcheck: passed (\`$HEALTHCHECK_URL\`)"
-                echo "- Active release: \`$ACTIVE_RELEASE_DIR\`"
-              } >> "$SUMMARY_FILE"
-            fi
+            echo "## Frontend deploy status (remote)" >&2
+            echo "- Result: success" >&2
+            echo "- Rollback: not needed" >&2
+            echo "- Active release: ${ACTIVE_RELEASE_DIR}" >&2
 
             pm2 save
             ls -1dt "$RELEASES_DIR"/* 2>/dev/null | sed -e '1,5d' | xargs -r rm -rf
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          if [ "${{ steps.remote_deploy.outcome }}" = "success" ]; then
+            {
+              echo "## Frontend deploy"
+              echo ""
+              echo "- Result: success"
+              echo "- Note: \`Active release\` and diagnostics are in the SSH step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Frontend deploy"
+              echo ""
+              echo "- Result: failed"
+              echo "- Note: see SSH step log for rollback and diagnostics."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
