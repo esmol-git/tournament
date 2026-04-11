@@ -59,6 +59,28 @@ export type TournamentMatchRow = {
   events?: TournamentMatchEventRow[]
 }
 
+/** Группа турнира (детальный ответ API; для таблиц с groupId). */
+export type TournamentGroupRow = {
+  id: string
+  name: string
+  sortOrder?: number
+}
+
+/** Строка турнирной таблицы (`GET .../tournaments/:id/table`). */
+export type TournamentTableRow = {
+  teamId: string
+  teamName: string
+  position: number
+  played: number
+  wins: number
+  draws: number
+  losses: number
+  goalsFor: number
+  goalsAgainst: number
+  goalDiff: number
+  points: number
+}
+
 /** Усечённый тип ответа деталей турнира (поле `matches` — главное для мобилки). */
 export type TournamentDetailResponse = {
   id: string
@@ -71,6 +93,8 @@ export type TournamentDetailResponse = {
   published?: boolean
   matches: TournamentMatchRow[]
   matchesTotal?: number
+  /** Группы (если турнир с группами) — для вкладки «Таблицы». */
+  groups?: TournamentGroupRow[]
   summary?: {
     teamsRegisteredTotal?: number
     matchesTotal?: number

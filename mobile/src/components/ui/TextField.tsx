@@ -1,5 +1,5 @@
 import { StyleSheet, Text, TextInput, View } from 'react-native'
-import { colors } from '../../theme/colors'
+import { useTheme } from '../../theme/ThemeContext'
 
 type Props = {
   label: string
@@ -20,9 +20,10 @@ export function TextField({
   autoCapitalize = 'none',
   autoCorrect = false,
 }: Props) {
+  const { colors } = useTheme()
   return (
     <View style={styles.wrap}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={[styles.label, { color: colors.primary }]}>{label}</Text>
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -31,7 +32,14 @@ export function TextField({
         secureTextEntry={secureTextEntry}
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
-        style={styles.input}
+        style={[
+          styles.input,
+          {
+            borderColor: colors.border,
+            color: colors.text,
+            backgroundColor: colors.surface,
+          },
+        ]}
       />
     </View>
   )
@@ -44,17 +52,13 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: '600',
-    color: colors.primary,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    color: colors.text,
-    backgroundColor: colors.background,
   },
 })

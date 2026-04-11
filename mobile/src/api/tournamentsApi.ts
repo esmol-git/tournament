@@ -1,5 +1,9 @@
 import type { UserRole } from '../types/user'
-import type { TournamentDetailResponse, TournamentListResponse } from '../types/tournament'
+import type {
+  TournamentDetailResponse,
+  TournamentListResponse,
+  TournamentTableRow,
+} from '../types/tournament'
 import { apiRequest } from './client'
 
 /** USER / REFEREE не проходят TenantAdminStaffGuard на `/tenants/.../tournaments`. */
@@ -69,5 +73,27 @@ export async function getPublicTournamentRoster(params: {
   return apiRequest<PublicTournamentRosterTeam[]>(
     `/public/tenants/${encodeURIComponent(params.tenantSlug)}/tournaments/${encodeURIComponent(params.tournamentId)}/roster`,
     { auth: false },
+  )
+}
+
+/** Турнирная таблица (общая или по группе). */
+export async function getTournamentTable(params: {
+  tournamentId: string
+  tenantSlug: string
+  tenantId: string
+  role: UserRole
+  groupId?: string
+}): Promise<TournamentTableRow[]> {
+  const qs = new URLSearchParams()
+  if (params.groupId) qs.set('groupId', params.groupId)
+  const q = qs.toString() ? `?${qs}` : ''
+  if (shouldUsePublicTournamentApi(params.role)) {
+    return apiRequest<TournamentTableRow[]>(
+      `/public/tenants/${encodeURIComponent(params.tenantSlug)}/tournaments/${encodeURIComponent(params.tournamentId)}/table${q}`,
+      { auth: false },
+    )
+  }
+  return apiRequest<TournamentTableRow[]>(
+    `/tournaments/${encodeURIComponent(params.tournamentId)}/table${q}`,
   )
 }

@@ -20,10 +20,15 @@ export type MatchesStackParamList = {
   MatchProtocol: MatchProtocolRouteParams
 }
 
+export type SettingsStackParamList = {
+  Settings: undefined
+}
+
 export type MainTabParamList = {
   HomeTab: NavigatorScreenParams<HomeStackParamList> | undefined
   TournamentsTab: NavigatorScreenParams<TournamentsStackParamList> | undefined
   MatchesTab: NavigatorScreenParams<MatchesStackParamList> | undefined
+  SettingsTab: NavigatorScreenParams<SettingsStackParamList> | undefined
 }
 
 export type RootStackParamList = {

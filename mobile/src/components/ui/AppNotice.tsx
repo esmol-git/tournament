@@ -16,6 +16,8 @@ type Props = {
   variant: NoticeVariant
   /** Короткий заголовок (необязательно). */
   title?: string
+  /** Дополнительная строка под основным текстом (например подсказка при сетевой ошибке). */
+  detail?: string
   children: ReactNode
   onDismiss?: () => void
   style?: StyleProp<ViewStyle>
@@ -23,14 +25,12 @@ type Props = {
   compact?: boolean
 }
 
-export function AppNotice({ variant, title, children, onDismiss, style, compact }: Props) {
+export function AppNotice({ variant, title, detail, children, onDismiss, style, compact }: Props) {
   const t = notice[variant]
-  const content =
-    typeof children === 'string' ? (
-      <Text style={[styles.text, { color: t.text }]}>{children}</Text>
-    ) : (
-      children
-    )
+  /** Одна строка в JSX даёт string; перенос строки в разметке — несколько text-node children, не string. Их нельзя класть во View без Text. */
+  const content = (
+    <Text style={[styles.text, { color: t.text }]}>{children}</Text>
+  )
 
   return (
     <View
@@ -50,6 +50,11 @@ export function AppNotice({ variant, title, children, onDismiss, style, compact 
           </Text>
         ) : null}
         {content}
+        {detail ? (
+          <Text style={[styles.detail, { color: t.text }]} accessibilityRole="text">
+            {detail}
+          </Text>
+        ) : null}
       </View>
       {onDismiss ? (
         <Pressable
@@ -92,6 +97,12 @@ const styles = StyleSheet.create({
   text: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  detail: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8,
+    opacity: 0.85,
   },
   dismissHit: { padding: 2, marginTop: -2, marginRight: -2 },
 })

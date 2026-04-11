@@ -1,8 +1,10 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import * as Haptics from 'expo-haptics'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Ionicons } from '@expo/vector-icons'
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -28,6 +30,7 @@ import {
 import { useAuth } from '../../auth/AuthContext'
 import { canEditMatchProtocol } from '../../auth/roleLabels'
 import { AppNotice } from '../../components/ui/AppNotice'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { PrimaryButton } from '../../components/ui/PrimaryButton'
 import type { MatchProtocolRouteParams } from '../../navigation/types'
 import type { TournamentMatchRow } from '../../types/tournament'
@@ -35,11 +38,17 @@ import {
   buildProtocolEventsPayload,
   countGoalsFromDrafts,
   createEmptyDraft,
+  draftsToProtocolTimelineEvents,
   hasGoalEvents,
   parseEventsFromMatch,
   type ProtocolEventDraft,
   validateDraftsBeforeSave,
 } from '../../utils/matchProtocolPayload'
+import {
+  buildProtocolPlayerTimelineMapsForPicker,
+  isProtocolPlayerSelectableAtMinute,
+  parseProtocolMinute,
+} from '../../../../shared/protocol/playerTimeline'
 import {
   buildPlayerPreviewMapFromEvents,
   formatProtocolEventLineForDisplay,
@@ -48,12 +57,37 @@ import {
 } from '../../utils/protocolPlayerNames'
 import { formatDateTime } from '../../utils/formatDate'
 import { matchStatusLabel } from '../../utils/tournamentLabels'
-import { colors } from '../../theme/colors'
+import { createMatchProtocolStyles } from '../../theme/matchProtocolStyles'
+import { useTheme } from '../../theme/ThemeContext'
 
 type Props = NativeStackScreenProps<{ MatchProtocol: MatchProtocolRouteParams }, 'MatchProtocol'>
 
 const EDITABLE_STATUSES = ['SCHEDULED', 'LIVE', 'PLAYED', 'FINISHED'] as const
 type EditableStatus = (typeof EDITABLE_STATUSES)[number]
+
+type ProtocolFormBaseline = {
+  homeScoreStr: string
+  awayScoreStr: string
+  status: string
+  draftEvents: ProtocolEventDraft[]
+  extraTime: { home: string; away: string }
+  penalty: { home: string; away: string }
+}
+
+function draftsEqual(a: ProtocolEventDraft[], b: ProtocolEventDraft[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+const MINUTE_UI_MAX = 200
+
+function clampProtocolMinute(n: number): number {
+  return Math.max(0, Math.min(MINUTE_UI_MAX, Math.round(n)))
+}
+
+function parseMinuteUi(s: string): number {
+  const n = parseInt(s.replace(/\D/g, ''), 10)
+  return Number.isFinite(n) ? clampProtocolMinute(n) : 0
+}
 
 function parseScore(s: string): number {
   const n = parseInt(s.replace(/\D/g, ''), 10)
@@ -62,6 +96,7 @@ function parseScore(s: string): number {
 
 export function MatchProtocolScreen({ route, navigation }: Props) {
   const { tournamentId, matchId } = route.params
+  const { colors } = useTheme()
   const { user, tenant } = useAuth()
   const [match, setMatch] = useState<TournamentMatchRow | null>(null)
   const [loading, setLoading] = useState(true)
@@ -83,9 +118,20 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
   const [editorVisible, setEditorVisible] = useState(false)
   const [editorDraft, setEditorDraft] = useState<ProtocolEventDraft | null>(null)
   const [pickerVisible, setPickerVisible] = useState(false)
-  const [pickerOptions, setPickerOptions] = useState<ProtocolRosterPlayer[]>([])
+  const [pickerOptions, setPickerOptions] = useState<(ProtocolRosterPlayer & { disabled?: boolean })[]>([])
   const [pickerField, setPickerField] = useState<'playerId' | 'assistPlayerId' | 'substitutePlayerInId' | null>(null)
   const [pickerTeamSide, setPickerTeamSide] = useState<'HOME' | 'AWAY' | null>(null)
+
+  /** «Матч» — счёт, статус, события; «Заявка» — длинные списки составов отдельно. */
+  const [protocolTab, setProtocolTab] = useState<'match' | 'roster'>('match')
+
+  /**
+   * После успешного сохранения или «Выйти без сохранения» вызывается навигация назад.
+   * Иначе снова сработает beforeRemove, isDirty всё ещё true → preventDefault → выйти нельзя.
+   */
+  const allowExitWithoutDirtyPromptRef = useRef(false)
+
+  const [protocolBaseline, setProtocolBaseline] = useState<ProtocolFormBaseline | null>(null)
 
   const eventPlayerPreviewMap = useMemo(
     () => buildPlayerPreviewMapFromEvents(match?.events),
@@ -99,6 +145,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     setRosterError(null)
     setEventsEditorEnabled(false)
     setRoster(null)
+    setProtocolBaseline(null)
     try {
       const d = await getTournamentDetail({
         tournamentId,
@@ -110,14 +157,12 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
       const m = d.matches?.find((x) => x.id === matchId) ?? null
       setMatch(m)
       if (m) {
-        setHomeScoreStr(String(m.homeScore ?? 0))
-        setAwayScoreStr(String(m.awayScore ?? 0))
         const st = m.status
+        let editableStatus: EditableStatus = 'SCHEDULED'
         if (EDITABLE_STATUSES.includes(st as EditableStatus)) {
-          setStatus(st)
-        } else {
-          setStatus('SCHEDULED')
+          editableStatus = st as EditableStatus
         }
+        setStatus(editableStatus)
 
         const r = await loadProtocolRoster({
           tenantId: tenant.id,
@@ -136,10 +181,37 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
           setDraftEvents(parsed.drafts)
           setExtraTime(parsed.extraTime)
           setPenalty(parsed.penalty)
+          let homeStr = String(m.homeScore ?? 0)
+          let awayStr = String(m.awayScore ?? 0)
+          if (hasGoalEvents(parsed.drafts)) {
+            const c = countGoalsFromDrafts(parsed.drafts)
+            homeStr = String(c.home)
+            awayStr = String(c.away)
+          }
+          setHomeScoreStr(homeStr)
+          setAwayScoreStr(awayStr)
+          setProtocolBaseline({
+            homeScoreStr: homeStr,
+            awayScoreStr: awayStr,
+            status: editableStatus,
+            draftEvents: parsed.drafts.map((row) => ({ ...row })),
+            extraTime: { ...parsed.extraTime },
+            penalty: { ...parsed.penalty },
+          })
         } else {
           setDraftEvents([])
           setExtraTime({ home: '', away: '' })
           setPenalty({ home: '', away: '' })
+          setHomeScoreStr(String(m.homeScore ?? 0))
+          setAwayScoreStr(String(m.awayScore ?? 0))
+          setProtocolBaseline({
+            homeScoreStr: String(m.homeScore ?? 0),
+            awayScoreStr: String(m.awayScore ?? 0),
+            status: editableStatus,
+            draftEvents: [],
+            extraTime: { home: '', away: '' },
+            penalty: { home: '', away: '' },
+          })
         }
       }
     } catch (e) {
@@ -155,6 +227,10 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
   }, [load])
 
   useEffect(() => {
+    setProtocolTab('match')
+  }, [matchId])
+
+  useEffect(() => {
     if (!hasGoalEvents(draftEvents)) return
     const c = countGoalsFromDrafts(draftEvents)
     setHomeScoreStr(String(c.home))
@@ -167,6 +243,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
       : 'Протокол'
     navigation.setOptions({ title: title.length > 34 ? `${title.slice(0, 31)}…` : title })
   }, [navigation, match])
+
+  const styles = useMemo(() => createMatchProtocolStyles(colors), [colors])
 
   const locked =
     match &&
@@ -184,16 +262,58 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
   const homeName = match?.homeTeam?.name ?? 'Хозяева'
   const awayName = match?.awayTeam?.name ?? 'Гости'
 
+  const isDirty = useMemo(() => {
+    if (!protocolBaseline || !match || !user || !tenant) return false
+    if (!canEditMatchProtocol(user.role) || match.status === 'CANCELED') return false
+    const b = protocolBaseline
+    return (
+      b.homeScoreStr !== homeScoreStr ||
+      b.awayScoreStr !== awayScoreStr ||
+      b.status !== status ||
+      !draftsEqual(b.draftEvents, draftEvents) ||
+      b.extraTime.home !== extraTime.home ||
+      b.extraTime.away !== extraTime.away ||
+      b.penalty.home !== penalty.home ||
+      b.penalty.away !== penalty.away
+    )
+  }, [
+    protocolBaseline,
+    match,
+    user,
+    tenant,
+    homeScoreStr,
+    awayScoreStr,
+    status,
+    draftEvents,
+    extraTime,
+    penalty,
+  ])
+
   const openPicker = (field: typeof pickerField, side: 'HOME' | 'AWAY') => {
-    if (!roster || !field) return
+    if (!roster || !field || !editorDraft) return
     Keyboard.dismiss()
     let opts = side === 'HOME' ? roster.home : roster.away
-    if (field === 'assistPlayerId' && editorDraft?.playerId?.trim()) {
+    if (field === 'assistPlayerId' && editorDraft.playerId?.trim()) {
       opts = opts.filter((p) => p.playerId !== editorDraft.playerId)
     }
-    if (field === 'substitutePlayerInId' && editorDraft?.playerId?.trim()) {
+    if (field === 'substitutePlayerInId' && editorDraft.playerId?.trim()) {
       opts = opts.filter((p) => p.playerId !== editorDraft.playerId)
     }
+    const timeline = draftsToProtocolTimelineEvents(
+      draftEvents.filter((e) => e.key !== editorDraft.key),
+    )
+    const maps = buildProtocolPlayerTimelineMapsForPicker(timeline)
+    const E = parseProtocolMinute(editorDraft.minute)
+    const allowId =
+      field === 'playerId'
+        ? editorDraft.playerId
+        : field === 'assistPlayerId'
+          ? editorDraft.assistPlayerId
+          : editorDraft.substitutePlayerInId
+    opts = opts.map((p) => ({
+      ...p,
+      disabled: !isProtocolPlayerSelectableAtMinute(p.playerId, E, maps, { allowPlayerId: allowId }),
+    }))
     setPickerField(field)
     setPickerOptions(opts)
     setPickerTeamSide(side)
@@ -206,8 +326,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     setPickerTeamSide(null)
   }
 
-  const applyPicker = (playerId: string) => {
-    if (!editorDraft || !pickerField) return
+  const applyPicker = (playerId: string, rowDisabled?: boolean) => {
+    if (!editorDraft || !pickerField || rowDisabled) return
     setEditorDraft((d) => {
       if (!d) return d
       if (pickerField === 'playerId') return { ...d, playerId }
@@ -232,21 +352,23 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
 
   function saveEditor() {
     if (!editorDraft) return
-    const v = validateDraftsBeforeSave([editorDraft])
-    if (v) {
-      setError(v)
-      return
-    }
-    setError(null)
-    setDraftEvents((prev) => {
-      const idx = prev.findIndex((x) => x.key === editorDraft.key)
+    const mergedDrafts = (() => {
+      const idx = draftEvents.findIndex((x) => x.key === editorDraft.key)
       if (idx >= 0) {
-        const next = [...prev]
+        const next = [...draftEvents]
         next[idx] = editorDraft
         return next
       }
-      return [...prev, editorDraft]
-    })
+      return [...draftEvents, editorDraft]
+    })()
+    const v = validateDraftsBeforeSave(mergedDrafts)
+    if (v) {
+      setError(v)
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+      return
+    }
+    setError(null)
+    setDraftEvents(mergedDrafts)
     setEditorVisible(false)
     setEditorDraft(null)
   }
@@ -255,15 +377,25 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     setDraftEvents((prev) => prev.filter((x) => x.key !== key))
   }
 
-  async function onSave() {
-    if (!match || !user || !canEdit) return
+  const bumpEditorMinute = useCallback((delta: number) => {
+    setEditorDraft((d) => {
+      if (!d) return d
+      const next = clampProtocolMinute(parseMinuteUi(d.minute) + delta)
+      return { ...d, minute: String(next) }
+    })
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+  }, [])
+
+  const onSave = useCallback(async (): Promise<boolean> => {
+    if (!match || !user || !canEdit) return false
     setSaving(true)
     setError(null)
     try {
       const draftErr = eventsEditorEnabled ? validateDraftsBeforeSave(draftEvents) : null
       if (draftErr) {
         setError(draftErr)
-        return
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+        return false
       }
 
       let homeScore = parseScore(homeScoreStr)
@@ -281,7 +413,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
           Number.isFinite(ph) && Number.isFinite(pa) && ph >= 0 && pa >= 0 && ph !== pa
         if (!okPen) {
           setError('В плей-офф при ничьей основного времени укажите разный счёт в серии пенальти.')
-          return
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+          return false
         }
       }
 
@@ -299,14 +432,78 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         })
       }
 
-      await updateTournamentMatchProtocol(tournamentId, matchId, payload)
-      navigation.goBack()
-    } catch (e) {
-      setError(getErrorMessage(e))
+      let lastErr: unknown
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await updateTournamentMatchProtocol(tournamentId, matchId, payload)
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          allowExitWithoutDirtyPromptRef.current = true
+          navigation.goBack()
+          return true
+        } catch (e) {
+          lastErr = e
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 450))
+          }
+        }
+      }
+      setError(getErrorMessage(lastErr))
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      return false
     } finally {
       setSaving(false)
     }
-  }
+  }, [
+    match,
+    user,
+    canEdit,
+    eventsEditorEnabled,
+    draftEvents,
+    homeScoreStr,
+    awayScoreStr,
+    status,
+    isPlayoff,
+    penalty,
+    extraTime,
+    tournamentId,
+    matchId,
+    navigation,
+  ])
+
+  useEffect(() => {
+    const sub = navigation.addListener('beforeRemove', (e) => {
+      if (allowExitWithoutDirtyPromptRef.current) {
+        allowExitWithoutDirtyPromptRef.current = false
+        return
+      }
+      if (!isDirty) return
+      e.preventDefault()
+      Alert.alert(
+        'Несохранённые изменения',
+        'Протокол изменён. Сохранить перед выходом или выйти без сохранения?',
+        [
+          { text: 'Продолжить правку', style: 'cancel' },
+          {
+            text: 'Выйти без сохранения',
+            style: 'destructive',
+            onPress: () => {
+              allowExitWithoutDirtyPromptRef.current = true
+              navigation.dispatch(e.data.action)
+            },
+          },
+          {
+            text: 'Сохранить',
+            onPress: () => {
+              void (async () => {
+                await onSave()
+              })()
+            },
+          },
+        ],
+      )
+    })
+    return sub
+  }, [navigation, isDirty, onSave])
 
   if (!user || !tenant) return null
 
@@ -323,14 +520,32 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
   if (!match) {
     return (
       <SafeAreaView style={styles.safe} edges={['bottom']}>
-        <View style={styles.noticePage}>
-          <AppNotice variant="error">{error ?? 'Матч не найден'}</AppNotice>
+        <View style={styles.emptyMatchWrap}>
+          <EmptyState
+            icon="alert-circle-outline"
+            title="Матч недоступен"
+            description={
+              error ??
+              'Матч не найден в турнире, удалён или у вас нет доступа к нему с текущей ролью.'
+            }
+            actionLabel="Повторить"
+            onAction={() => void load()}
+          />
+          <View style={styles.emptyMatchBack}>
+            <PrimaryButton label="Назад" variant="outline" onPress={() => navigation.goBack()} />
+          </View>
         </View>
       </SafeAreaView>
     )
   }
 
   const readOnly = !canEdit
+  const scoreFromGoalEvents = eventsEditorEnabled && hasGoalEvents(draftEvents)
+  const hasRosterList = Boolean(roster && (roster.home.length > 0 || roster.away.length > 0))
+  const rosterPlayerCount = roster ? roster.home.length + roster.away.length : 0
+  const showRosterLoadError = !eventsEditorEnabled && Boolean(rosterError)
+  const showRosterEmptySquads =
+    Boolean(eventsEditorEnabled && roster && roster.home.length === 0 && roster.away.length === 0)
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -338,52 +553,110 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={styles.time}>{formatDateTime(match.startTime)}</Text>
-          <Text style={styles.teams}>
-            {match.homeTeam?.name ?? '—'} — {match.awayTeam?.name ?? '—'}
-          </Text>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          nestedScrollEnabled
+        >
+          <View style={styles.matchHeader}>
+            <Text style={styles.time}>{formatDateTime(match.startTime)}</Text>
+            <Text style={styles.teams}>
+              {match.homeTeam?.name ?? '—'} — {match.awayTeam?.name ?? '—'}
+            </Text>
+          </View>
           {locked ? (
             <AppNotice variant="warning" style={styles.noticeBlock}>
-              Матч в статусе «{matchStatusLabel(match.status)}». Правка может быть ограничена; при ошибке
-              сохранения используйте веб-админку.
+              {`Матч в статусе «${matchStatusLabel(match.status)}». Правка может быть ограничена; при ошибке сохранения используйте веб-админку.`}
             </AppNotice>
           ) : null}
           {readOnly ? (
-            <AppNotice variant="warning" style={styles.noticeBlock}>
+            <AppNotice variant="info" style={styles.noticeBlock}>
               {match.status === 'CANCELED'
-                ? 'Отменённые матчи здесь не редактируются (используйте сайт).'
-                : 'Недостаточно прав для внесения протокола.'}
+                ? 'Отменённые матчи в приложении не редактируются.'
+                : 'Режим просмотра: внести протокол могут администраторы, модераторы турнира и судьи. При необходимости используйте веб-админку.'}
             </AppNotice>
           ) : null}
-          <View style={styles.row}>
-            <View style={styles.scoreCol}>
-              <Text style={styles.scoreLabel}>Хозяева</Text>
-              <TextInput
-                style={[styles.scoreInput, hasGoalEvents(draftEvents) && eventsEditorEnabled && styles.scoreInputMuted]}
-                keyboardType="number-pad"
-                editable={!readOnly && !(eventsEditorEnabled && hasGoalEvents(draftEvents))}
-                value={homeScoreStr}
-                onChangeText={setHomeScoreStr}
-              />
-              {eventsEditorEnabled && hasGoalEvents(draftEvents) ? (
-                <Text style={styles.scoreHint}>По голам в списке ниже</Text>
-              ) : null}
+          {!readOnly && user.role === 'REFEREE' ? (
+            <AppNotice variant="info" style={styles.noticeBlock}>
+              Роль «Судья»: проверьте статус матча, события и счёт перед сохранением — после отправки исправления возможны только через организаторов.
+            </AppNotice>
+          ) : null}
+
+          <View style={styles.protocolTabBar}>
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: protocolTab === 'match' }}
+              onPress={() => {
+                setProtocolTab('match')
+                void Haptics.selectionAsync()
+              }}
+              style={[styles.protocolTab, protocolTab === 'match' && styles.protocolTabActive]}
+            >
+              <Text style={[styles.protocolTabText, protocolTab === 'match' && styles.protocolTabTextActive]}>
+                Матч
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: protocolTab === 'roster' }}
+              onPress={() => {
+                setProtocolTab('roster')
+                void Haptics.selectionAsync()
+              }}
+              style={[styles.protocolTab, protocolTab === 'roster' && styles.protocolTabActive]}
+            >
+              <Text style={[styles.protocolTabText, protocolTab === 'roster' && styles.protocolTabTextActive]}>
+                {rosterPlayerCount > 0 ? `Заявка (${rosterPlayerCount})` : 'Заявка'}
+              </Text>
+            </Pressable>
+          </View>
+
+          {protocolTab === 'match' ? (
+            <>
+          <View style={styles.scoreBoard}>
+            {scoreFromGoalEvents ? (
+              <View style={styles.scoreAutoPill}>
+                <Ionicons name="football-outline" size={15} color={colors.accent} />
+                <Text style={styles.scoreAutoPillText}>Счёт по событиям</Text>
+              </View>
+            ) : null}
+            <View style={styles.scoreBoardRow}>
+              <View style={styles.scoreTeamCol}>
+                <Text style={styles.scoreLabel}>Хозяева</Text>
+                <TextInput
+                  style={[styles.scoreInput, scoreFromGoalEvents && styles.scoreInputMuted]}
+                  keyboardType="number-pad"
+                  editable={!readOnly && !scoreFromGoalEvents}
+                  value={homeScoreStr}
+                  onChangeText={setHomeScoreStr}
+                />
+              </View>
+              <Text style={styles.colon}>:</Text>
+              <View style={styles.scoreTeamCol}>
+                <Text style={styles.scoreLabel}>Гости</Text>
+                <TextInput
+                  style={[styles.scoreInput, scoreFromGoalEvents && styles.scoreInputMuted]}
+                  keyboardType="number-pad"
+                  editable={!readOnly && !scoreFromGoalEvents}
+                  value={awayScoreStr}
+                  onChangeText={setAwayScoreStr}
+                />
+              </View>
             </View>
-            <Text style={styles.colon}>:</Text>
-            <View style={styles.scoreCol}>
-              <Text style={styles.scoreLabel}>Гости</Text>
-              <TextInput
-                style={[styles.scoreInput, hasGoalEvents(draftEvents) && eventsEditorEnabled && styles.scoreInputMuted]}
-                keyboardType="number-pad"
-                editable={!readOnly && !(eventsEditorEnabled && hasGoalEvents(draftEvents))}
-                value={awayScoreStr}
-                onChangeText={setAwayScoreStr}
-              />
-            </View>
+            {scoreFromGoalEvents ? (
+              <Text style={styles.scoreFootnote}>
+                Числа в табло берутся из голов в разделе «События» ниже — измените их там или удалите гол.
+              </Text>
+            ) : null}
           </View>
           <Text style={styles.label}>Статус матча</Text>
-          <View style={styles.chips}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsScroll}
+            contentContainerStyle={styles.chips}
+          >
             {EDITABLE_STATUSES.map((s) => (
               <Pressable
                 key={s}
@@ -399,38 +672,77 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                 </Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
 
-          {!eventsEditorEnabled && rosterError ? (
+          {showRosterLoadError ? (
             <AppNotice variant="warning" style={styles.noticeBlock}>
               {rosterError}
             </AppNotice>
           ) : null}
-          {eventsEditorEnabled && roster && roster.home.length === 0 && roster.away.length === 0 ? (
+          {showRosterEmptySquads ? (
             <AppNotice variant="info" style={styles.noticeBlock}>
               В составах нет игроков — доступны только текстовые заметки и служебные поля плей-офф.
             </AppNotice>
           ) : null}
 
-          {roster && (roster.home.length > 0 || roster.away.length > 0) ? (
-            <View style={styles.rosterSection}>
-              <Text style={styles.eventsTitle}>Игроки в заявке</Text>
-              <Text style={styles.rosterSideLabel}>{homeName}</Text>
-              {roster.home.map((p) => (
-                <Text key={p.playerId} style={styles.rosterLine}>
-                  · {p.label}
-                </Text>
-              ))}
-              <Text style={[styles.rosterSideLabel, styles.rosterSideSpacer]}>{awayName}</Text>
-              {roster.away.map((p) => (
-                <Text key={p.playerId} style={styles.rosterLine}>
-                  · {p.label}
-                </Text>
-              ))}
-            </View>
-          ) : null}
+            </>
+          ) : (
+            <>
+              <Text style={styles.rosterTabHint}>
+                Списки игроков в заявке — для ориентира и выбора в событиях. Сохранение протокола — во вкладке «Матч».
+              </Text>
+              {showRosterLoadError ? (
+                <AppNotice variant="warning" style={styles.noticeBlock}>
+                  {rosterError}
+                </AppNotice>
+              ) : null}
+              {showRosterEmptySquads ? (
+                <AppNotice variant="info" style={styles.noticeBlock}>
+                  В составах нет игроков — доступны только текстовые заметки и служебные поля плей-офф.
+                </AppNotice>
+              ) : null}
+              {hasRosterList && roster ? (
+                <View style={styles.rosterSection}>
+                  <Text style={styles.rosterSectionTitle}>Составы</Text>
+                  <Text style={styles.rosterSectionSub}>
+                    При добавлении событий во вкладке «Матч» выбирайте игрока из списка своей команды.
+                  </Text>
+                  {roster.home.length > 0 ? (
+                    <View style={[styles.rosterTeamCard, styles.rosterTeamCardFirst]}>
+                      <Text style={styles.rosterSideLabel}>{homeName}</Text>
+                      {roster.home.map((p, i) => (
+                        <View
+                          key={p.playerId}
+                          style={[styles.rosterPlayerRow, i === roster.home.length - 1 && styles.rosterPlayerRowLast]}
+                        >
+                          <View style={styles.rosterBullet} />
+                          <Text style={styles.rosterLine}>{p.label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                  {roster.away.length > 0 ? (
+                    <View style={[styles.rosterTeamCard, roster.home.length === 0 && styles.rosterTeamCardFirst]}>
+                      <Text style={[styles.rosterSideLabel, styles.rosterSideSpacer]}>{awayName}</Text>
+                      {roster.away.map((p, i) => (
+                        <View
+                          key={p.playerId}
+                          style={[styles.rosterPlayerRow, i === roster.away.length - 1 && styles.rosterPlayerRowLast]}
+                        >
+                          <View style={styles.rosterBullet} />
+                          <Text style={styles.rosterLine}>{p.label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : !showRosterLoadError && !showRosterEmptySquads ? (
+                <Text style={styles.eventsEmpty}>Состав для этого матча пока не загружен.</Text>
+              ) : null}
+            </>
+          )}
 
-          {eventsEditorEnabled && !readOnly ? (
+          {protocolTab === 'match' && eventsEditorEnabled && !readOnly ? (
             <View style={styles.eventsSection}>
               <Text style={styles.eventsTitle}>События</Text>
               <Text style={styles.eventsSub}>
@@ -457,7 +769,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                 <Text style={styles.addEvBtnText}>+ Добавить событие</Text>
               </Pressable>
             </View>
-          ) : !eventsEditorEnabled && match.events && match.events.length > 0 ? (
+          ) : protocolTab === 'match' && !eventsEditorEnabled && match.events && match.events.length > 0 ? (
             <View style={styles.events}>
               <Text style={styles.eventsTitle}>События в протоколе</Text>
               <Text style={styles.eventsHint}>
@@ -481,7 +793,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
             </View>
           ) : null}
 
-          {isPlayoff && eventsEditorEnabled && !readOnly ? (
+          {protocolTab === 'match' && isPlayoff && eventsEditorEnabled && !readOnly ? (
             <View style={styles.playoffBox}>
               <Text style={styles.playoffTitle}>Плей-офф</Text>
               <Text style={styles.playoffHint}>
@@ -537,9 +849,23 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <Modal visible={editorVisible} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+      <Modal
+        visible={editorVisible}
+        animationType="slide"
+        transparent
+        statusBarTranslucent={Platform.OS === 'android'}
+        onRequestClose={() => {
+          setEditorVisible(false)
+          setEditorDraft(null)
+        }}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalKeyboardRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.modalBackdrop}>
+            <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.modalSheetSafe}>
+              <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Событие</Text>
             {editorDraft ? (
               <ScrollView keyboardShouldPersistTaps="always" keyboardDismissMode="on-drag">
@@ -567,7 +893,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                 {editorDraft.type !== 'CUSTOM' ? (
                   <>
                     <Text style={styles.miniLabel}>Команда</Text>
-                    <View style={styles.teamChipsCol}>
+                    <View style={styles.teamChipsRow}>
                       {(['HOME', 'AWAY'] as const).map((s) => (
                         <Pressable
                           key={s}
@@ -586,12 +912,13 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                           }
                           style={[
                             styles.chip,
-                            styles.teamChipFull,
+                            styles.teamChipHalf,
                             editorDraft.teamSide === s && styles.chipActive,
                           ]}
                         >
                           <Text
                             style={[styles.chipText, editorDraft.teamSide === s && styles.chipTextActive]}
+                            numberOfLines={1}
                           >
                             {s === 'HOME' ? homeName : awayName}
                           </Text>
@@ -601,13 +928,52 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                   </>
                 ) : null}
                 <Text style={styles.miniLabel}>Минута</Text>
-                <TextInput
-                  style={styles.field}
-                  keyboardType="number-pad"
-                  value={editorDraft.minute}
-                  onChangeText={(t) => setEditorDraft({ ...editorDraft, minute: t })}
-                  placeholder="например 23"
-                />
+                <View style={styles.minuteControlRow}>
+                  <Pressable
+                    accessibilityLabel="Уменьшить минуту"
+                    hitSlop={8}
+                    onPress={() => bumpEditorMinute(-1)}
+                    disabled={parseMinuteUi(editorDraft.minute) <= 0}
+                    style={[
+                      styles.minuteStepBtn,
+                      parseMinuteUi(editorDraft.minute) <= 0 && styles.fieldBtnDisabled,
+                    ]}
+                  >
+                    <Ionicons name="remove" size={22} color={colors.accent} />
+                  </Pressable>
+                  <TextInput
+                    style={styles.minuteValueInput}
+                    keyboardType="number-pad"
+                    value={editorDraft.minute}
+                    onChangeText={(t) => setEditorDraft({ ...editorDraft, minute: t })}
+                    placeholder="0"
+                    placeholderTextColor={colors.muted}
+                  />
+                  <Pressable
+                    accessibilityLabel="Увеличить минуту"
+                    hitSlop={8}
+                    onPress={() => bumpEditorMinute(1)}
+                    disabled={parseMinuteUi(editorDraft.minute) >= MINUTE_UI_MAX}
+                    style={[
+                      styles.minuteStepBtn,
+                      parseMinuteUi(editorDraft.minute) >= MINUTE_UI_MAX && styles.fieldBtnDisabled,
+                    ]}
+                  >
+                    <Ionicons name="add" size={22} color={colors.accent} />
+                  </Pressable>
+                </View>
+                <View style={styles.minutePresetsRow}>
+                  {([1, 5, 15, 30] as const).map((n) => (
+                    <Pressable
+                      key={n}
+                      accessibilityLabel={`Плюс ${n} минут`}
+                      onPress={() => bumpEditorMinute(n)}
+                      style={styles.minutePresetBtn}
+                    >
+                      <Text style={styles.minutePresetText}>+{n}</Text>
+                    </Pressable>
+                  ))}
+                </View>
                 {editorDraft.type === 'GOAL' || editorDraft.type === 'CARD' || editorDraft.type === 'SUBSTITUTION' ? (
                   <>
                     <Text style={styles.miniLabel}>Игрок {editorDraft.type === 'SUBSTITUTION' ? '(уходит)' : ''}</Text>
@@ -736,7 +1102,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                 </View>
               </ScrollView>
             ) : null}
-          </View>
+              </View>
+            </SafeAreaView>
           {pickerVisible ? (
             <View style={styles.pickerOverlayRoot} pointerEvents="box-none">
               <Pressable style={styles.pickerDimFull} onPress={closePicker} accessibilityRole="button" />
@@ -758,8 +1125,14 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                   keyExtractor={(item) => item.playerId}
                   style={styles.pickerList}
                   renderItem={({ item }) => (
-                    <Pressable style={styles.pickerRow} onPress={() => applyPicker(item.playerId)}>
-                      <Text style={styles.pickerRowText}>{item.label}</Text>
+                    <Pressable
+                      style={[styles.pickerRow, item.disabled && styles.pickerRowDisabled]}
+                      disabled={item.disabled}
+                      onPress={() => applyPicker(item.playerId, item.disabled)}
+                    >
+                      <Text style={[styles.pickerRowText, item.disabled && styles.pickerRowTextDisabled]}>
+                        {item.label}
+                      </Text>
                     </Pressable>
                   )}
                   ListEmptyComponent={
@@ -775,201 +1148,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
             </View>
           ) : null}
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   )
 }
-
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.background },
-  flex: { flex: 1 },
-  scroll: { padding: 16, paddingBottom: 32 },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  noticePage: { flex: 1, padding: 16, justifyContent: 'flex-start' },
-  noticeBlock: { marginBottom: 12 },
-  time: { fontSize: 13, color: colors.muted, marginBottom: 8 },
-  teams: { fontSize: 18, fontWeight: '700', color: colors.primary, marginBottom: 12 },
-  row: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', marginBottom: 20 },
-  scoreCol: { flex: 1, maxWidth: 120 },
-  scoreLabel: { fontSize: 12, color: colors.muted, marginBottom: 6 },
-  scoreInput: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
-    color: colors.text,
-  },
-  scoreInputMuted: {
-    opacity: 0.75,
-    backgroundColor: colors.surface,
-  },
-  scoreHint: { fontSize: 11, color: colors.muted, marginTop: 4, textAlign: 'center' },
-  colon: { fontSize: 22, fontWeight: '700', paddingHorizontal: 8, paddingBottom: 10 },
-  colonSmall: { fontSize: 18, fontWeight: '700', paddingHorizontal: 8, paddingBottom: 8 },
-  label: { fontSize: 13, fontWeight: '600', color: colors.primary, marginBottom: 8 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-  teamChipsCol: { flexDirection: 'column', gap: 10, marginBottom: 12 },
-  teamChipFull: { alignSelf: 'stretch' },
-  chip: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-  },
-  chipActive: {
-    borderColor: colors.accent,
-    backgroundColor: 'rgba(200, 10, 72, 0.08)',
-  },
-  chipDisabled: { opacity: 0.5 },
-  chipText: { fontSize: 13, color: colors.muted },
-  chipTextActive: { color: colors.accent, fontWeight: '600' },
-  eventsSection: { marginBottom: 16 },
-  eventsTitle: { fontSize: 15, fontWeight: '600', color: colors.primary, marginBottom: 4 },
-  eventsSub: { fontSize: 12, color: colors.muted, marginBottom: 10, lineHeight: 16 },
-  eventsEmpty: { fontSize: 14, color: colors.muted, marginBottom: 8 },
-  evRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    marginBottom: 8,
-    backgroundColor: colors.surface,
-  },
-  evMain: { flex: 1, padding: 10 },
-  evText: { fontSize: 14, color: colors.text },
-  evType: { fontSize: 11, color: colors.muted, marginTop: 2 },
-  evDel: { padding: 12 },
-  evDelText: { fontSize: 16, color: colors.error },
-  addEvBtn: {
-    alignSelf: 'flex-start',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.accent,
-    marginTop: 4,
-  },
-  addEvBtnText: { color: colors.accent, fontWeight: '600', fontSize: 14 },
-  events: {
-    marginBottom: 20,
-    padding: 12,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  eventsHint: { fontSize: 11, color: colors.muted, marginBottom: 10, lineHeight: 15 },
-  rosterSection: {
-    marginBottom: 16,
-    padding: 12,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  rosterSideLabel: { fontSize: 13, fontWeight: '600', color: colors.primary, marginTop: 6 },
-  rosterSideSpacer: { marginTop: 10 },
-  rosterLine: { fontSize: 13, color: colors.text, marginLeft: 4, marginBottom: 2 },
-  evLine: { fontSize: 13, color: colors.text, marginBottom: 4 },
-  playoffBox: {
-    marginBottom: 16,
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  playoffTitle: { fontSize: 15, fontWeight: '600', color: colors.primary, marginBottom: 6 },
-  playoffHint: { fontSize: 12, color: colors.muted, marginBottom: 10, lineHeight: 17 },
-  miniLabel: { fontSize: 12, fontWeight: '600', color: colors.primary, marginBottom: 6, marginTop: 8 },
-  smallInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    padding: 10,
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  field: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    padding: 10,
-    fontSize: 15,
-    marginBottom: 8,
-  },
-  fieldMultiline: { minHeight: 72, textAlignVertical: 'top' },
-  fieldBtn: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-    backgroundColor: colors.background,
-  },
-  fieldBtnText: { fontSize: 15, color: colors.text, flex: 1, paddingRight: 8 },
-  fieldBtnRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  fieldBtnDisabled: { opacity: 0.45 },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.45)',
-    justifyContent: 'flex-end',
-    position: 'relative',
-  },
-  pickerOverlayRoot: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 1000,
-    elevation: 1000,
-  },
-  pickerDimFull: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15, 23, 42, 0.35)',
-  },
-  pickerSheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    maxHeight: '78%',
-    backgroundColor: colors.background,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 32,
-    elevation: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-  },
-  pickerList: { flexGrow: 0, maxHeight: 380 },
-  modalCard: {
-    backgroundColor: colors.background,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
-    maxHeight: '90%',
-  },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: colors.primary, marginBottom: 8 },
-  pickerHint: { fontSize: 12, color: colors.muted, marginBottom: 10 },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 16 },
-  modalBtn: {
-    backgroundColor: colors.accent,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-  },
-  modalBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-  modalBtnGhost: { paddingVertical: 12, paddingHorizontal: 12 },
-  modalBtnGhostText: { color: colors.muted, fontWeight: '600', fontSize: 15 },
-  pickerRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  pickerRowText: { fontSize: 16, color: colors.text },
-})

@@ -794,6 +794,152 @@ export class MatchesService {
     }
   }
 
+  /**
+   * Согласовано с мобильным клиентом: после замены вышедший игрок не может участвовать
+   * в событиях на более поздней минуте; вошедший по замене — на более ранней.
+   * После второй жёлтой или красной игрок удалён — события с ним на более поздних минутах недопустимы.
+   */
+  private validateSubstitutionPlayerTimeline(dto: UpdateProtocolDto) {
+    if (!dto.events?.length) return;
+    if (dto.status === MatchStatus.CANCELED) return;
+
+    type SubRow = { idx: number; m: number; out: string; inn: string };
+    const subs: SubRow[] = [];
+    for (let idx = 0; idx < dto.events.length; idx++) {
+      const e = dto.events[idx];
+      if (e.type !== MatchEventType.SUBSTITUTION) continue;
+      const m = e.minute;
+      if (m === undefined || m === null || !Number.isFinite(Number(m))) {
+        continue;
+      }
+      const out = String(e.playerId ?? '').trim();
+      const payload = e.payload as Record<string, unknown> | undefined;
+      const inn = String(payload?.playerInId ?? '').trim();
+      if (!out || !inn) continue;
+      subs.push({ idx, m: Number(m), out, inn });
+    }
+    subs.sort((a, b) => a.m - b.m || a.idx - b.idx);
+
+    const outAt = new Map<string, number>();
+    const inAt = new Map<string, number>();
+
+    for (const { m, out, inn } of subs) {
+      if (outAt.has(out)) {
+        throw new BadRequestException(
+          'Игрок уже ушёл с поля по более ранней замене — повторно указать его в замене нельзя.',
+        );
+      }
+      outAt.set(out, m);
+      inAt.set(inn, m);
+    }
+
+    type CardRow = { idx: number; m: number; pid: string; isRed: boolean };
+    const cardRows: CardRow[] = [];
+    for (let idx = 0; idx < dto.events.length; idx++) {
+      const e = dto.events[idx];
+      if (e.type !== MatchEventType.CARD) continue;
+      const m = e.minute;
+      if (m === undefined || m === null || !Number.isFinite(Number(m))) {
+        continue;
+      }
+      const pid = String(e.playerId ?? '').trim();
+      if (!pid) continue;
+      const payload = e.payload as Record<string, unknown> | undefined;
+      const raw = String(
+        payload?.cardType ?? payload?.color ?? payload?.cardColor ?? '',
+      )
+        .trim()
+        .toLowerCase();
+      const isRed =
+        raw.includes('red') ||
+        raw.includes('крас') ||
+        raw === 'r';
+      const isYellow =
+        !isRed &&
+        (raw.includes('yellow') ||
+          raw.includes('желт') ||
+          raw === 'y' ||
+          raw === '');
+      if (raw && !isRed && !isYellow) {
+        continue;
+      }
+      cardRows.push({ idx, m: Number(m), pid, isRed });
+    }
+    cardRows.sort((a, b) => a.m - b.m || a.idx - b.idx);
+
+    const yellowCount = new Map<string, number>();
+    const sentOffAt = new Map<string, number>();
+
+    for (const { m, pid, isRed } of cardRows) {
+      const so = sentOffAt.get(pid);
+      if (so !== undefined && m > so) {
+        throw new BadRequestException(
+          `Игрок уже удалён с поля (${so}′) — нельзя добавить событие с этим игроком на ${m}′.`,
+        );
+      }
+      if (isRed) {
+        sentOffAt.set(pid, m);
+      } else {
+        const c = (yellowCount.get(pid) ?? 0) + 1;
+        yellowCount.set(pid, c);
+        if (c >= 2) {
+          sentOffAt.set(pid, m);
+        }
+      }
+    }
+
+    const checkPid = (pid: string, E: number) => {
+      const p = pid.trim();
+      if (!p) return;
+      const mi = inAt.get(p);
+      if (mi !== undefined && E < mi) {
+        throw new BadRequestException(
+          `Игрок ещё не был на поле (выход на ${mi}′).`,
+        );
+      }
+      const mo = outAt.get(p);
+      if (mo !== undefined && E > mo) {
+        throw new BadRequestException(
+          `Игрок уже ушёл с поля по замене (${mo}′) — событие на ${E}′ недопустимо.`,
+        );
+      }
+      const so = sentOffAt.get(p);
+      if (so !== undefined && E > so) {
+        throw new BadRequestException(
+          `Игрок удалён с поля (${so}′) — событие на ${E}′ недопустимо.`,
+        );
+      }
+    };
+
+    for (const e of dto.events) {
+      const E = e.minute;
+      if (E === undefined || E === null || !Number.isFinite(Number(E))) {
+        continue;
+      }
+      const En = Number(E);
+      if (e.type === MatchEventType.GOAL || e.type === MatchEventType.CARD) {
+        checkPid(String(e.playerId ?? ''), En);
+        const payload = e.payload as Record<string, unknown> | undefined;
+        const assist = String(
+          payload?.assistId ?? payload?.assistPlayerId ?? '',
+        ).trim();
+        const scorer = String(e.playerId ?? '').trim();
+        if (assist && assist !== scorer) {
+          checkPid(assist, En);
+        }
+      }
+      if (e.type === MatchEventType.SUBSTITUTION) {
+        const out = String(e.playerId ?? '').trim();
+        const inn = String(
+          (e.payload as Record<string, unknown> | undefined)?.playerInId ?? '',
+        ).trim();
+        if (!out || !inn) continue;
+        checkPid(out, En);
+        checkPid(inn, En);
+      }
+    }
+  }
+
   private isUnknownPlayoffTeamName(name: string) {
     const normalized = name.trim().toLowerCase();
     return (
@@ -1808,6 +1954,7 @@ export class MatchesService {
       );
     }
     this.validateScoreVsGoalEvents(dto);
+    this.validateSubstitutionPlayerTimeline(dto);
 
     const updated = await this.runProtocolTransaction(matchId, dto, {
       tenantId: match.tenantId,
@@ -1957,6 +2104,7 @@ export class MatchesService {
       this.assertMatchMutable(match.status);
     }
     this.validateScoreVsGoalEvents(dto);
+    this.validateSubstitutionPlayerTimeline(dto);
 
     return this.runProtocolTransaction(matchId, dto, {
       tenantId,

@@ -69,3 +69,22 @@ export function getErrorMessage(err: unknown): string {
   }
   return 'Произошла неизвестная ошибка. Попробуйте ещё раз.'
 }
+
+/** Подпись под ошибкой списка, если сработал {@link isTransientApiError}. */
+export const TRANSIENT_ERROR_DETAIL =
+  'Похоже на временный сбой сети или сервера — обновите экран чуть позже.'
+
+/** Ошибки, при которых имеет смысл автоматический повтор запроса. */
+export function isTransientApiError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return err.status >= 500 || err.status === 429
+  }
+  if (err instanceof TypeError && looksLikeNetworkFailure(String(err.message))) {
+    return true
+  }
+  if (err instanceof Error) {
+    const msg = err.message?.trim()
+    if (msg && looksLikeNetworkFailure(msg)) return true
+  }
+  return false
+}

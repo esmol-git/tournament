@@ -1,5 +1,5 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native'
-import { colors } from '../../theme/colors'
+import { useTheme } from '../../theme/ThemeContext'
 
 type Props = {
   label: string
@@ -10,6 +10,7 @@ type Props = {
 }
 
 export function PrimaryButton({ label, onPress, disabled, loading, variant = 'primary' }: Props) {
+  const { colors } = useTheme()
   const isPrimary = variant === 'primary'
   return (
     <Pressable
@@ -18,15 +19,24 @@ export function PrimaryButton({ label, onPress, disabled, loading, variant = 'pr
       disabled={disabled || loading}
       style={({ pressed }) => [
         styles.base,
-        isPrimary ? styles.primary : styles.outline,
+        isPrimary
+          ? { backgroundColor: colors.accent }
+          : { backgroundColor: 'transparent', borderWidth: 1, borderColor: colors.border },
         (disabled || loading) && styles.disabled,
         pressed && !disabled && !loading && styles.pressed,
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={isPrimary ? '#fff' : colors.primary} />
+        <ActivityIndicator color={isPrimary ? colors.onAccent : colors.primary} />
       ) : (
-        <Text style={[styles.label, isPrimary ? styles.labelPrimary : styles.labelOutline]}>{label}</Text>
+        <Text
+          style={[
+            styles.label,
+            isPrimary ? { color: colors.onAccent } : { color: colors.primary },
+          ]}
+        >
+          {label}
+        </Text>
       )}
     </Pressable>
   )
@@ -41,14 +51,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 48,
   },
-  primary: {
-    backgroundColor: colors.accent,
-  },
-  outline: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
   disabled: {
     opacity: 0.55,
   },
@@ -58,11 +60,5 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 16,
     fontWeight: '600',
-  },
-  labelPrimary: {
-    color: '#fff',
-  },
-  labelOutline: {
-    color: colors.primary,
   },
 })

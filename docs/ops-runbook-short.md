@@ -256,3 +256,21 @@ curl -sS -X POST "https://api.tournament-platform.ru/auth/platform/login" \
 ```
 
 Должен вернуться `accessToken`. В UI входить через `https://tournament-platform.ru/platform/login`.
+
+## 10) Mobile app links (universal links / App Links)
+
+Файлы лежат в репозитории: `frontend/public/.well-known/` и уезжают на сайт вместе с Nuxt (корень домена, с которого открывают ссылки, обычно `tournament-platform.ru`).
+
+1. **`apple-app-site-association`** (iOS): замените **`TEAM_ID_PLACEHOLDER`** на **Apple Team ID** (10 символов, Membership в Apple Developer). Строка `appID` = `<TeamID>.ru.tournamentplatform.app`.
+2. **`assetlinks.json`** (Android): замените **`SHA256_CERT_FINGERPRINT_PLACEHOLDER`** на отпечаток **релизного** keystore (Play App Signing → сертификат приложения, или `keytool -list -v` для upload key). При необходимости добавьте второй элемент в массив `sha256_cert_fingerprints` (например debug для внутренних сборок).
+
+Проверки после деплоя (без редиректов, ответ **200**, для AASA желательно **`Content-Type: application/json`**):
+
+```bash
+curl -sS -I "https://tournament-platform.ru/.well-known/apple-app-site-association"
+curl -sS "https://tournament-platform.ru/.well-known/apple-app-site-association" | head -c 400
+curl -sS -I "https://tournament-platform.ru/.well-known/assetlinks.json"
+curl -sS "https://tournament-platform.ru/.well-known/assetlinks.json" | head -c 400
+```
+
+Если nginx отдаёт неверный `Content-Type` для AASA, задайте для этого пути `default_type application/json;` (или эквивалент). Подробности путей приложения — `mobile/app.config.js` и `mobile/src/navigation/linking.ts` (префикс **`/mobile/`**).

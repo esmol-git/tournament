@@ -10,6 +10,12 @@ import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDate
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
 import { isMatchEditLocked } from '~/utils/tournamentAdminUi'
+import {
+  buildProtocolPlayerTimelineMapsForPicker,
+  isProtocolPlayerSelectableAtMinute,
+  parseProtocolMinute,
+  type ProtocolTimelineEvent,
+} from '../../../../shared/protocol/playerTimeline'
 import { computed, reactive, ref, useId, watch } from 'vue'
 
 const props = withDefaults(
@@ -144,6 +150,62 @@ const sidePlayerOptions = (side: 'HOME' | 'AWAY' | null | undefined) =>
       : []
 const assistPlayerOptions = (row: (typeof protocolForm.events)[number]) =>
   sidePlayerOptions(row.teamSide).filter((opt) => opt.value !== row.playerId)
+
+function protocolEventsToTimeline(): ProtocolTimelineEvent[] {
+  return protocolForm.events.map((e, idx) => ({
+    key: `row-${idx}`,
+    type: e.type as ProtocolTimelineEvent['type'],
+    minute: e.minute,
+    playerId: e.playerId,
+    assistPlayerId: e.assistPlayerId,
+    substitutePlayerInId: e.substitutePlayerInId,
+    cardType: e.cardType,
+  }))
+}
+
+function protocolTimelineMapsForRow(excludeIdx: number) {
+  return buildProtocolPlayerTimelineMapsForPicker(protocolEventsToTimeline(), {
+    excludeKey: `row-${excludeIdx}`,
+  })
+}
+
+function protocolMainPlayerOptions(rowIdx: number) {
+  const maps = protocolTimelineMapsForRow(rowIdx)
+  const row = protocolForm.events[rowIdx]
+  if (!row) return protocolPlayerOptions.value
+  const E = parseProtocolMinute(row.minute)
+  return protocolPlayerOptions.value.map((opt) => ({
+    ...opt,
+    disabled: !isProtocolPlayerSelectableAtMinute(opt.value, E, maps, { allowPlayerId: row.playerId }),
+  }))
+}
+
+function assistPlayerOptionsWithTimeline(rowIdx: number) {
+  const row = protocolForm.events[rowIdx]
+  if (!row) return []
+  const maps = protocolTimelineMapsForRow(rowIdx)
+  const E = parseProtocolMinute(row.minute)
+  return assistPlayerOptions(row).map((opt) => ({
+    ...opt,
+    disabled: !isProtocolPlayerSelectableAtMinute(opt.value, E, maps, {
+      allowPlayerId: row.assistPlayerId ?? '',
+    }),
+  }))
+}
+
+function substituteInOptionsWithTimeline(rowIdx: number) {
+  const row = protocolForm.events[rowIdx]
+  if (!row) return []
+  const maps = protocolTimelineMapsForRow(rowIdx)
+  const E = parseProtocolMinute(row.minute)
+  const base = sidePlayerOptions(row.teamSide)
+  return base.map((opt) => ({
+    ...opt,
+    disabled: !isProtocolPlayerSelectableAtMinute(opt.value, E, maps, {
+      allowPlayerId: row.substitutePlayerInId ?? '',
+    }),
+  }))
+}
 const resolvePlayerSide = (playerId: string): 'HOME' | 'AWAY' | null => {
   if (!playerId) return null
   const hit = protocolPlayerOptions.value.find((x) => x.value === playerId)
@@ -1294,9 +1356,10 @@ const protocolHomeScoreInputPt = computed(() =>
                 <Select
                   :input-id="`${protocolA11yId}-evt-${idx}-player`"
                   v-model="e.playerId"
-                  :options="protocolPlayerOptions"
+                  :options="protocolMainPlayerOptions(idx)"
                   option-label="label"
                   option-value="value"
+                  option-disabled="disabled"
                   class="w-full"
                   placeholder="Выберите игрок (команда определится автоматически)"
                   :loading="protocolPlayersLoading"
@@ -1311,9 +1374,10 @@ const protocolHomeScoreInputPt = computed(() =>
                 <Select
                   :input-id="`${protocolA11yId}-evt-${idx}-assist`"
                   v-model="e.assistPlayerId"
-                  :options="assistPlayerOptions(e)"
+                  :options="assistPlayerOptionsWithTimeline(idx)"
                   option-label="label"
                   option-value="value"
+                  option-disabled="disabled"
                   class="w-full"
                   placeholder="Без ассиста"
                   show-clear
@@ -1342,9 +1406,10 @@ const protocolHomeScoreInputPt = computed(() =>
                 <Select
                   :input-id="`${protocolA11yId}-evt-${idx}-subin`"
                   v-model="e.substitutePlayerInId"
-                  :options="sidePlayerOptions(e.teamSide)"
+                  :options="substituteInOptionsWithTimeline(idx)"
                   option-label="label"
                   option-value="value"
+                  option-disabled="disabled"
                   class="w-full"
                   placeholder="Кто вышел"
                   :loading="protocolPlayersLoading"

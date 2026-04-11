@@ -1,5 +1,6 @@
 import type { UpdateMatchProtocolBody } from '../api/matchesApi'
 import type { TournamentMatchEventRow } from '../types/tournament'
+import { validateProtocolPlayerTimeline, type ProtocolTimelineEvent } from '../../../shared/protocol/playerTimeline'
 
 const EXTRA_TIME_META = 'EXTRA_TIME_SCORE'
 const PENALTIES_META = 'PENALTY_SCORE'
@@ -109,6 +110,23 @@ export function parseEventsFromMatch(events: TournamentMatchEventRow[] | undefin
 function parseMinute(s: string): number | undefined {
   const n = parseInt(s.replace(/\D/g, ''), 10)
   return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+export function draftsToProtocolTimelineEvents(drafts: ProtocolEventDraft[]): ProtocolTimelineEvent[] {
+  return drafts.map((d) => ({
+    key: d.key,
+    type: d.type,
+    minute: d.minute,
+    playerId: d.playerId,
+    assistPlayerId: d.assistPlayerId,
+    substitutePlayerInId: d.substitutePlayerInId,
+    cardType: d.cardType,
+  }))
+}
+
+/** См. `shared/protocol/playerTimeline.ts` — замены, жёлтые/красная, удаление. */
+function validateSubstitutionPlayerTimeline(drafts: ProtocolEventDraft[]): string | null {
+  return validateProtocolPlayerTimeline(draftsToProtocolTimelineEvents(drafts))
 }
 
 export function countGoalsFromDrafts(drafts: ProtocolEventDraft[]) {
@@ -222,5 +240,5 @@ export function validateDraftsBeforeSave(drafts: ProtocolEventDraft[]): string |
       if (inn === e.playerId) return 'В замене игроки на вход и выход не должны совпадать.'
     }
   }
-  return null
+  return validateSubstitutionPlayerTimeline(drafts)
 }
