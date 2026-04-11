@@ -1,9 +1,10 @@
 /**
  * Ключи TanStack Query для публичного API `/public/tenants/:slug/...` (без JWT).
- * «Короткий» stale: переключение вкладок таблица/шахматка/прогресс без лишних 200.
+ * Stale чуть короче минуты — чаще согласуются счёт/таблица после протокола с мобилки;
+ * вместе с refetchOnWindowFocus для ключей `['public', …]` не нужен ручной сброс кэша.
  */
-export const PUBLIC_STALE_SHORT_MS = 60_000
-export const PUBLIC_STALE_MEDIUM_MS = 90_000
+export const PUBLIC_STALE_SHORT_MS = 45_000
+export const PUBLIC_STALE_MEDIUM_MS = 75_000
 export const PUBLIC_STALE_LONG_MS = 5 * 60_000
 
 export function stableSerializePublicQuery(value: unknown): string {

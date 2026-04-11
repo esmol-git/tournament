@@ -17,6 +17,17 @@ export default defineNuxtPlugin((nuxtApp) => {
     },
   })
 
+  /**
+   * Публичные страницы `/{tenant}/…` (без JWT): баланс кэша и актуальности.
+   * Счёт/протокол меняются с мобилки — пользователь не должен вручную сбрасывать кэш,
+   * но и не нужен постоянный polling. Обновление при возврате на вкладку и после сети
+   * даёт «свежие» данные без лишней нагрузки, пока вкладка в фоне.
+   */
+  queryClient.setQueryDefaults(['public'], {
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  })
+
   nuxtApp.vueApp.use(VueQueryPlugin, { queryClient })
 
   if (import.meta.client && nuxtApp.$pinia) {

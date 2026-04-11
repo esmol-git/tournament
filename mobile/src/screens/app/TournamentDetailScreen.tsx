@@ -274,7 +274,7 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           borderRadius: 12,
           padding: 12,
           marginBottom: 10,
-          backgroundColor: colors.background,
+          backgroundColor: colors.surface,
         },
         matchTime: {
           fontSize: 12,
@@ -297,7 +297,7 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           marginTop: 6,
         },
         matchCardPressed: {
-          backgroundColor: colors.surface,
+          backgroundColor: colors.background,
         },
         tapHint: {
           fontSize: 11,

@@ -70,6 +70,17 @@ export function getApiErrorMessages(error: unknown, fallback = 'Произошл
   return [fallback]
 }
 
+/** HTTP-статус из ошибки $fetch / ofetch (если есть). */
+export function getApiErrorHttpStatus(error: unknown): number | undefined {
+  if (error == null || typeof error !== 'object') return undefined
+  const e = error as Record<string, unknown>
+  const direct = e.statusCode ?? e.status
+  if (typeof direct === 'number') return direct
+  const response = e.response as Record<string, unknown> | undefined
+  const fromResp = response?.status
+  return typeof fromResp === 'number' ? fromResp : undefined
+}
+
 /** Стабильный `code` из тела ответа API ($fetch / ofetch). */
 export function getApiErrorCode(error: unknown): string | undefined {
   if (error == null || typeof error !== 'object') return undefined

@@ -105,6 +105,8 @@ export interface TournamentDetails {
   }>
   matches: {
     id: string
+    /** Для оптимистичной блокировки при сохранении протокола (`ifMatchUpdatedAt`). */
+    updatedAt?: string
     startTime: string
     stage?: 'GROUP' | 'PLAYOFF'
     roundNumber?: number

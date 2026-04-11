@@ -5,7 +5,7 @@ import { useTenantId } from '~/composables/useTenantId'
 import { usePlayoffSlotLabels } from '~/composables/usePlayoffSlotLabels'
 import type { MatchEventRow, MatchRow, TournamentDetails } from '~/types/tournament-admin'
 import type { TeamPlayerRow } from '~/types/admin/team'
-import { getApiErrorMessage } from '~/utils/apiError'
+import { getApiErrorHttpStatus, getApiErrorMessage } from '~/utils/apiError'
 import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDateTimeFields'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
 import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
@@ -113,6 +113,8 @@ const showModeratorFinishedProtocolBanner = computed(
 )
 
 const protocolSaving = ref(false)
+/** `Match.updatedAt` при открытии диалога; после успешного PATCH времени — из ответа сервера. */
+const protocolBaselineUpdatedAt = ref<string | null>(null)
 const protocolSubmitAttempted = ref(false)
 const protocolPlayersLoading = ref(false)
 const protocolHomePlayers = ref<TeamPlayerRow[]>([])
@@ -297,6 +299,9 @@ watch(
   async ([open, m]) => {
     if (!open || !m) return
     protocolSubmitAttempted.value = false
+    const u = m.updatedAt
+    protocolBaselineUpdatedAt.value =
+      typeof u === 'string' && u.trim() ? u.trim() : null
     if (token.value) {
       await loadRefs()
     }
@@ -601,8 +606,10 @@ const saveProtocol = async () => {
       if (protocolForm.schedulePostponeReasonId) {
         patchBody.scheduleChangeReasonId = protocolForm.schedulePostponeReasonId
       }
+      type MatchPatchResponse = { updatedAt?: string }
+      let timePatch: MatchPatchResponse | null = null
       if (props.standalone) {
-        await authFetch(
+        timePatch = await authFetch<MatchPatchResponse>(
           apiUrl(`/tenants/${tenantId.value}/standalone-matches/${props.match.id}`),
           {
             method: 'PATCH',
@@ -611,7 +618,7 @@ const saveProtocol = async () => {
           },
         )
       } else if (props.tournamentId) {
-        await authFetch(
+        timePatch = await authFetch<MatchPatchResponse>(
           apiUrl(`/tournaments/${props.tournamentId}/matches/${props.match.id}`),
           {
             method: 'PATCH',
@@ -619,6 +626,10 @@ const saveProtocol = async () => {
             body: patchBody,
           },
         )
+      }
+      const nextU = timePatch?.updatedAt
+      if (typeof nextU === 'string' && nextU.trim()) {
+        protocolBaselineUpdatedAt.value = nextU.trim()
       }
     }
 
@@ -705,6 +716,9 @@ const saveProtocol = async () => {
       status: protocolForm.status,
       events: eventsPayload,
     }
+    if (protocolBaselineUpdatedAt.value) {
+      protocolBody.ifMatchUpdatedAt = protocolBaselineUpdatedAt.value
+    }
     if (protocolBecomingCanceled.value) {
       if (!protocolForm.scheduleCancelReasonId) {
         throw new Error('Выберите причину отмены из справочника')
@@ -765,11 +779,12 @@ const saveProtocol = async () => {
       life: 3000,
     })
   } catch (e: unknown) {
+    const conflict = getApiErrorHttpStatus(e) === 409
     toast.add({
-      severity: 'error',
-      summary: 'Не удалось сохранить протокол',
+      severity: conflict ? 'warn' : 'error',
+      summary: conflict ? 'Данные матча изменились' : 'Не удалось сохранить протокол',
       detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
-      life: 6000,
+      life: conflict ? 10000 : 6000,
     })
   } finally {
     protocolSaving.value = false

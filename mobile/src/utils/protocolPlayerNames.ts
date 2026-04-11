@@ -1,6 +1,7 @@
 import type { ProtocolRoster } from '../api/protocolRoster'
 import type { ProtocolEventDraft } from './matchProtocolPayload'
 import type { ProtocolPlayerPreview, TournamentMatchEventRow } from '../types/tournament'
+import { parseProtocolMinute } from '../../../shared/protocol/playerTimeline'
 
 export function formatProtocolPlayerName(p: ProtocolPlayerPreview | null | undefined): string {
   if (!p) return ''
@@ -153,4 +154,95 @@ export function summarizeDraftForDisplay(
   }
   const note = d.note.trim() || 'заметка'
   return `${min}${note}`
+}
+
+/** Иконка в списке событий вместо подписи GOAL / CARD / SUBSTITUTION. */
+export type ProtocolEventIconKind =
+  | 'goal'
+  | 'substitution'
+  | 'card_yellow_first'
+  | 'card_yellow_second'
+  | 'card_red'
+  | 'custom'
+
+export function getDraftEventIconKind(
+  d: ProtocolEventDraft,
+  allDrafts: ProtocolEventDraft[],
+): ProtocolEventIconKind {
+  if (d.type === 'GOAL') return 'goal'
+  if (d.type === 'SUBSTITUTION') return 'substitution'
+  if (d.type === 'CUSTOM') return 'custom'
+  if (d.type !== 'CARD') return 'custom'
+  if (d.cardType === 'RED') return 'card_red'
+
+  const selfIdx = allDrafts.findIndex((x) => x.key === d.key)
+  const pid = d.playerId.trim()
+
+  const cardOrder = allDrafts
+    .map((x, idx) => ({ x, idx }))
+    .filter(({ x }) => x.type === 'CARD')
+    .sort((a, b) => {
+      const ma = parseProtocolMinute(a.x.minute) ?? -1
+      const mb = parseProtocolMinute(b.x.minute) ?? -1
+      if (ma !== mb) return ma - mb
+      return a.idx - b.idx
+    })
+
+  let yellowN = 0
+  for (const { x, idx } of cardOrder) {
+    if (x.cardType === 'RED') continue
+    if ((x.cardType ?? 'YELLOW') !== 'YELLOW') continue
+    if (x.playerId.trim() !== pid) continue
+    yellowN += 1
+    if (idx === selfIdx) {
+      return yellowN >= 2 ? 'card_yellow_second' : 'card_yellow_first'
+    }
+  }
+  return 'card_yellow_first'
+}
+
+function normalizeCardTypeFromPayload(payload: Record<string, unknown> | null | undefined): 'YELLOW' | 'RED' {
+  const raw = String(payload?.cardType ?? payload?.color ?? payload?.cardColor ?? '')
+    .trim()
+    .toLowerCase()
+  if (raw.includes('red') || raw.includes('крас')) return 'RED'
+  return 'YELLOW'
+}
+
+export function getMatchEventIconKind(
+  ev: TournamentMatchEventRow,
+  allEvents: TournamentMatchEventRow[],
+): ProtocolEventIconKind {
+  if (ev.type === 'GOAL') return 'goal'
+  if (ev.type === 'SUBSTITUTION') return 'substitution'
+  if (ev.type === 'CUSTOM') return 'custom'
+  if (ev.type !== 'CARD') return 'custom'
+
+  const payload = (ev.payload ?? {}) as Record<string, unknown>
+  if (normalizeCardTypeFromPayload(payload) === 'RED') return 'card_red'
+
+  const selfId = ev.id
+  const pid = String(ev.playerId ?? '').trim()
+
+  const cardOrder = allEvents
+    .map((e, idx) => ({ e, idx }))
+    .filter(({ e }) => e.type === 'CARD')
+    .sort((a, b) => {
+      const ma = a.e.minute ?? -1
+      const mb = b.e.minute ?? -1
+      if (ma !== mb) return ma - mb
+      return a.idx - b.idx
+    })
+
+  let yellowN = 0
+  for (const { e } of cardOrder) {
+    const p = (e.payload ?? {}) as Record<string, unknown>
+    if (normalizeCardTypeFromPayload(p) === 'RED') continue
+    if (String(e.playerId ?? '').trim() !== pid) continue
+    yellowN += 1
+    if (e.id === selfId) {
+      return yellowN >= 2 ? 'card_yellow_second' : 'card_yellow_first'
+    }
+  }
+  return 'card_yellow_first'
 }

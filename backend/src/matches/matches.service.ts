@@ -1930,6 +1930,7 @@ export class MatchesService {
         playoffRound: true,
         roundNumber: true,
         status: true,
+        updatedAt: true,
       },
     });
     if (!match) throw new NotFoundException('Match not found');
@@ -1941,6 +1942,8 @@ export class MatchesService {
     ) {
       this.assertMatchMutable(match.status);
     }
+
+    this.assertProtocolConcurrency(match.updatedAt, dto);
 
     if (
       match.stage === MatchStage.PLAYOFF &&
@@ -2004,6 +2007,27 @@ export class MatchesService {
       void this.notifyProtocolPublishedById({ matchId }).catch(() => undefined);
     }
     return updated;
+  }
+
+  /**
+   * Оптимистичная блокировка: не затираем протокол, если матч уже изменён
+   * (например, сохранение с мобильного, пока админка открыта).
+   */
+  private assertProtocolConcurrency(
+    matchUpdatedAt: Date,
+    dto: UpdateProtocolDto,
+  ) {
+    const raw = dto.ifMatchUpdatedAt?.trim();
+    if (!raw) return;
+    const client = new Date(raw);
+    if (Number.isNaN(client.getTime())) {
+      throw new BadRequestException('Некорректное значение ifMatchUpdatedAt');
+    }
+    if (client.getTime() !== matchUpdatedAt.getTime()) {
+      throw new ConflictException(
+        'Матч был изменён в другом месте (например, сохранён протокол с мобильного). Обновите данные и при необходимости сохраните снова.',
+      );
+    }
   }
 
   private async runProtocolTransaction(
@@ -2092,7 +2116,7 @@ export class MatchesService {
 
     const match = await this.prisma.match.findFirst({
       where: { id: matchId, tenantId, tournamentId: null },
-      select: { id: true, status: true },
+      select: { id: true, status: true, updatedAt: true },
     });
     if (!match) throw new NotFoundException('Match not found');
     if (
@@ -2103,6 +2127,7 @@ export class MatchesService {
     ) {
       this.assertMatchMutable(match.status);
     }
+    this.assertProtocolConcurrency(match.updatedAt, dto);
     this.validateScoreVsGoalEvents(dto);
     this.validateSubstitutionPlayerTimeline(dto);
 

@@ -15,12 +15,15 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
+  ApiError,
   getErrorMessage,
   getTournamentDetail,
+  isTransientApiError,
   loadProtocolRoster,
   updateTournamentMatchProtocol,
   type ProtocolRoster,
@@ -29,6 +32,7 @@ import {
 } from '../../api'
 import { useAuth } from '../../auth/AuthContext'
 import { canEditMatchProtocol } from '../../auth/roleLabels'
+import { ProtocolEventKindIcon } from '../../components/protocol/ProtocolEventKindIcon'
 import { AppNotice } from '../../components/ui/AppNotice'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { PrimaryButton } from '../../components/ui/PrimaryButton'
@@ -52,6 +56,8 @@ import {
 import {
   buildPlayerPreviewMapFromEvents,
   formatProtocolEventLineForDisplay,
+  getDraftEventIconKind,
+  getMatchEventIconKind,
   resolvePlayerDisplayName,
   summarizeDraftForDisplay,
 } from '../../utils/protocolPlayerNames'
@@ -97,6 +103,7 @@ function parseScore(s: string): number {
 export function MatchProtocolScreen({ route, navigation }: Props) {
   const { tournamentId, matchId } = route.params
   const { colors } = useTheme()
+  const { height: windowHeight } = useWindowDimensions()
   const { user, tenant } = useAuth()
   const [match, setMatch] = useState<TournamentMatchRow | null>(null)
   const [loading, setLoading] = useState(true)
@@ -423,6 +430,9 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         awayScore,
         status: status as UpdateMatchProtocolBody['status'],
       }
+      if (match.updatedAt) {
+        payload.ifMatchUpdatedAt = match.updatedAt
+      }
 
       if (eventsEditorEnabled) {
         payload.events = buildProtocolEventsPayload(draftEvents, {
@@ -442,9 +452,14 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
           return true
         } catch (e) {
           lastErr = e
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 450))
+          if (e instanceof ApiError && e.status === 409) {
+            break
           }
+          if (attempt === 0 && isTransientApiError(e)) {
+            await new Promise((r) => setTimeout(r, 450))
+            continue
+          }
+          break
         }
       }
       setError(getErrorMessage(lastErr))
@@ -757,7 +772,13 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                       <Text style={styles.evText}>
                         {summarizeDraftForDisplay(ev, roster, homeName, awayName, eventPlayerPreviewMap)}
                       </Text>
-                      <Text style={styles.evType}>{ev.type}</Text>
+                      <View style={styles.evIconWrap}>
+                        <ProtocolEventKindIcon
+                          kind={getDraftEventIconKind(ev, draftEvents)}
+                          accent={colors.accent}
+                          muted={colors.muted}
+                        />
+                      </View>
                     </Pressable>
                     <Pressable style={styles.evDel} onPress={() => removeEvent(ev.key)}>
                       <Text style={styles.evDelText}>✕</Text>
@@ -785,9 +806,18 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                 )
                 if (!line) return null
                 return (
-                  <Text key={ev.id} style={styles.evLine}>
-                    {line}
-                  </Text>
+                  <View key={ev.id} style={styles.evRow}>
+                    <View style={styles.evMain}>
+                      <Text style={styles.evText}>{line}</Text>
+                      <View style={styles.evIconWrap}>
+                        <ProtocolEventKindIcon
+                          kind={getMatchEventIconKind(ev, match.events ?? [])}
+                          accent={colors.accent}
+                          muted={colors.muted}
+                        />
+                      </View>
+                    </View>
+                  </View>
                 )
               })}
             </View>
@@ -865,10 +895,25 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         >
           <View style={styles.modalBackdrop}>
             <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.modalSheetSafe}>
-              <View style={styles.modalCard}>
+              <View
+                style={[
+                  styles.modalCard,
+                  {
+                    /** Не на весь экран (~78%), но выше «низкого» листа; кнопки снизу вне скролла. */
+                    height: Math.min(windowHeight * 0.78, windowHeight - 72),
+                  },
+                ]}
+              >
             <Text style={styles.modalTitle}>Событие</Text>
             {editorDraft ? (
-              <ScrollView keyboardShouldPersistTaps="always" keyboardDismissMode="on-drag">
+              <>
+              <ScrollView
+                style={styles.modalFormScroll}
+                contentContainerStyle={styles.modalFormScrollContent}
+                keyboardShouldPersistTaps="always"
+                keyboardDismissMode="on-drag"
+                showsVerticalScrollIndicator
+              >
                 <Text style={styles.miniLabel}>Тип</Text>
                 <View style={styles.chips}>
                   {(
@@ -1086,21 +1131,22 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
                     />
                   </>
                 ) : null}
-                <View style={styles.modalActions}>
-                  <Pressable
-                    style={styles.modalBtnGhost}
-                    onPress={() => {
-                      setEditorVisible(false)
-                      setEditorDraft(null)
-                    }}
-                  >
-                    <Text style={styles.modalBtnGhostText}>Отмена</Text>
-                  </Pressable>
-                  <Pressable style={styles.modalBtn} onPress={saveEditor}>
-                    <Text style={styles.modalBtnText}>Готово</Text>
-                  </Pressable>
-                </View>
               </ScrollView>
+              <View style={styles.modalActions}>
+                <Pressable
+                  style={styles.modalBtnGhost}
+                  onPress={() => {
+                    setEditorVisible(false)
+                    setEditorDraft(null)
+                  }}
+                >
+                  <Text style={styles.modalBtnGhostText}>Отмена</Text>
+                </Pressable>
+                <Pressable style={styles.modalBtn} onPress={saveEditor}>
+                  <Text style={styles.modalBtnText}>Готово</Text>
+                </Pressable>
+              </View>
+              </>
             ) : null}
               </View>
             </SafeAreaView>

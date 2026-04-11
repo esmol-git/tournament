@@ -49,6 +49,8 @@ export type TournamentMatchEventRow = {
 /** Матч в составе `GET /tournaments/:id` или публичного детального ответа. */
 export type TournamentMatchRow = {
   id: string
+  /** Для `ifMatchUpdatedAt` при сохранении протокола. */
+  updatedAt?: string
   status: string
   startTime: string
   stage?: string

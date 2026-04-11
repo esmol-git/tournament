@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import { MatchEventType, MatchStatus, MatchTeamSide } from '@prisma/client';
 import {
   IsArray,
+  IsDateString,
   IsEnum,
   IsInt,
   IsObject,
@@ -85,4 +86,16 @@ export class UpdateProtocolDto {
   @IsOptional()
   @IsString()
   scheduleChangeNote?: string;
+
+  /**
+   * ISO 8601: `Match.updatedAt` на момент открытия формы протокола.
+   * Если в БД уже другое значение (протокол сохранили с другого клиента) — 409 Conflict.
+   */
+  @ApiProperty({
+    required: false,
+    example: '2026-05-02T14:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  ifMatchUpdatedAt?: string;
 }

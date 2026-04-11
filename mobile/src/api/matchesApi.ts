@@ -17,6 +17,8 @@ export type UpdateMatchProtocolBody = {
   }>
   scheduleChangeReasonId?: string
   scheduleChangeNote?: string
+  /** ISO: `Match.updatedAt` при загрузке экрана — конфликт с чужим сохранением → 409. */
+  ifMatchUpdatedAt?: string
 }
 
 export async function updateTournamentMatchProtocol(

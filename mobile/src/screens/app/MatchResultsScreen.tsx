@@ -60,7 +60,7 @@ function filterToQuery(status: StatusFilterKey): {
 }
 
 export function MatchResultsScreen({ navigation }: Props) {
-  const { colors } = useTheme()
+  const { colors, colorScheme, accentPreset } = useTheme()
   const { user, tenant } = useAuth()
   const [items, setItems] = useState<TenantMatchListItem[]>([])
   const [total, setTotal] = useState(0)
@@ -216,6 +216,7 @@ export function MatchResultsScreen({ navigation }: Props) {
         listContent: { paddingBottom: 32, flexGrow: 1 },
         centered: { paddingVertical: 40 },
         footerLoad: { paddingVertical: 16 },
+        /** Не темнее фона экрана: `surface` отделяет карточку (как на экране турнира). */
         card: {
           marginHorizontal: 16,
           marginBottom: 10,
@@ -223,11 +224,11 @@ export function MatchResultsScreen({ navigation }: Props) {
           borderRadius: 12,
           borderWidth: 1,
           borderColor: colors.border,
-          backgroundColor: colors.background,
+          backgroundColor: colors.surface,
         },
-        cardPressed: { backgroundColor: colors.surface },
+        cardPressed: { backgroundColor: colors.background },
         tournamentName: { fontSize: 12, color: colors.muted, marginBottom: 4 },
-        teams: { fontSize: 16, fontWeight: '700', color: colors.primary, marginBottom: 6 },
+        teams: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 6 },
         meta: { fontSize: 13, color: colors.muted },
         score: { fontSize: 14, color: colors.text, marginTop: 6, fontWeight: '600' },
         modalBackdrop: {
@@ -254,6 +255,7 @@ export function MatchResultsScreen({ navigation }: Props) {
       }),
     [colors],
   )
+  const listRecycleKey = `${colorScheme}-${accentPreset}`
 
   const tournamentTitle = tournamentName?.trim() || 'Все турниры'
 
@@ -336,14 +338,15 @@ export function MatchResultsScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <LegendList
-        style={{ flex: 1 }}
+        key={listRecycleKey}
+        style={{ flex: 1, backgroundColor: colors.background }}
         data={items}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={header}
         refreshing={refreshing}
         onRefresh={onRefresh}
         progressViewOffset={48}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { backgroundColor: colors.background }]}
         onEndReached={loadMore}
         onEndReachedThreshold={0.35}
         estimatedItemSize={132}
