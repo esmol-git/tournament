@@ -5980,17 +5980,6 @@ export class TournamentsService {
       batchStart += dayRounds.length;
     }
 
-    /** Последний по времени матч в сгенерированном расписании — для `endsAt` турнира. */
-    let scheduleEndsAt: Date | null = null;
-    for (const m of matchesToCreate) {
-      if (
-        !scheduleEndsAt ||
-        m.startTime.getTime() > scheduleEndsAt.getTime()
-      ) {
-        scheduleEndsAt = m.startTime;
-      }
-    }
-
     if (tournament.endsAt && (lastMatchStart || lastRoundDate)) {
       const maxEnd = parseDateOnlyLocal(
         tournament.endsAt.toISOString().slice(0, 10),
@@ -6033,14 +6022,23 @@ export class TournamentsService {
       }
 
       const created = await tx.match.createMany({ data: matchesToCreate });
-      if (matchesToCreate.length > 0 && scheduleEndsAt) {
-        await tx.tournament.update({
-          where: { id: tournamentId },
-          data: { endsAt: scheduleEndsAt },
-        });
-      }
       return { created: created.count, deleted: deletedMatches };
     });
+
+    /** После вставки матчей — дата окончания турнира по факту из БД (надёжнее, чем только расчёт в памяти). */
+    if (matchesToCreate.length > 0) {
+      const agg = await this.prisma.match.aggregate({
+        where: { tournamentId },
+        _max: { startTime: true },
+      });
+      const lastStart = agg._max.startTime;
+      if (lastStart) {
+        await this.prisma.tournament.update({
+          where: { id: tournamentId },
+          data: { endsAt: lastStart },
+        });
+      }
+    }
 
     await this.syncTournamentLifecycleStatus(tournamentId);
     const scheduleWarnings =
