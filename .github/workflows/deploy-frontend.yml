@@ -32,10 +32,12 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend
+        env:
+          # Nuxt 4 + Nitro: при ~4 ГБ heap сборка падает (FATAL OOM). GitHub linux runner ~7 ГБ RAM.
+          NODE_OPTIONS: --max-old-space-size=6144
         run: |
           cd frontend
           npm ci --include=dev
-          export NODE_OPTIONS="--max-old-space-size=4096"
           export NUXT_PUBLIC_API_BASE="${NUXT_PUBLIC_API_BASE:-https://api.tournament-platform.ru}"
           npm run build
 

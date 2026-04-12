@@ -52,4 +52,6 @@ jobs:
         run: npm ci --include=dev
 
       - name: Frontend build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: npm run build
