@@ -37,7 +37,7 @@ import { AppNotice } from '../../components/ui/AppNotice'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { PrimaryButton } from '../../components/ui/PrimaryButton'
 import type { MatchProtocolRouteParams } from '../../navigation/types'
-import type { TournamentMatchRow } from '../../types/tournament'
+import type { TournamentGroupRow, TournamentMatchRow } from '../../types/tournament'
 import {
   buildProtocolEventsPayload,
   countGoalsFromDrafts,
@@ -62,13 +62,15 @@ import {
   summarizeDraftForDisplay,
 } from '../../utils/protocolPlayerNames'
 import { formatDateTime } from '../../utils/formatDate'
+import { isPlayoffPlaceholderSlot } from '../../utils/matchStageLine'
+import { buildTournamentPlayoffSlotLabels } from '../../utils/playoffSlotLabels'
 import { matchStatusLabel } from '../../utils/tournamentLabels'
 import { createMatchProtocolStyles } from '../../theme/matchProtocolStyles'
 import { useTheme } from '../../theme/ThemeContext'
 
 type Props = NativeStackScreenProps<{ MatchProtocol: MatchProtocolRouteParams }, 'MatchProtocol'>
 
-const EDITABLE_STATUSES = ['SCHEDULED', 'LIVE', 'PLAYED', 'FINISHED'] as const
+const EDITABLE_STATUSES = ['SCHEDULED', 'LIVE', 'FINISHED'] as const
 type EditableStatus = (typeof EDITABLE_STATUSES)[number]
 
 type ProtocolFormBaseline = {
@@ -140,6 +142,32 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
 
   const [protocolBaseline, setProtocolBaseline] = useState<ProtocolFormBaseline | null>(null)
 
+  /** Контекст турнира для подписей плей-офф в шапке (как в списке матчей). */
+  const [playoffLabelContext, setPlayoffLabelContext] = useState<{
+    format?: string
+    groups: TournamentGroupRow[]
+    matchNumberById?: Record<string, number>
+    playoffQualifiersPerGroup?: number
+    allMatches: TournamentMatchRow[]
+  } | null>(null)
+
+  const playoffSlot = useMemo(() => {
+    if (!match || !playoffLabelContext) return null
+    const map = buildTournamentPlayoffSlotLabels({
+      format: playoffLabelContext.format,
+      groups: playoffLabelContext.groups,
+      matchNumberById: playoffLabelContext.matchNumberById,
+      playoffQualifiersPerGroup: playoffLabelContext.playoffQualifiersPerGroup,
+      matches: playoffLabelContext.allMatches,
+    })
+    return map[match.id] ?? null
+  }, [match, playoffLabelContext])
+
+  const protocolBlocked = useMemo(
+    () => !!(playoffSlot && isPlayoffPlaceholderSlot(playoffSlot)),
+    [playoffSlot],
+  )
+
   const eventPlayerPreviewMap = useMemo(
     () => buildPlayerPreviewMapFromEvents(match?.events),
     [match?.events],
@@ -153,6 +181,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     setEventsEditorEnabled(false)
     setRoster(null)
     setProtocolBaseline(null)
+    setPlayoffLabelContext(null)
     try {
       const d = await getTournamentDetail({
         tournamentId,
@@ -161,15 +190,36 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
         role: user.role,
         matchesLimit: 200,
       })
+      setPlayoffLabelContext({
+        format: d.format,
+        groups: Array.isArray(d.groups) ? d.groups : [],
+        matchNumberById: d.matchNumberById,
+        playoffQualifiersPerGroup: d.playoffQualifiersPerGroup,
+        allMatches: Array.isArray(d.matches) ? d.matches : [],
+      })
       const m = d.matches?.find((x) => x.id === matchId) ?? null
       setMatch(m)
       if (m) {
         const st = m.status
         let editableStatus: EditableStatus = 'SCHEDULED'
-        if (EDITABLE_STATUSES.includes(st as EditableStatus)) {
+        if (st === 'PLAYED') {
+          editableStatus = 'FINISHED'
+        } else if (EDITABLE_STATUSES.includes(st as EditableStatus)) {
           editableStatus = st as EditableStatus
         }
         setStatus(editableStatus)
+
+        const slotMap = buildTournamentPlayoffSlotLabels({
+          format: d.format,
+          groups: Array.isArray(d.groups) ? d.groups : [],
+          matchNumberById: d.matchNumberById,
+          playoffQualifiersPerGroup: d.playoffQualifiersPerGroup,
+          matches: Array.isArray(d.matches) ? d.matches : [],
+        })
+        if (isPlayoffPlaceholderSlot(slotMap[m.id] ?? null)) {
+          setLoading(false)
+          return
+        }
 
         const r = await loadProtocolRoster({
           tenantId: tenant.id,
@@ -224,6 +274,7 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     } catch (e) {
       setError(getErrorMessage(e))
       setMatch(null)
+      setPlayoffLabelContext(null)
     } finally {
       setLoading(false)
     }
@@ -246,10 +297,15 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
 
   useLayoutEffect(() => {
     const title = match
-      ? `${match.homeTeam?.name ?? '—'} — ${match.awayTeam?.name ?? '—'}`
+      ? (() => {
+          const line = playoffSlot
+            ? `${playoffSlot.home} — ${playoffSlot.away}`
+            : `${match.homeTeam?.name ?? '—'} — ${match.awayTeam?.name ?? '—'}`
+          return line.length > 34 ? `${line.slice(0, 31)}…` : line
+        })()
       : 'Протокол'
-    navigation.setOptions({ title: title.length > 34 ? `${title.slice(0, 31)}…` : title })
-  }, [navigation, match])
+    navigation.setOptions({ title })
+  }, [navigation, match, playoffSlot])
 
   const styles = useMemo(() => createMatchProtocolStyles(colors), [colors])
 
@@ -266,8 +322,8 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
 
   const isPlayoff = match?.stage === 'PLAYOFF'
 
-  const homeName = match?.homeTeam?.name ?? 'Хозяева'
-  const awayName = match?.awayTeam?.name ?? 'Гости'
+  const homeName = playoffSlot?.home ?? match?.homeTeam?.name ?? 'Хозяева'
+  const awayName = playoffSlot?.away ?? match?.awayTeam?.name ?? 'Гости'
 
   const isDirty = useMemo(() => {
     if (!protocolBaseline || !match || !user || !tenant) return false
@@ -554,6 +610,22 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
     )
   }
 
+  if (protocolBlocked) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['bottom']}>
+        <View style={styles.emptyMatchWrap}>
+          <EmptyState
+            icon="hourglass-outline"
+            title="Матч ещё не сформирован"
+            description="Участники появятся после матчей предыдущего этапа. Откройте протокол, когда в списке турнира будут указаны обе команды, а не «Победитель матча …»."
+            actionLabel="Назад к турниру"
+            onAction={() => navigation.goBack()}
+          />
+        </View>
+      </SafeAreaView>
+    )
+  }
+
   const readOnly = !canEdit
   const scoreFromGoalEvents = eventsEditorEnabled && hasGoalEvents(draftEvents)
   const hasRosterList = Boolean(roster && (roster.home.length > 0 || roster.away.length > 0))
@@ -577,7 +649,9 @@ export function MatchProtocolScreen({ route, navigation }: Props) {
           <View style={styles.matchHeader}>
             <Text style={styles.time}>{formatDateTime(match.startTime)}</Text>
             <Text style={styles.teams}>
-              {match.homeTeam?.name ?? '—'} — {match.awayTeam?.name ?? '—'}
+              {playoffSlot
+                ? `${playoffSlot.home} — ${playoffSlot.away}`
+                : `${match.homeTeam?.name ?? '—'} — ${match.awayTeam?.name ?? '—'}`}
             </Text>
           </View>
           {locked ? (

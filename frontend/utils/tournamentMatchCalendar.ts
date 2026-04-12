@@ -58,12 +58,12 @@ function resolvePlayoffRoundTitle(
     const roundOffset = Math.max(0, opts.roundNumber - baseRound)
     const expectedMatches = Math.floor(totalTeams / Math.pow(2, roundOffset + 1))
     if (expectedMatches === 1) return 'Плей-офф · Финал'
-    if (expectedMatches === 2) return 'Плей-офф · Полуфинал'
-    if (expectedMatches > 2) return `Плей-офф · 1/${expectedMatches} финала`
+    if (expectedMatches === 2) return 'Плей-офф · 1/2'
+    if (expectedMatches > 2) return `Плей-офф · 1/${expectedMatches}`
   }
 
-  if (visibleCount === 2) return 'Плей-офф · Полуфинал'
-  if (visibleCount > 2) return `Плей-офф · 1/${visibleCount} финала`
+  if (visibleCount === 2) return 'Плей-офф · 1/2'
+  if (visibleCount > 2) return `Плей-офф · 1/${visibleCount}`
   return `Плей-офф · Раунд ${opts.roundNumber || 1}`
 }
 

@@ -731,7 +731,7 @@ watch(
       <p class="text-xs leading-snug text-muted-color sm:text-sm sm:leading-normal">
         Матчи организации. Перетаскивание меняет дату.
         <span class="max-md:hidden">
-          Статусы {{ statusLabel('FINISHED') }}, {{ statusLabel('PLAYED') }}, {{ statusLabel('CANCELED') }} —
+          Статусы {{ statusLabel('FINISHED') }}, {{ statusLabel('CANCELED') }} —
           без переноса.
         </span>
       </p>

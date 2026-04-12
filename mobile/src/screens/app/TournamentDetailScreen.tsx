@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { useFocusEffect } from '@react-navigation/native'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
@@ -9,6 +9,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -30,7 +31,13 @@ import type {
 } from '../../types/tournament'
 import { AppNotice } from '../../components/ui/AppNotice'
 import { EmptyState } from '../../components/ui/EmptyState'
+import { MatchCardSkeleton } from '../../components/ui/MatchCardSkeleton'
 import { formatDateTime, formatDateOnly } from '../../utils/formatDate'
+import { isPlayoffPlaceholderSlot, matchStageLine } from '../../utils/matchStageLine'
+import { buildTournamentPlayoffSlotLabels } from '../../utils/playoffSlotLabels'
+import { formatMatchScoreLine } from '../../../../shared/match/formatMatchScoreLine'
+import { getMatchOrdinalDisplay } from '../../utils/matchOrdinal'
+import { matchCardTone } from '../../utils/matchCardTone'
 import { matchStatusLabel, tournamentStatusLabel } from '../../utils/tournamentLabels'
 import { useTheme } from '../../theme/ThemeContext'
 
@@ -40,7 +47,8 @@ type DetailTab = 'matches' | 'table'
 
 export function TournamentDetailScreen({ route, navigation }: Props) {
   const { tournamentId, tournamentName } = route.params
-  const { colors } = useTheme()
+  const { colors, isDark } = useTheme()
+  const { width: windowWidth } = useWindowDimensions()
   const { user, tenant } = useAuth()
   const [name, setName] = useState(tournamentName ?? '')
   const [status, setStatus] = useState('')
@@ -61,8 +69,37 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
   const [tableLoading, setTableLoading] = useState(false)
   const [tableError, setTableError] = useState<string | null>(null)
 
+  /** Поля турнира для подписей плей-офф (не только список матчей). */
+  const [tournamentMeta, setTournamentMeta] = useState<{
+    format?: string
+    matchNumberById?: Record<string, number>
+    playoffQualifiersPerGroup?: number
+  } | null>(null)
+
   const hasMultipleGroups = groups.length > 1
   const tableTabLabel = hasMultipleGroups ? 'Таблицы' : 'Таблица'
+
+  const playoffSlotLabelsByMatchId = useMemo(
+    () =>
+      buildTournamentPlayoffSlotLabels(
+        tournamentMeta
+          ? {
+              format: tournamentMeta.format,
+              groups,
+              matchNumberById: tournamentMeta.matchNumberById,
+              playoffQualifiersPerGroup: tournamentMeta.playoffQualifiersPerGroup,
+              matches,
+            }
+          : null,
+      ),
+    [tournamentMeta, groups, matches],
+  )
+
+  /**
+   * Полная загрузка при смене турнира или первом входе; при возврате с экрана протокола — только refresh
+   * (обновление счёта без полноэкранного лоадера).
+   */
+  const lastFocusTournamentId = useRef<string | null>(null)
 
   const load = useCallback(
     async (opts?: { refresh?: boolean }) => {
@@ -84,6 +121,11 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
         setStatus(d.status)
         setStartsAt(d.startsAt ?? null)
         setEndsAt(d.endsAt ?? null)
+        setTournamentMeta({
+          format: d.format,
+          matchNumberById: d.matchNumberById,
+          playoffQualifiersPerGroup: d.playoffQualifiersPerGroup,
+        })
         setMatches(Array.isArray(d.matches) ? d.matches : [])
         setMatchesTotal(
           typeof d.matchesTotal === 'number' ? d.matchesTotal : (d.matches?.length ?? 0),
@@ -106,6 +148,7 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
         setError(getErrorMessage(e))
         setMatches([])
         setGroups([])
+        setTournamentMeta(null)
       } finally {
         setLoading(false)
         setRefreshing(false)
@@ -139,8 +182,13 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
 
   useFocusEffect(
     useCallback(() => {
-      void load()
-    }, [load]),
+      if (lastFocusTournamentId.current !== tournamentId) {
+        lastFocusTournamentId.current = tournamentId
+        void load()
+      } else {
+        void load({ refresh: true })
+      }
+    }, [load, tournamentId]),
   )
 
   useEffect(() => {
@@ -149,8 +197,8 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
   }, [detailTab, loadTable, user, tenant])
 
   useLayoutEffect(() => {
-    navigation.setOptions({ title: name.trim() || 'Турнир' })
-  }, [navigation, name])
+    navigation.setOptions({ title: name.trim() || tournamentName?.trim() || 'Турнир' })
+  }, [navigation, name, tournamentName])
 
   const styles = useMemo(
     () =>
@@ -281,6 +329,11 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           color: colors.muted,
           marginBottom: 6,
         },
+        matchNoMark: {
+          fontSize: 12,
+          fontWeight: '800',
+          color: colors.accent,
+        },
         matchTeams: {
           fontSize: 16,
           fontWeight: '600',
@@ -297,7 +350,7 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           marginTop: 6,
         },
         matchCardPressed: {
-          backgroundColor: colors.background,
+          opacity: 0.88,
         },
         tapHint: {
           fontSize: 11,
@@ -305,51 +358,86 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           marginTop: 8,
           fontWeight: '600',
         },
+        tapHintMuted: {
+          fontSize: 11,
+          color: colors.muted,
+          marginTop: 8,
+          lineHeight: 15,
+        },
         tableHint: {
           fontSize: 12,
           color: colors.muted,
           marginBottom: 10,
           lineHeight: 17,
         },
-        tableLegend: {
-          fontSize: 11,
-          color: colors.muted,
-          marginBottom: 8,
+        tableLoadingBox: { paddingVertical: 24, alignItems: 'center' },
+        tableTabScroll: { flex: 1 },
+        tableSheet: {
+          minWidth: Math.max(360, windowWidth - 32),
+          paddingBottom: 8,
         },
-        tableRow: {
+        tableGridHeader: {
+          backgroundColor: colors.surface,
+          borderBottomWidth: 2,
+          borderBottomColor: colors.border,
+        },
+        tableGridRow: {
           flexDirection: 'row',
           alignItems: 'center',
-          paddingVertical: 12,
-          paddingHorizontal: 12,
-          marginBottom: 8,
-          borderRadius: 12,
-          borderWidth: 1,
-          borderColor: colors.border,
-          backgroundColor: colors.background,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
         },
-        tablePos: {
-          width: 28,
-          fontSize: 16,
+        tableGridRowAlt: {
+          backgroundColor: isDark ? 'rgba(148, 163, 184, 0.08)' : 'rgba(241, 245, 249, 0.9)',
+        },
+        th: {
+          fontSize: 10,
+          fontWeight: '700',
+          color: colors.muted,
+          textAlign: 'center',
+          paddingVertical: 10,
+          paddingHorizontal: 4,
+          textTransform: 'uppercase',
+          letterSpacing: 0.2,
+        },
+        td: {
+          fontSize: 13,
+          color: colors.text,
+          paddingVertical: 10,
+          paddingHorizontal: 4,
+          textAlign: 'center',
+        },
+        tdTeam: {
+          fontSize: 14,
+          fontWeight: '600',
+          color: colors.text,
+          textAlign: 'left',
+        },
+        tdRankInline: {
+          fontSize: 14,
           fontWeight: '800',
           color: colors.accent,
+          marginRight: 6,
         },
-        tableMid: { flex: 1, minWidth: 0, paddingRight: 8 },
-        tableTeam: { fontSize: 15, fontWeight: '600', color: colors.text },
-        tableSub: {
-          fontSize: 11,
-          color: colors.muted,
-          marginTop: 4,
-        },
-        tablePts: {
-          fontSize: 16,
+        tdPts: {
+          fontSize: 15,
           fontWeight: '800',
           color: colors.primary,
-          minWidth: 36,
-          textAlign: 'right',
         },
-        tableLoadingBox: { paddingVertical: 24, alignItems: 'center' },
+        colTeam: { width: 188, minWidth: 160, flexShrink: 0 },
+        colStat: { width: 30 },
+        colDiff: { width: 44 },
+        colPts: { width: 40 },
+        tableLegendFooter: {
+          fontSize: 11,
+          color: colors.muted,
+          lineHeight: 16,
+          marginTop: 12,
+          marginHorizontal: 4,
+          paddingBottom: 24,
+        },
       }),
-    [colors],
+    [colors, isDark, windowWidth],
   )
 
   const header = useMemo(
@@ -435,7 +523,6 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
                 })}
               </ScrollView>
             ) : null}
-            <Text style={styles.tableLegend}>М — матчи, В-Н-П, голы, р, о — очки</Text>
           </>
         )}
       </View>
@@ -462,9 +549,13 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
   if (loading && matches.length === 0 && !error) {
     return (
       <SafeAreaView style={styles.safe} edges={['bottom']}>
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.accent} />
-        </View>
+        <FlatList
+          data={['sk-0', 'sk-1', 'sk-2', 'sk-3', 'sk-4', 'sk-5']}
+          keyExtractor={(k) => k}
+          ListHeaderComponent={header}
+          contentContainerStyle={styles.listContent}
+          renderItem={() => <MatchCardSkeleton colors={colors} />}
+        />
       </SafeAreaView>
     )
   }
@@ -512,56 +603,71 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
           }
           renderItem={({ item }) => {
             const canProtocol = !!(user && canEditMatchProtocol(user.role))
+            const slot = playoffSlotLabelsByMatchId[item.id]
+            const homeLabel = slot?.home ?? item.homeTeam?.name ?? '—'
+            const awayLabel = slot?.away ?? item.awayTeam?.name ?? '—'
+            const placeholderSlot = isPlayoffPlaceholderSlot(slot)
+            const openProtocol = canProtocol && !placeholderSlot
+            const stageLine = matchStageLine(item, groups, matches)
+            const tone = matchCardTone(item.status, isDark, colors)
+            const matchOrdinal = getMatchOrdinalDisplay(
+              item.id,
+              tournamentMeta?.matchNumberById,
+              matches,
+            )
             return (
               <Pressable
-                disabled={!canProtocol}
+                disabled={!openProtocol}
                 style={({ pressed }) => [
                   styles.matchCard,
-                  canProtocol && pressed && styles.matchCardPressed,
+                  tone,
+                  openProtocol && pressed && styles.matchCardPressed,
                 ]}
                 onPress={() =>
-                  navigation.navigate('MatchProtocol', {
-                    tournamentId,
-                    matchId: item.id,
-                  })
+                  openProtocol
+                    ? navigation.navigate('MatchProtocol', {
+                        tournamentId,
+                        matchId: item.id,
+                      })
+                    : undefined
                 }
               >
-                <Text style={styles.matchTime}>{formatDateTime(item.startTime)}</Text>
+                <Text style={styles.matchTime}>
+                  {matchOrdinal != null ? (
+                    <Text style={styles.matchNoMark}>№ {matchOrdinal} · </Text>
+                  ) : null}
+                  {formatDateTime(item.startTime)}
+                  {stageLine ? ` · ${stageLine}` : ''}
+                </Text>
                 <Text style={styles.matchTeams}>
-                  {item.homeTeam?.name ?? '—'} — {item.awayTeam?.name ?? '—'}
+                  {homeLabel} — {awayLabel}
                 </Text>
                 <Text style={styles.matchScore}>
                   {item.homeScore != null && item.awayScore != null
-                    ? `${item.homeScore} : ${item.awayScore}`
+                    ? formatMatchScoreLine({
+                        homeScore: item.homeScore,
+                        awayScore: item.awayScore,
+                        events: item.events,
+                        stage: item.stage,
+                      })
                     : 'Счёт не внесён'}
                 </Text>
                 <Text style={styles.matchStatus}>{matchStatusLabel(item.status)}</Text>
-                {canProtocol ? (
+                {openProtocol ? (
                   <Text style={styles.tapHint}>Нажмите, чтобы открыть протокол</Text>
+                ) : canProtocol && placeholderSlot ? (
+                  <Text style={styles.tapHintMuted}>
+                    Протокол откроется, когда по списку будут реальные команды (не «Победитель матча …»).
+                  </Text>
                 ) : null}
               </Pressable>
             )
           }}
         />
       ) : (
-        <FlatList
-          data={tableRows}
-          keyExtractor={(r) => r.teamId}
-          ListHeaderComponent={
-            <View>
-              {header}
-              {tableError ? (
-                <AppNotice variant="error" style={{ marginBottom: 12 }} onDismiss={() => setTableError(null)}>
-                  {tableError}
-                </AppNotice>
-              ) : null}
-              {tableLoading && tableRows.length === 0 ? (
-                <View style={styles.tableLoadingBox}>
-                  <ActivityIndicator size="large" color={colors.accent} />
-                </View>
-              ) : null}
-            </View>
-          }
+        <ScrollView
+          style={styles.tableTabScroll}
+          contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
               refreshing={refreshing || (tableLoading && tableRows.length > 0)}
@@ -573,35 +679,79 @@ export function TournamentDetailScreen({ route, navigation }: Props) {
               colors={[colors.accent]}
             />
           }
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
-            !tableLoading && !tableError ? (
-              <EmptyState
-                icon="stats-chart-outline"
-                title="Таблица пуста"
-                description="Нет данных для выбранной группы или матчи ещё не сыграны."
-                actionLabel="Обновить"
-                onAction={() => void loadTable()}
-              />
-            ) : null
-          }
-          renderItem={({ item }) => (
-            <View style={styles.tableRow}>
-              <Text style={styles.tablePos}>{item.position}</Text>
-              <View style={styles.tableMid}>
-                <Text style={styles.tableTeam} numberOfLines={2}>
-                  {item.teamName}
-                </Text>
-                <Text style={styles.tableSub}>
-                  {item.played} · {item.wins}-{item.draws}-{item.losses} · {item.goalsFor}:{item.goalsAgainst} · р{' '}
-                  {item.goalDiff >= 0 ? '+' : ''}
-                  {item.goalDiff}
-                </Text>
-              </View>
-              <Text style={styles.tablePts}>{item.points}</Text>
+        >
+          {header}
+          {tableError ? (
+            <AppNotice variant="error" style={{ marginBottom: 12 }} onDismiss={() => setTableError(null)}>
+              {tableError}
+            </AppNotice>
+          ) : null}
+          {tableLoading && tableRows.length === 0 ? (
+            <View style={styles.tableLoadingBox}>
+              <ActivityIndicator size="large" color={colors.accent} />
             </View>
-          )}
-        />
+          ) : null}
+          {tableRows.length > 0 ? (
+            <>
+              <ScrollView horizontal showsHorizontalScrollIndicator>
+                <View style={styles.tableSheet}>
+                  <View style={[styles.tableGridRow, styles.tableGridHeader]}>
+                    <Text style={[styles.th, styles.colTeam, { textAlign: 'left' }]}>Команда</Text>
+                    <Text style={[styles.th, styles.colStat]}>И</Text>
+                    <Text style={[styles.th, styles.colStat]}>В</Text>
+                    <Text style={[styles.th, styles.colStat]}>Н</Text>
+                    <Text style={[styles.th, styles.colStat]}>П</Text>
+                    <Text style={[styles.th, styles.colDiff]}>Р</Text>
+                    <Text style={[styles.th, styles.colPts]}>О</Text>
+                  </View>
+                  {tableRows.map((item, idx) => (
+                    <View
+                      key={item.teamId}
+                      style={[styles.tableGridRow, idx % 2 === 1 ? styles.tableGridRowAlt : null]}
+                    >
+                      <View
+                        style={[
+                          styles.td,
+                          styles.colTeam,
+                          {
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            paddingVertical: 10,
+                          },
+                        ]}
+                      >
+                        <Text style={styles.tdRankInline}>{item.position}.</Text>
+                        <Text style={[styles.tdTeam, { flex: 1 }]} numberOfLines={2}>
+                          {item.teamName}
+                        </Text>
+                      </View>
+                      <Text style={[styles.td, styles.colStat]}>{item.played}</Text>
+                      <Text style={[styles.td, styles.colStat]}>{item.wins}</Text>
+                      <Text style={[styles.td, styles.colStat]}>{item.draws}</Text>
+                      <Text style={[styles.td, styles.colStat]}>{item.losses}</Text>
+                      <Text style={[styles.td, styles.colDiff]}>
+                        {item.goalDiff >= 0 ? '+' : ''}
+                        {item.goalDiff}
+                      </Text>
+                      <Text style={[styles.td, styles.tdPts, styles.colPts]}>{item.points}</Text>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+              <Text style={styles.tableLegendFooter}>
+                И — игры, В — победы, Н — ничьи, П — поражения, Р — разница мячей, О — очки.
+              </Text>
+            </>
+          ) : !tableLoading && !tableError ? (
+            <EmptyState
+              icon="stats-chart-outline"
+              title="Таблица пуста"
+              description="Нет данных для выбранной группы или матчи ещё не сыграны."
+              actionLabel="Обновить"
+              onAction={() => void loadTable()}
+            />
+          ) : null}
+        </ScrollView>
       )}
     </SafeAreaView>
   )

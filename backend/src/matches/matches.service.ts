@@ -79,6 +79,16 @@ const MATCH_DETAIL_INCLUDE = {
   events: MATCH_EVENTS_API,
 } satisfies Prisma.MatchInclude;
 
+/** В списках админки фильтр «Завершён» включает legacy `PLAYED` (на фронте не показывается отдельно). */
+function matchStatusWhereForAdminListFilter(
+  status: MatchStatus,
+): Prisma.MatchWhereInput['status'] {
+  if (status === MatchStatus.FINISHED) {
+    return { in: [MatchStatus.FINISHED, MatchStatus.PLAYED] };
+  }
+  return status;
+}
+
 @Injectable()
 export class MatchesService {
   private readonly logger = new Logger(MatchesService.name);
@@ -2246,7 +2256,7 @@ export class MatchesService {
       where.OR = [{ homeTeamId: query.teamId }, { awayTeamId: query.teamId }];
     }
     if (query?.status) {
-      where.status = query.status;
+      where.status = matchStatusWhereForAdminListFilter(query.status);
     } else if (query?.includeLocked === false) {
       where.status = {
         notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED],
@@ -2319,7 +2329,7 @@ export class MatchesService {
       where.OR = [{ homeTeamId: query.teamId }, { awayTeamId: query.teamId }];
     }
     if (query.status) {
-      where.status = query.status;
+      where.status = matchStatusWhereForAdminListFilter(query.status);
     } else if (query.includeLocked === false) {
       where.status = {
         notIn: [MatchStatus.FINISHED, MatchStatus.PLAYED, MatchStatus.CANCELED],

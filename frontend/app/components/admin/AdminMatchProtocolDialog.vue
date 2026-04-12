@@ -8,7 +8,10 @@ import type { TeamPlayerRow } from '~/types/admin/team'
 import { getApiErrorHttpStatus, getApiErrorMessage } from '~/utils/apiError'
 import { mergeDateAndTime, splitStartTimeToDateAndTime } from '~/utils/matchDateTimeFields'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
-import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
+import {
+  normalizeMatchStatusForSelect,
+  useMatchStatusSelectOptions,
+} from '~/composables/useMatchStatusSelectOptions'
 import { isMatchEditLocked } from '~/utils/tournamentAdminUi'
 import {
   buildProtocolPlayerTimelineMapsForPicker,
@@ -225,7 +228,7 @@ const protocolForm = reactive({
   extraTimeAwayScore: null as number | null,
   penaltiesHomeScore: null as number | null,
   penaltiesAwayScore: null as number | null,
-  status: 'PLAYED',
+  status: 'SCHEDULED',
   schedulePostponeReasonId: '' as string,
   scheduleCancelReasonId: '' as string,
   events: [] as {
@@ -240,6 +243,35 @@ const protocolForm = reactive({
     protocolEventTypeId?: string | null
     payload?: Record<string, unknown>
   }[],
+})
+
+const protocolContentSnapshotAtOpen = ref<string | null>(null)
+
+function buildProtocolContentSnapshot(): string {
+  return JSON.stringify({
+    hs: protocolForm.homeScore,
+    as: protocolForm.awayScore,
+    eth: protocolForm.extraTimeHomeScore,
+    eta: protocolForm.extraTimeAwayScore,
+    ph: protocolForm.penaltiesHomeScore,
+    pa: protocolForm.penaltiesAwayScore,
+    ev: protocolForm.events.map((e) => ({
+      type: e.type,
+      minute: e.minute,
+      playerId: e.playerId,
+      assistPlayerId: e.assistPlayerId,
+      cardType: e.cardType,
+      substitutePlayerInId: e.substitutePlayerInId,
+      note: e.note,
+      teamSide: e.teamSide,
+      protocolEventTypeId: e.protocolEventTypeId,
+    })),
+  })
+}
+
+const protocolContentDirty = computed(() => {
+  if (!protocolContentSnapshotAtOpen.value) return false
+  return buildProtocolContentSnapshot() !== protocolContentSnapshotAtOpen.value
 })
 
 const isPlayoffMatch = computed(() => props.match?.stage === 'PLAYOFF')
@@ -313,7 +345,7 @@ watch(
     protocolTime.value = sp.time
     protocolForm.homeScore = (m.homeScore ?? 0) as number
     protocolForm.awayScore = (m.awayScore ?? 0) as number
-    protocolForm.status = (m.status ?? 'PLAYED') as string
+    protocolForm.status = normalizeMatchStatusForSelect(m.status)
     protocolForm.extraTimeHomeScore = null
     protocolForm.extraTimeAwayScore = null
     protocolForm.penaltiesHomeScore = null
@@ -356,6 +388,7 @@ watch(
       })
     }
     await loadPlayers(m)
+    protocolContentSnapshotAtOpen.value = buildProtocolContentSnapshot()
   },
 )
 
@@ -710,10 +743,15 @@ const saveProtocol = async () => {
       }
     })
 
+    let statusToSend = normalizeMatchStatusForSelect(protocolForm.status)
+    if (protocolContentDirty.value && statusToSend === 'SCHEDULED') {
+      statusToSend = 'LIVE'
+    }
+
     const protocolBody: Record<string, unknown> = {
       homeScore: protocolForm.homeScore,
       awayScore: protocolForm.awayScore,
-      status: protocolForm.status,
+      status: statusToSend,
       events: eventsPayload,
     }
     if (protocolBaselineUpdatedAt.value) {

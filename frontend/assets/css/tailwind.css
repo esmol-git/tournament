@@ -808,6 +808,30 @@
     @apply !bg-surface-100 !text-surface-800 !border-surface-200 dark:!bg-surface-800 dark:!text-surface-100 dark:!border-surface-600;
   }
 
+  /**
+   * Строки DataTable «Матчи»: лёгкий фон + акцент слева, чтобы статус был виден с первого взгляда.
+   * Совместимо со stripedRows: фон чуть сильнее на чётных строках не ломаем — класс на tr переопределяет полосу локально.
+   */
+  .admin-match-row-tone > td {
+    @apply border-l-[3px] border-l-transparent;
+  }
+
+  .admin-match-row-tone--scheduled > td {
+    @apply bg-slate-50/90 border-l-slate-300 dark:bg-slate-900/35 dark:border-l-slate-500;
+  }
+
+  .admin-match-row-tone--live > td {
+    @apply bg-amber-50/95 border-l-amber-400 dark:bg-amber-950/40 dark:border-l-amber-500;
+  }
+
+  .admin-match-row-tone--finished > td {
+    @apply bg-emerald-50/90 border-l-emerald-400 dark:bg-emerald-950/35 dark:border-l-emerald-500;
+  }
+
+  .admin-match-row-tone--canceled > td {
+    @apply bg-red-50/90 border-l-red-400 dark:bg-red-950/35 dark:border-l-red-500;
+  }
+
   .admin-datatable-scroll {
     @apply min-w-0 w-full max-w-full overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch];
   }

@@ -296,7 +296,6 @@ const displayedRoundTitle = (r: CalendarRound) =>
 const localizedStatusOptions = computed(() => [
   { value: 'SCHEDULED', label: t('admin.tournament_page.status_scheduled') },
   { value: 'LIVE', label: t('admin.tournament_page.status_live') },
-  { value: 'PLAYED', label: t('admin.tournament_page.status_played') },
   { value: 'FINISHED', label: t('admin.tournament_page.status_finished') },
   { value: 'CANCELED', label: t('admin.tournament_page.status_canceled') },
 ])
@@ -308,8 +307,11 @@ const statusLabelByValue = computed<Record<string, string>>(() =>
   }, {}),
 )
 
-const localizedStatusLabel = (status?: string | null) =>
-  status ? statusLabelByValue.value[status] ?? status : '—'
+const localizedStatusLabel = (status?: string | null) => {
+  if (!status) return '—'
+  const key = status === 'PLAYED' ? 'FINISHED' : status
+  return statusLabelByValue.value[key] ?? status
+}
 
 const weekdayLabelByValue = computed<Record<number, string>>(() => ({
   1: t('admin.tournament_page.weekday_mon'),

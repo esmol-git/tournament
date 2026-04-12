@@ -3,7 +3,10 @@ import { useAuth } from '~/composables/useAuth'
 import { useTabQuerySync } from '~/composables/useTabQuerySync'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useMatchProtocolReferences } from '~/composables/useMatchProtocolReferences'
-import { useMatchStatusSelectOptions } from '~/composables/useMatchStatusSelectOptions'
+import {
+  normalizeMatchStatusForSelect,
+  useMatchStatusSelectOptions,
+} from '~/composables/useMatchStatusSelectOptions'
 import { useTenantId } from '~/composables/useTenantId'
 import {
   useAdminTenantTeamsAllQuery,
@@ -88,7 +91,8 @@ const tournamentListRouteReady = ref(false)
 function readTournamentFiltersFromQuery() {
   const q = route.query
   tournamentMatchFilterId.value = typeof q.mtTournament === 'string' ? q.mtTournament : ''
-  tournamentMatchStatusFilter.value = typeof q.mtStatus === 'string' ? q.mtStatus : ''
+  tournamentMatchStatusFilter.value =
+    typeof q.mtStatus === 'string' ? normalizeMatchStatusForSelect(q.mtStatus) : ''
   tournamentMatchTeamFilterId.value = typeof q.mtTeam === 'string' ? q.mtTeam : ''
   const from =
     typeof q.mtFrom === 'string' && q.mtFrom ? parseYmdLocal(q.mtFrom) : null

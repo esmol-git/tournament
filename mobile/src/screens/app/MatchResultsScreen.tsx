@@ -25,7 +25,9 @@ import type { TenantMatchListItem } from '../../types/matches'
 import type { TournamentListItem } from '../../types/tournament'
 import { AppNotice } from '../../components/ui/AppNotice'
 import { EmptyState } from '../../components/ui/EmptyState'
+import { formatMatchScoreLine } from '../../../../shared/match/formatMatchScoreLine'
 import { formatDateTime } from '../../utils/formatDate'
+import { matchCardTone } from '../../utils/matchCardTone'
 import { matchStatusLabel } from '../../utils/tournamentLabels'
 import { useTheme } from '../../theme/ThemeContext'
 
@@ -36,7 +38,6 @@ type StatusFilterKey =
   | 'upcoming'
   | 'SCHEDULED'
   | 'LIVE'
-  | 'PLAYED'
   | 'FINISHED'
   | 'CANCELED'
 
@@ -45,13 +46,12 @@ const STATUS_OPTIONS: { key: StatusFilterKey; label: string }[] = [
   { key: 'upcoming', label: 'Не завершены' },
   { key: 'SCHEDULED', label: 'Запланирован' },
   { key: 'LIVE', label: 'В игре' },
-  { key: 'PLAYED', label: 'Сыгран' },
   { key: 'FINISHED', label: 'Итог' },
   { key: 'CANCELED', label: 'Отменён' },
 ]
 
 function filterToQuery(status: StatusFilterKey): {
-  status?: 'SCHEDULED' | 'LIVE' | 'PLAYED' | 'FINISHED' | 'CANCELED'
+  status?: 'SCHEDULED' | 'LIVE' | 'FINISHED' | 'CANCELED'
   includeLocked: boolean
 } {
   if (status === 'all') return { includeLocked: true }
@@ -60,7 +60,7 @@ function filterToQuery(status: StatusFilterKey): {
 }
 
 export function MatchResultsScreen({ navigation }: Props) {
-  const { colors, colorScheme, accentPreset } = useTheme()
+  const { colors, colorScheme, accentPreset, isDark } = useTheme()
   const { user, tenant } = useAuth()
   const [items, setItems] = useState<TenantMatchListItem[]>([])
   const [total, setTotal] = useState(0)
@@ -226,7 +226,7 @@ export function MatchResultsScreen({ navigation }: Props) {
           borderColor: colors.border,
           backgroundColor: colors.surface,
         },
-        cardPressed: { backgroundColor: colors.background },
+        cardPressed: { opacity: 0.88 },
         tournamentName: { fontSize: 12, color: colors.muted, marginBottom: 4 },
         teams: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 6 },
         meta: { fontSize: 13, color: colors.muted },
@@ -375,32 +375,41 @@ export function MatchResultsScreen({ navigation }: Props) {
             </View>
           ) : null
         }
-        renderItem={({ item }) => (
-          <Pressable
-            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-            onPress={() =>
-              navigation.navigate('MatchProtocol', {
-                tournamentId: item.tournament.id,
-                matchId: item.id,
-              })
-            }
-          >
-            <Text style={styles.tournamentName} numberOfLines={1}>
-              {item.tournament.name}
-            </Text>
-            <Text style={styles.teams}>
-              {item.homeTeam.name} — {item.awayTeam.name}
-            </Text>
-            <Text style={styles.meta}>
-              {formatDateTime(item.startTime)} · {matchStatusLabel(item.status)}
-            </Text>
-            {item.homeScore != null && item.awayScore != null ? (
-              <Text style={styles.score}>
-                Счёт: {item.homeScore} : {item.awayScore}
+        renderItem={({ item }) => {
+          const tone = matchCardTone(item.status, isDark, colors)
+          return (
+            <Pressable
+              style={({ pressed }) => [styles.card, tone, pressed && styles.cardPressed]}
+              onPress={() =>
+                navigation.navigate('MatchProtocol', {
+                  tournamentId: item.tournament.id,
+                  matchId: item.id,
+                })
+              }
+            >
+              <Text style={styles.tournamentName} numberOfLines={1}>
+                {item.tournament.name}
               </Text>
-            ) : null}
-          </Pressable>
-        )}
+              <Text style={styles.teams}>
+                {item.homeTeam.name} — {item.awayTeam.name}
+              </Text>
+              <Text style={styles.meta}>
+                {formatDateTime(item.startTime)} · {matchStatusLabel(item.status)}
+              </Text>
+              {item.homeScore != null && item.awayScore != null ? (
+                <Text style={styles.score}>
+                  Счёт:{' '}
+                  {formatMatchScoreLine({
+                    homeScore: item.homeScore,
+                    awayScore: item.awayScore,
+                    events: item.events,
+                    stage: item.stage,
+                  })}
+                </Text>
+              ) : null}
+            </Pressable>
+          )
+        }}
       />
 
       <Modal visible={tournamentModalOpen} animationType="slide" transparent>

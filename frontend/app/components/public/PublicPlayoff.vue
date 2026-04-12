@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Bracket from 'vue-tournament-bracket'
 import type { MatchRow, TournamentDetails } from '~/types/tournament-admin'
 import { formatMatchScoreDisplay, statusLabel } from '~/utils/tournamentAdminUi'
+import { buildPlayoffRoundDisplayLabel } from '../../../../shared/playoff/playoffStageLabel'
 import { buildPlayoffSlotLabels } from '~/utils/playoffSlotResolver'
 import { usePublicTournamentFetch } from '~/composables/usePublicTournamentFetch'
 import { usePublicTenantContext } from '~/composables/usePublicTenantContext'
@@ -54,21 +55,6 @@ const slotLabelsByMatchId = computed(() =>
     loserOfMatch: (n) => `Проигравший матча ${n}`,
   }),
 )
-
-function playoffRoundLabel(round?: string | null) {
-  switch (round) {
-    case 'FINAL':
-      return 'Финал'
-    case 'THIRD_PLACE':
-      return 'Матч за 3 место'
-    case 'SEMIFINAL':
-      return 'Полуфинал'
-    case 'QUARTERFINAL':
-      return 'Четвертьфинал'
-    default:
-      return null
-  }
-}
 
 const allPlayoffMatchesSorted = computed(() =>
   (matches.value ?? [])
@@ -157,23 +143,6 @@ const thirdPlaceMatch = computed(() =>
     .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))[0] ?? null,
 )
 
-const playoffMatchesByRoundNumber = computed(() => {
-  const map = new Map<number, MatchRow[]>()
-  for (const m of matches.value ?? []) {
-    if (m.stage !== 'PLAYOFF') continue
-    if (typeof m.roundNumber !== 'number') continue
-    const rn = m.roundNumber as number
-    const arr = map.get(rn) ?? []
-    arr.push(m)
-    map.set(rn, arr)
-  }
-  for (const [rn, arr] of map.entries()) {
-    arr.sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id))
-    map.set(rn, arr)
-  }
-  return map
-})
-
 const matchNumberById = computed<Record<string, number>>(() => {
   if (detail.value?.matchNumberById) return detail.value.matchNumberById
   const sorted = (matches.value ?? [])
@@ -209,14 +178,8 @@ function matchNumberLabel(m: MatchRow) {
 }
 
 function stageLabelForMatch(m: MatchRow) {
-  if (m.playoffRound === 'FINAL') return 'Финал'
-  if (m.playoffRound === 'THIRD_PLACE') return 'Матч за 3 место'
-  const rn = Number(m.roundNumber ?? 0)
-  const roundMatchesCount = playoffMatchesByRoundNumber.value.get(rn)?.length ?? 0
-  if (roundMatchesCount > 2) return `1/${roundMatchesCount} финала`
-  if (roundMatchesCount === 2) return 'Полуфинал'
-  if (roundMatchesCount === 1) return 'Финал'
-  return `Стадия ${rn || 1}`
+  const playoff = (matches.value ?? []).filter((x) => x.stage === 'PLAYOFF')
+  return buildPlayoffRoundDisplayLabel(m, playoff)
 }
 
 function extraTimeLabel(m: MatchRow): string | null {

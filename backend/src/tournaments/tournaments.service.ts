@@ -3653,7 +3653,13 @@ export class TournamentsService {
               teamId: true,
               groupId: true,
               groupSortOrder: true,
-              team: { select: { id: true, name: true } },
+              team: {
+                select: {
+                  id: true,
+                  name: true,
+                  region: { select: { name: true } },
+                },
+              },
             },
           },
         },
@@ -3666,6 +3672,9 @@ export class TournamentsService {
       }
       const teamIds = teams.map((x) => x.teamId);
       const names = new Map(teams.map((x) => [x.teamId, x.team.name] as const));
+      const cities = new Map(
+        teams.map((x) => [x.teamId, x.team.region?.name ?? null] as const),
+      );
       const seedOrder = new Map(
         teams.map((x) => [x.teamId, x.groupSortOrder ?? 0] as const),
       );
@@ -3707,6 +3716,7 @@ export class TournamentsService {
       const mapped = rows.map((r, idx) => ({
         teamId: r.teamId,
         teamName: names.get(r.teamId) ?? r.teamId,
+        city: cities.get(r.teamId) ?? null,
         position: idx + 1,
         played: r.played,
         wins: r.wins,
@@ -3737,12 +3747,21 @@ export class TournamentsService {
     const rows = await this.prisma.tournamentTableRow.findMany({
       where: { tournamentId },
       orderBy: [{ position: 'asc' }, { points: 'desc' }, { goalDiff: 'desc' }],
-      include: { team: { select: { id: true, name: true } } },
+      include: {
+        team: {
+          select: {
+            id: true,
+            name: true,
+            region: { select: { name: true } },
+          },
+        },
+      },
     });
 
     const mapped = rows.map((r) => ({
       teamId: r.teamId,
       teamName: r.team.name,
+      city: r.team.region?.name ?? null,
       position: r.position,
       played: r.played,
       wins: r.wins,
@@ -5961,6 +5980,17 @@ export class TournamentsService {
       batchStart += dayRounds.length;
     }
 
+    /** Последний по времени матч в сгенерированном расписании — для `endsAt` турнира. */
+    let scheduleEndsAt: Date | null = null;
+    for (const m of matchesToCreate) {
+      if (
+        !scheduleEndsAt ||
+        m.startTime.getTime() > scheduleEndsAt.getTime()
+      ) {
+        scheduleEndsAt = m.startTime;
+      }
+    }
+
     if (tournament.endsAt && (lastMatchStart || lastRoundDate)) {
       const maxEnd = parseDateOnlyLocal(
         tournament.endsAt.toISOString().slice(0, 10),
@@ -6003,6 +6033,12 @@ export class TournamentsService {
       }
 
       const created = await tx.match.createMany({ data: matchesToCreate });
+      if (matchesToCreate.length > 0 && scheduleEndsAt) {
+        await tx.tournament.update({
+          where: { id: tournamentId },
+          data: { endsAt: scheduleEndsAt },
+        });
+      }
       return { created: created.count, deleted: deletedMatches };
     });
 

@@ -14,6 +14,7 @@ import {
   formatDateTimeNoSeconds,
   formatMatchScoreDisplay,
   isMatchEditLocked,
+  matchListRowToneClass,
   statusLabel,
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
@@ -1314,6 +1315,7 @@ defineExpose({
         :sortOrder="1"
         stripedRows
         class="mt-0"
+        :rowClass="(data: MatchRow) => matchListRowToneClass(data.status)"
       >
         <Column headerStyle="width: 2.5rem">
           <template #header>

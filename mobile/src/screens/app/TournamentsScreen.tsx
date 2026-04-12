@@ -24,12 +24,13 @@ import { AppNotice } from '../../components/ui/AppNotice'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { formatDateOnly } from '../../utils/formatDate'
 import { tournamentStatusLabel } from '../../utils/tournamentLabels'
+import { tournamentCardTone } from '../../utils/tournamentCardTone'
 import { useTheme } from '../../theme/ThemeContext'
 
 type Props = NativeStackScreenProps<TournamentsStackParamList, 'Tournaments'>
 
 export function TournamentsScreen({ navigation }: Props) {
-  const { colors } = useTheme()
+  const { colors, isDark } = useTheme()
   const { user, tenant } = useAuth()
   const [items, setItems] = useState<TournamentListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -99,15 +100,12 @@ export function TournamentsScreen({ navigation }: Props) {
         },
         card: {
           borderWidth: 1,
-          borderColor: colors.border,
           borderRadius: 12,
           padding: 14,
           marginBottom: 12,
-          backgroundColor: colors.background,
         },
         cardPressed: {
-          opacity: 0.92,
-          backgroundColor: colors.surface,
+          opacity: 0.9,
         },
         cardTitle: {
           fontSize: 17,
@@ -173,9 +171,11 @@ export function TournamentsScreen({ navigation }: Props) {
             />
           ) : null
         }
-        renderItem={({ item }) => (
+        renderItem={({ item }) => {
+          const tone = tournamentCardTone(item.status, isDark, colors)
+          return (
           <Pressable
-            style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+            style={({ pressed }) => [styles.card, tone, pressed && styles.cardPressed]}
             onPress={() =>
               navigation.navigate('TournamentDetail', {
                 tournamentId: item.id,
@@ -195,7 +195,8 @@ export function TournamentsScreen({ navigation }: Props) {
               <Text style={styles.cardHint}>Команд: {item.teamsCount}</Text>
             ) : null}
           </Pressable>
-        )}
+          )
+        }}
       />
     </SafeAreaView>
   )

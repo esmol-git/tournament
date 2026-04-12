@@ -6,6 +6,8 @@ export type TenantMatchListItem = {
   stage?: string
   homeScore?: number | null
   awayScore?: number | null
+  /** События протокола (д.в./пен.) — приходят с API. */
+  events?: { payload?: Record<string, unknown> | null }[]
   tournament: {
     id: string
     name: string

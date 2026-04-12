@@ -43,6 +43,24 @@ export function statusPillClass(status?: string | null) {
   }
 }
 
+/** Спокойная подсветка строки таблицы матчей в админке (см. `tailwind.css` → `.admin-match-row-tone*`). */
+export function matchListRowToneClass(status?: string | null): string {
+  switch (status) {
+    case 'SCHEDULED':
+      return 'admin-match-row-tone admin-match-row-tone--scheduled'
+    case 'LIVE':
+      return 'admin-match-row-tone admin-match-row-tone--live'
+    case 'PLAYED':
+      return 'admin-match-row-tone admin-match-row-tone--finished'
+    case 'FINISHED':
+      return 'admin-match-row-tone admin-match-row-tone--finished'
+    case 'CANCELED':
+      return 'admin-match-row-tone admin-match-row-tone--canceled'
+    default:
+      return ''
+  }
+}
+
 export function matchCountLabel(n: number): string {
   const { t, locale } = useI18n()
   const ru = locale.value.toLowerCase().startsWith('ru')

@@ -54,6 +54,16 @@ export type TournamentMatchRow = {
   status: string
   startTime: string
   stage?: string
+  /** Связь с группой (групповой этап); имя берём из `TournamentDetailResponse.groups`. */
+  groupId?: string | null
+  roundNumber?: number
+  playoffRound?:
+    | 'ROUND_OF_16'
+    | 'QUARTERFINAL'
+    | 'SEMIFINAL'
+    | 'FINAL'
+    | 'THIRD_PLACE'
+    | null
   homeTeam?: TournamentMatchTeam | null
   awayTeam?: TournamentMatchTeam | null
   homeScore?: number | null
@@ -72,6 +82,8 @@ export type TournamentGroupRow = {
 export type TournamentTableRow = {
   teamId: string
   teamName: string
+  /** Город/регион из карточки команды (`Team.region.name`), если задан. */
+  city?: string | null
   position: number
   played: number
   wins: number
@@ -89,11 +101,15 @@ export type TournamentDetailResponse = {
   name: string
   status: string
   format?: string
+  /** Сколько команд из группы выходит в плей-офф (для подписей слотов). */
+  playoffQualifiersPerGroup?: number
   category?: string | null
   startsAt?: string | null
   endsAt?: string | null
   published?: boolean
   matches: TournamentMatchRow[]
+  /** Стабильная нумерация матчей (как в админке), для «Победитель матча N». */
+  matchNumberById?: Record<string, number>
   matchesTotal?: number
   /** Группы (если турнир с группами) — для вкладки «Таблицы». */
   groups?: TournamentGroupRow[]
