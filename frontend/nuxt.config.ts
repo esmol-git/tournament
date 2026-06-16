@@ -35,7 +35,7 @@ export default defineNuxtConfig({
     '@primevue/nuxt-module',
     '@nuxtjs/tailwindcss',
     '@nuxt/image',
-    '@nuxt/fonts',
+  // Шрифты — через Google Fonts в app.head; @nuxt/fonts тянет api.fontsource.org и роняет vite-node в dev.
     '@nuxt/icon',
   ],
   i18n: {
@@ -55,6 +55,8 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
+    /** Цель для dev-прокси `/__remote-api/*` (NUXT_REMOTE_API_TARGET). На проде не задавать. */
+    remoteApiTarget: process.env.NUXT_REMOTE_API_TARGET || '',
     public: {
       /** Бэкенд NestJS (переопределяется через NUXT_PUBLIC_API_BASE) */
       apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:4000',

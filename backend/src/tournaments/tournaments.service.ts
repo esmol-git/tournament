@@ -3195,6 +3195,34 @@ export class TournamentsService {
       throw new BadRequestException('startsAt must be before endsAt');
     }
 
+    const registrationOpensAt =
+      dto.registrationOpensAt === null
+        ? null
+        : dto.registrationOpensAt
+          ? new Date(dto.registrationOpensAt)
+          : undefined;
+    const registrationClosesAt =
+      dto.registrationClosesAt === null
+        ? null
+        : dto.registrationClosesAt
+          ? new Date(dto.registrationClosesAt)
+          : undefined;
+    if (registrationOpensAt && Number.isNaN(registrationOpensAt.getTime())) {
+      throw new BadRequestException('Invalid registrationOpensAt');
+    }
+    if (registrationClosesAt && Number.isNaN(registrationClosesAt.getTime())) {
+      throw new BadRequestException('Invalid registrationClosesAt');
+    }
+    if (
+      registrationOpensAt instanceof Date &&
+      registrationClosesAt instanceof Date &&
+      registrationOpensAt >= registrationClosesAt
+    ) {
+      throw new BadRequestException(
+        'registrationOpensAt must be before registrationClosesAt',
+      );
+    }
+
     const tenantId = existing.tenantId;
     const adminIds = dto.admins?.map((a) => a.userId) ?? [];
     if (dto.admins) {
@@ -3452,6 +3480,16 @@ export class TournamentsService {
               ? null
               : (dto.dayStartTimeOverrides as any),
           minTeams: dto.minTeams,
+          ...(dto.maxTeams !== undefined ? { maxTeams: dto.maxTeams } : {}),
+          ...(dto.registrationEnabled !== undefined
+            ? { registrationEnabled: dto.registrationEnabled }
+            : {}),
+          ...(registrationOpensAt !== undefined
+            ? { registrationOpensAt }
+            : {}),
+          ...(registrationClosesAt !== undefined
+            ? { registrationClosesAt }
+            : {}),
           pointsWin: dto.pointsWin,
           pointsDraw: dto.pointsDraw,
           pointsLoss: dto.pointsLoss,
@@ -3785,7 +3823,7 @@ export class TournamentsService {
   async addTeam(tournamentId: string, teamId: string) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
-      select: { id: true, tenantId: true, status: true, ageGroupId: true },
+      select: { id: true, tenantId: true, status: true, ageGroupId: true, maxTeams: true },
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
 
@@ -3817,9 +3855,10 @@ export class TournamentsService {
       const totalTeams = await this.prisma.tournamentTeam.count({
         where: { tournamentId },
       });
-      if (totalTeams >= this.MAX_TEAMS_PER_TOURNAMENT) {
+      const cap = tournament.maxTeams ?? this.MAX_TEAMS_PER_TOURNAMENT;
+      if (totalTeams >= cap) {
         throw new BadRequestException(
-          `Максимум команд в одном турнире: ${this.MAX_TEAMS_PER_TOURNAMENT}.`,
+          `Максимум команд в одном турнире: ${cap}.`,
         );
       }
     }

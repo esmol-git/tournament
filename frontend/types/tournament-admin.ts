@@ -31,6 +31,10 @@ export interface TournamentDetails {
   dayStartTimeOverrides?: Record<string, string> | null
   playoffQualifiersPerGroup?: number
   minTeams: number
+  maxTeams?: number | null
+  registrationEnabled?: boolean
+  registrationOpensAt?: string | null
+  registrationClosesAt?: string | null
   pointsWin: number
   pointsDraw: number
   pointsLoss: number

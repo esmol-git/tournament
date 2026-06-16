@@ -138,6 +138,7 @@ model Tenant {
   tournamentTemplateReferees TournamentTemplateReferee[]
   tournamentStadiums        TournamentStadium[]
   telegramNotificationDeliveries TelegramNotificationDelivery[]
+  tournamentRegistrations   TournamentRegistration[]
 
   @@index([subscriptionEndsAt])
 }
@@ -648,6 +649,8 @@ model User {
   completedLaunchChecklistTournaments Tournament[] @relation("TournamentLaunchChecklistCompleter")
   teamAdminOf TeamAdmin[]
   refreshTokens RefreshToken[]
+  submittedTournamentRegistrations TournamentRegistration[] @relation("TournamentRegistrationSubmitter")
+  reviewedTournamentRegistrations TournamentRegistration[] @relation("TournamentRegistrationReviewer")
 
   @@unique([tenantId, username])
 }
@@ -693,6 +696,12 @@ model Tournament {
   dayStartTimeDefault  String @default("12:00") // HH:mm
   dayStartTimeOverrides Json?                   // { "0": "10:00", "6": "12:00" }
   minTeams    Int      @default(2)
+  /// Максимум команд (заявки + ручное добавление). null — только системный лимит.
+  maxTeams    Int?
+  /// Приём заявок от команд (TEAM_ADMIN).
+  registrationEnabled Boolean @default(false)
+  registrationOpensAt DateTime?
+  registrationClosesAt DateTime?
   pointsWin   Int      @default(3)
   pointsDraw  Int      @default(1)
   pointsLoss  Int      @default(0)
@@ -729,6 +738,7 @@ model Tournament {
   tournamentReferees TournamentReferee[]
   referenceDocuments ReferenceDocument[]
   tournamentStadiums TournamentStadium[]
+  registrations TournamentRegistration[]
 
   @@unique([tenantId, slug])
   @@index([tenantId, status, createdAt])
@@ -849,6 +859,7 @@ model Team {
   admins       TeamAdmin[]
   players      TeamPlayer[]
   tournamentTeams TournamentTeam[]
+  tournamentRegistrations TournamentRegistration[]
   homeMatches  Match[]      @relation("HomeTeam")
   awayMatches  Match[]      @relation("AwayTeam")
   tableRows    TournamentTableRow[]
@@ -1109,6 +1120,41 @@ enum UserRole {
 }
 
 /// Формат турнира. MANUAL — только ручные матчи, без автогенерации расписания.
+enum TournamentRegistrationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  WITHDRAWN
+  WAITLIST
+}
+
+model TournamentRegistration {
+  id                String                       @id @default(cuid())
+  tenantId          String
+  tournamentId      String
+  teamId            String
+  status            TournamentRegistrationStatus @default(DRAFT)
+  message           String?
+  adminNote         String?
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  submittedByUserId String?
+  reviewedByUserId  String?
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament  Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  team        Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  submittedBy User?      @relation("TournamentRegistrationSubmitter", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  reviewedBy  User?      @relation("TournamentRegistrationReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tournamentId, teamId])
+  @@index([tenantId, tournamentId, status])
+  @@index([teamId])
+}
+
 enum TournamentFormat {
   SINGLE_GROUP
   GROUPS_2

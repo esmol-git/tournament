@@ -37,6 +37,7 @@ import { useAdminGlobalModeratorTournamentPolicy } from '~/composables/useAdminG
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import AdminTournamentTableShareImageDialog from '~/app/components/admin/AdminTournamentTableShareImageDialog.vue'
 import AdminTournamentStatsSection from '~/app/components/admin/AdminTournamentStatsSection.vue'
+import AdminTournamentRegistrationsPanel from '~/app/components/admin/tournaments/AdminTournamentRegistrationsPanel.vue'
 
 definePageMeta({
   layout: 'admin',
@@ -4079,6 +4080,15 @@ onMounted(async () => {
       </TabPanel>
 
       <TabPanel value="compositions" :header="t('admin.tournament_page.tab_compositions')">
+        <AdminTournamentRegistrationsPanel
+          v-if="tournament"
+          :tournament-id="tournamentId"
+          :tournament="tournament"
+          :can-manage="canEditTournament"
+          class="mb-4"
+          @updated="fetchTournament"
+          @settings-saved="fetchTournament"
+        />
         <div class="grid gap-4 lg:grid-cols-3">
           <div class="flex flex-col gap-4 lg:col-span-2">
             <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4">

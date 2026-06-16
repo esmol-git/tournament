@@ -292,4 +292,38 @@ export class UpdateTournamentDto {
   @IsArray()
   @IsString({ each: true })
   moderatorIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Включить приём заявок от команд' })
+  @IsOptional()
+  @IsBoolean()
+  registrationEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Начало приёма заявок (ISO 8601) или null',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  registrationOpensAt?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Окончание приёма заявок (ISO 8601) или null',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  registrationClosesAt?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Максимум команд в турнире (заявки + ручное добавление)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(2)
+  @Max(512)
+  maxTeams?: number | null;
 }
