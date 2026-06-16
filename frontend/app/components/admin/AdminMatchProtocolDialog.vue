@@ -300,6 +300,60 @@ function extractEventAssistId(payload: Record<string, unknown> | undefined): str
 const loadPlayers = async (m: MatchRow) => {
   protocolPlayersLoading.value = true
   try {
+    const mapProtocolItems = (
+      items: Array<{
+        playerId: string
+        jerseyNumber: number | null
+        player: TeamPlayerRow['player'] & { position?: string | null }
+      }>,
+    ): TeamPlayerRow[] =>
+      items.map((row) => ({
+        id: row.playerId,
+        playerId: row.playerId,
+        jerseyNumber: row.jerseyNumber,
+        position: row.player.position ?? null,
+        player: {
+          id: row.player.id,
+          firstName: row.player.firstName,
+          lastName: row.player.lastName,
+          birthDate: row.player.birthDate ?? null,
+          phone: row.player.phone ?? null,
+          photoUrl: row.player.photoUrl ?? null,
+        },
+      }))
+
+    if (props.tournamentId && !props.standalone) {
+      const [home, away] = await Promise.all([
+        authFetch<{
+          items: Array<{
+            playerId: string
+            jerseyNumber: number | null
+            player: TeamPlayerRow['player'] & { position?: string | null }
+          }>
+        }>(
+          apiUrl(
+            `/tournaments/${props.tournamentId}/teams/${m.homeTeam.id}/protocol-players`,
+          ),
+          { headers: { Authorization: `Bearer ${token.value}` } },
+        ),
+        authFetch<{
+          items: Array<{
+            playerId: string
+            jerseyNumber: number | null
+            player: TeamPlayerRow['player'] & { position?: string | null }
+          }>
+        }>(
+          apiUrl(
+            `/tournaments/${props.tournamentId}/teams/${m.awayTeam.id}/protocol-players`,
+          ),
+          { headers: { Authorization: `Bearer ${token.value}` } },
+        ),
+      ])
+      protocolHomePlayers.value = mapProtocolItems(home.items ?? [])
+      protocolAwayPlayers.value = mapProtocolItems(away.items ?? [])
+      return
+    }
+
     const [home, away] = await Promise.all([
       authFetch<{ items: TeamPlayerRow[]; total: number }>(
         apiUrl(`/tenants/${tenantId.value}/teams/${m.homeTeam.id}/players`),

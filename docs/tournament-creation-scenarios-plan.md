@@ -94,10 +94,10 @@
 ## 5. Дорожная карта доработок (после охвата)
 
 ### Фаза A — закрыть тупики без новых экранов
-1. Enforcement окон заявок (`registrationOpensAt` / `closesAt`)
-2. Протокол и публичный состав из `TournamentTeamPlayer`
-3. Блок дисквалифицированных в протоколе
-4. Проверка birthDate vs `ageGroup` при roster
+1. ✅ Enforcement окон заявок (`registrationOpensAt` / `closesAt`)
+2. ✅ Протокол из `TournamentTeamPlayer` (API `protocol-players`, веб + mobile staff)
+3. ✅ Блок `DISQUALIFIED` в протоколе (валидация при сохранении)
+4. ✅ Проверка `birthDate` vs возрастная группа (`AgeGroup.minBirthYear` / `maxBirthYear`)
 
 ### Фаза B — регламент и операционка
 5. Судьи на матч (главный + помощники)

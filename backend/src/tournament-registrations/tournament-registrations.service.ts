@@ -178,6 +178,25 @@ export class TournamentRegistrationsService {
     );
   }
 
+  private assertRegistrationWindow(tournament: {
+    registrationOpensAt: Date | null
+    registrationClosesAt: Date | null
+  }) {
+    const now = new Date();
+    if (
+      tournament.registrationOpensAt &&
+      now.getTime() < tournament.registrationOpensAt.getTime()
+    ) {
+      throw new BadRequestException('Приём заявок ещё не открыт');
+    }
+    if (
+      tournament.registrationClosesAt &&
+      now.getTime() > tournament.registrationClosesAt.getTime()
+    ) {
+      throw new BadRequestException('Приём заявок завершён');
+    }
+  }
+
   async create(
     tournamentId: string,
     dto: CreateTournamentRegistrationDto,
@@ -206,6 +225,8 @@ export class TournamentRegistrationsService {
         user,
       );
     }
+
+    this.assertRegistrationWindow(tournament);
 
     const team = await this.prisma.team.findFirst({
       where: { id: teamId, tenantId: tournament.tenantId },
@@ -281,6 +302,9 @@ export class TournamentRegistrationsService {
     if (user.role === UserRole.TOURNAMENT_ADMIN) {
       await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
     }
+
+    const tournament = await this.loadTournamentForRegistration(tournamentId);
+    this.assertRegistrationWindow(tournament);
 
     if (
       reg.status !== TournamentRegistrationStatus.DRAFT &&

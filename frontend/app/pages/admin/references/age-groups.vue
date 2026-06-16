@@ -39,6 +39,8 @@ const form = reactive({
   name: '',
   shortLabel: '',
   code: '',
+  minBirthYear: null as number | null,
+  maxBirthYear: null as number | null,
   sortOrder: 0 as number,
   active: true,
   note: '',
@@ -75,6 +77,8 @@ const openCreate = () => {
   form.name = ''
   form.shortLabel = ''
   form.code = ''
+  form.minBirthYear = null
+  form.maxBirthYear = null
   form.sortOrder = 0
   form.active = true
   form.note = ''
@@ -88,6 +92,8 @@ const openEdit = (row: AgeGroupRow) => {
   form.name = row.name
   form.shortLabel = row.shortLabel ?? ''
   form.code = row.code ?? ''
+  form.minBirthYear = row.minBirthYear ?? null
+  form.maxBirthYear = row.maxBirthYear ?? null
   form.sortOrder = row.sortOrder
   form.active = row.active
   form.note = row.note ?? ''
@@ -104,13 +110,20 @@ const save = async () => {
   }
   saving.value = true
   try {
-    const body = {
+    const body: Record<string, unknown> = {
       name: form.name.trim(),
       shortLabel: form.shortLabel.trim() || undefined,
       code: form.code.trim() || undefined,
       sortOrder: form.sortOrder,
       active: form.active,
       note: form.note.trim() || undefined,
+    }
+    if (isEdit.value) {
+      body.minBirthYear = form.minBirthYear
+      body.maxBirthYear = form.maxBirthYear
+    } else {
+      if (form.minBirthYear != null) body.minBirthYear = form.minBirthYear
+      if (form.maxBirthYear != null) body.maxBirthYear = form.maxBirthYear
     }
     if (isEdit.value) {
       await authFetch(apiUrl(`/tenants/${tenantId.value}/age-groups/${editing.value!.id}`), {
@@ -302,6 +315,35 @@ onMounted(() => {
           <label class="text-sm block mb-1">Код</label>
           <InputText v-model="form.code" class="w-full" />
         </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm block mb-1">Мин. год рождения</label>
+            <InputNumber
+              v-model="form.minBirthYear"
+              class="w-full"
+              :min="1990"
+              :max="2100"
+              :use-grouping="false"
+              input-id="ag_min_birth"
+              placeholder="—"
+            />
+          </div>
+          <div>
+            <label class="text-sm block mb-1">Макс. год рождения</label>
+            <InputNumber
+              v-model="form.maxBirthYear"
+              class="w-full"
+              :min="1990"
+              :max="2100"
+              :use-grouping="false"
+              input-id="ag_max_birth"
+              placeholder="—"
+            />
+          </div>
+        </div>
+        <p class="text-[11px] leading-snug text-muted-color -mt-1">
+          Для проверки игроков в составе турнира с этой возрастной группой.
+        </p>
         <div>
           <label class="text-sm block mb-1">Порядок сортировки</label>
           <InputNumber

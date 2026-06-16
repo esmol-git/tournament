@@ -46,6 +46,15 @@ export class TournamentRostersController {
     return this.service.listForTeam(tournamentId, teamId, req.user);
   }
 
+  @Get('tournaments/:id/teams/:teamId/protocol-players')
+  protocolPlayers(
+    @Param('id') tournamentId: string,
+    @Param('teamId') teamId: string,
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.service.listProtocolPlayers(tournamentId, teamId, req.user);
+  }
+
   @Get('tournaments/:id/teams/:teamId/roster/candidates')
   candidates(
     @Param('id') tournamentId: string,

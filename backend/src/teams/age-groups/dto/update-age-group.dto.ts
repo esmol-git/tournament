@@ -6,6 +6,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export class UpdateAgeGroupDto {
@@ -23,6 +24,20 @@ export class UpdateAgeGroupDto {
   @IsString()
   @MaxLength(64)
   code?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1900)
+  minBirthYear?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1900)
+  maxBirthYear?: number | null;
 
   @IsOptional()
   @IsString()

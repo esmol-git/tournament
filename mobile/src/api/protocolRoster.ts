@@ -1,5 +1,6 @@
 import { getPublicTournamentRoster, shouldUsePublicTournamentApi } from './tournamentsApi'
 import { listTeamPlayers, type TeamPlayerListItem } from './teamsApi'
+import { apiRequest } from './client'
 import type { UserRole } from '../types/user'
 
 export type ProtocolRosterPlayer = {
@@ -46,6 +47,24 @@ export async function loadProtocolRoster(params: {
 
   if (!shouldUsePublicTournamentApi(params.role)) {
     try {
+      if (params.tournamentId) {
+        const [homeRes, awayRes] = await Promise.all([
+          apiRequest<{ items: TeamPlayerListItem[] }>(
+            `/tournaments/${encodeURIComponent(params.tournamentId)}/teams/${encodeURIComponent(homeId)}/protocol-players`,
+          ),
+          apiRequest<{ items: TeamPlayerListItem[] }>(
+            `/tournaments/${encodeURIComponent(params.tournamentId)}/teams/${encodeURIComponent(awayId)}/protocol-players`,
+          ),
+        ])
+        return {
+          roster: {
+            home: mapTenantItems(homeRes.items ?? []),
+            away: mapTenantItems(awayRes.items ?? []),
+          },
+          error: null,
+        }
+      }
+
       const [homeRes, awayRes] = await Promise.all([
         listTeamPlayers({ tenantId: params.tenantId, teamId: homeId, pageSize: 200, activeOnly: true }),
         listTeamPlayers({ tenantId: params.tenantId, teamId: awayId, pageSize: 200, activeOnly: true }),

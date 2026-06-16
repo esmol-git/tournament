@@ -26,6 +26,18 @@ export class CreateAgeGroupDto {
   code?: string;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1900)
+  minBirthYear?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1900)
+  maxBirthYear?: number | null;
+
+  @IsOptional()
   @IsString()
   @MaxLength(2000)
   note?: string;

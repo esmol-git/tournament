@@ -13,10 +13,12 @@ import { JwtPayload } from '../auth/jwt.strategy';
 import { assertTournamentStaffCanManage } from '../auth/tournament-staff-access.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertPlayerFitsTeamCategory } from '../teams/team-category-player.assert';
+import { assertPlayerFitsAgeGroup } from '../teams/age-group-player.assert';
 import { SetTournamentRosterDto } from './dto/set-tournament-roster.dto';
 import { ImportTournamentRosterCsvDto } from './dto/import-tournament-roster-csv.dto';
 import { ImportTournamentRosterXlsxDto } from './dto/import-tournament-roster-xlsx.dto';
 import { SetTournamentRosterSanctionDto } from './dto/set-tournament-roster-sanction.dto';
+import { listProtocolPlayersForTeam } from './tournament-protocol-roster.util';
 import {
   buildRosterTemplateCsv,
   normalizePersonKey,
@@ -78,6 +80,46 @@ export class TournamentRostersService {
     });
     if (!team) throw new BadRequestException('Команда не найдена');
     return team;
+  }
+
+  private async assertPlayersFitTournamentAgeGroup(
+    tournament: { tenantId: string; ageGroupId: string | null },
+    playerIds: string[],
+  ) {
+    if (!tournament.ageGroupId || !playerIds.length) return;
+    for (const playerId of playerIds) {
+      await assertPlayerFitsAgeGroup(
+        this.prisma,
+        tournament.tenantId,
+        tournament.ageGroupId,
+        playerId,
+      );
+    }
+  }
+
+  async listProtocolPlayers(
+    tournamentId: string,
+    teamId: string,
+    user: JwtPayload,
+  ) {
+    const tournament = await this.loadTournamentContext(tournamentId);
+    if (
+      user.tenantId !== tournament.tenantId &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException('Нет доступа к ресурсу другой организации');
+    }
+    const allowedRoles: UserRole[] = [
+      UserRole.SUPER_ADMIN,
+      UserRole.TENANT_ADMIN,
+      UserRole.TOURNAMENT_ADMIN,
+      UserRole.MODERATOR,
+    ];
+    if (!allowedRoles.includes(user.role)) {
+      throw new ForbiddenException('Недостаточно прав');
+    }
+    await this.assertTeamInTournament(tournamentId, teamId, tournament.tenantId);
+    return listProtocolPlayersForTeam(this.prisma, tournamentId, teamId);
   }
 
   private assertRosterCount(
@@ -274,6 +316,7 @@ export class TournamentRostersService {
           );
         }
       }
+      await this.assertPlayersFitTournamentAgeGroup(tournament, playerIds);
     }
 
     const previousRows = await this.prisma.tournamentTeamPlayer.findMany({
@@ -428,6 +471,22 @@ export class TournamentRostersService {
             e instanceof BadRequestException
               ? String(e.message)
               : 'Не подходит по правилам категории';
+        }
+      }
+      if (eligible && tournament.ageGroupId) {
+        try {
+          await assertPlayerFitsAgeGroup(
+            this.prisma,
+            tournament.tenantId,
+            tournament.ageGroupId,
+            tp.playerId,
+          );
+        } catch (e: unknown) {
+          eligible = false;
+          reason =
+            e instanceof BadRequestException
+              ? String(e.message)
+              : 'Не подходит по возрастной группе турнира';
         }
       }
       items.push({
@@ -618,6 +677,26 @@ export class TournamentRostersService {
               e instanceof BadRequestException
                 ? String(e.message)
                 : 'Не подходит по правилам категории',
+          });
+          continue;
+        }
+      }
+
+      if (tournament.ageGroupId) {
+        try {
+          await assertPlayerFitsAgeGroup(
+            this.prisma,
+            tournament.tenantId,
+            tournament.ageGroupId,
+            playerId,
+          );
+        } catch (e: unknown) {
+          errors.push({
+            row: row.rowNumber,
+            message:
+              e instanceof BadRequestException
+                ? String(e.message)
+                : 'Не подходит по возрастной группе турнира',
           });
           continue;
         }

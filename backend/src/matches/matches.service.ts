@@ -27,6 +27,7 @@ import {
   throwTournamentNotFound,
 } from '../common/api-exceptions';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertProtocolPlayersAllowed } from '../tournament-rosters/tournament-protocol-roster.util';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
 import { ListStandaloneMatchesQueryDto } from './dto/list-standalone-matches-query.dto';
@@ -1968,6 +1969,15 @@ export class MatchesService {
     }
     this.validateScoreVsGoalEvents(dto);
     this.validateSubstitutionPlayerTimeline(dto);
+
+    if (match.homeTeamId && match.awayTeamId && dto.events?.length) {
+      await assertProtocolPlayersAllowed(this.prisma, {
+        tournamentId,
+        homeTeamId: match.homeTeamId,
+        awayTeamId: match.awayTeamId,
+        events: dto.events,
+      });
+    }
 
     const updated = await this.runProtocolTransaction(matchId, dto, {
       tenantId: match.tenantId,

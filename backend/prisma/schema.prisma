@@ -281,6 +281,10 @@ model AgeGroup {
   /** Короткая подпись для бейджей: U12, ст.возраст */
   shortLabel  String?
   code        String?
+  /// Минимальный год рождения игрока (включительно), если задан.
+  minBirthYear Int?
+  /// Максимальный год рождения игрока (включительно), если задан.
+  maxBirthYear Int?
   note        String?
   sortOrder   Int      @default(0)
   active      Boolean  @default(true)

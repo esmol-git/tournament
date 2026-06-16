@@ -25,6 +25,14 @@ export class AgeGroupsService {
         name: dto.name.trim(),
         shortLabel: dto.shortLabel?.trim() || null,
         code: dto.code?.trim() || null,
+        minBirthYear:
+          dto.minBirthYear !== undefined && dto.minBirthYear !== null
+            ? dto.minBirthYear
+            : null,
+        maxBirthYear:
+          dto.maxBirthYear !== undefined && dto.maxBirthYear !== null
+            ? dto.maxBirthYear
+            : null,
         note: dto.note?.trim() || null,
         sortOrder: dto.sortOrder ?? 0,
         active: dto.active ?? true,
@@ -45,6 +53,12 @@ export class AgeGroupsService {
           ? { shortLabel: dto.shortLabel?.trim() || null }
           : {}),
         ...(dto.code !== undefined ? { code: dto.code?.trim() || null } : {}),
+        ...(dto.minBirthYear !== undefined
+          ? { minBirthYear: dto.minBirthYear }
+          : {}),
+        ...(dto.maxBirthYear !== undefined
+          ? { maxBirthYear: dto.maxBirthYear }
+          : {}),
         ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         ...(dto.active !== undefined ? { active: dto.active } : {}),
