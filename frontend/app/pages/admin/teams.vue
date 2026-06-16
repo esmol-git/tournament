@@ -1530,7 +1530,7 @@ async function confirmDeleteRosterPlayer() {
               <Skeleton width="70%" height="1rem" class="rounded-md" />
             </template>
           </Column>
-          <Column v-if="!isModeratorReadOnly" header="В заявке" style="width: 7rem">
+          <Column v-if="!isModeratorReadOnly" header="Активен" style="width: 7rem">
             <template #body>
               <Skeleton width="2.25rem" height="1.25rem" class="rounded-md" />
             </template>
@@ -1630,7 +1630,7 @@ async function confirmDeleteRosterPlayer() {
               <span v-else class="text-muted-color">—</span>
             </template>
           </Column>
-          <Column v-if="!isModeratorReadOnly" header="В заявке" style="width: 7rem">
+          <Column v-if="!isModeratorReadOnly" header="Активен" style="width: 7rem">
             <template #body="{ data }">
               <div class="flex items-center justify-center">
                 <InputSwitch

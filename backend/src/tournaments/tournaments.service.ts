@@ -1326,6 +1326,11 @@ export class TournamentsService {
   /** Составы команд турнира для публичного сайта (без телефонов и email). */
   async getPublicRoster(tenantSlug: string, tournamentId: string) {
     await this.assertPublicTournament(tenantSlug, tournamentId);
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { rosterMinPlayers: true, rosterMaxPlayers: true },
+    });
+
     const rows = await this.prisma.tournamentTeam.findMany({
       where: { tournamentId },
       orderBy: { createdAt: 'asc' },
@@ -1345,28 +1350,83 @@ export class TournamentsService {
     });
 
     const teamIds = rows.map((r) => r.teamId);
-    const playersByTeam = await this.prisma.teamPlayer.findMany({
-      where: { teamId: { in: teamIds }, isActive: true },
-      orderBy: { createdAt: 'asc' },
-      include: {
-        player: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            birthDate: true,
-            position: true,
-            photoUrl: true,
+    const usesTournamentRoster =
+      tournament?.rosterMinPlayers != null ||
+      tournament?.rosterMaxPlayers != null;
+
+    const tournamentRosterRows = teamIds.length
+      ? await this.prisma.tournamentTeamPlayer.findMany({
+          where: {
+            tournamentId,
+            teamId: { in: teamIds },
+            status: TournamentRosterPlayerStatus.SUBMITTED,
+          },
+          orderBy: [{ jerseyNumber: 'asc' }, { createdAt: 'asc' }],
+          include: {
+            player: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                birthDate: true,
+                position: true,
+                photoUrl: true,
+              },
+            },
+          },
+        })
+      : [];
+
+    const useSubmittedRoster =
+      usesTournamentRoster || tournamentRosterRows.length > 0;
+
+    let byTeam: Map<
+      string,
+      Array<{
+        jerseyNumber: number | null
+        position: string | null
+        player: (typeof tournamentRosterRows)[number]['player']
+      }>
+    >;
+
+    if (useSubmittedRoster) {
+      byTeam = new Map();
+      for (const row of tournamentRosterRows) {
+        const list = byTeam.get(row.teamId) ?? [];
+        list.push({
+          jerseyNumber: row.jerseyNumber,
+          position: row.player.position,
+          player: row.player,
+        });
+        byTeam.set(row.teamId, list);
+      }
+    } else {
+      const playersByTeam = await this.prisma.teamPlayer.findMany({
+        where: { teamId: { in: teamIds }, isActive: true },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          player: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              birthDate: true,
+              position: true,
+              photoUrl: true,
+            },
           },
         },
-      },
-    });
-
-    const byTeam = new Map<string, typeof playersByTeam>();
-    for (const tp of playersByTeam) {
-      const list = byTeam.get(tp.teamId) ?? [];
-      list.push(tp);
-      byTeam.set(tp.teamId, list);
+      });
+      byTeam = new Map();
+      for (const tp of playersByTeam) {
+        const list = byTeam.get(tp.teamId) ?? [];
+        list.push({
+          jerseyNumber: tp.jerseyNumber,
+          position: tp.position ?? tp.player.position,
+          player: tp.player,
+        });
+        byTeam.set(tp.teamId, list);
+      }
     }
 
     return rows.map((r) => ({
