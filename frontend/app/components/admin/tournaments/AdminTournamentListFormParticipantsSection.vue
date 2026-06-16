@@ -7,7 +7,7 @@ import { computed } from 'vue'
 
 type ModeratorOption = { id: string; label: string }
 
-defineProps<{
+const props = defineProps<{
   form: TournamentFormModel
   adminsLoading: boolean
   moderatorSelectOptions: ModeratorOption[]
