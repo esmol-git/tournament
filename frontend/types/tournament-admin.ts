@@ -1,4 +1,7 @@
 /** Турнир с матчами/группами для админ-страницы деталей */
+export type TournamentEnrollmentMode = 'MANUAL' | 'APPLICATIONS'
+export type TournamentEligibilityProfile = 'YOUTH' | 'STANDARD'
+
 export interface TournamentDetails {
   id: string
   name: string
@@ -32,6 +35,11 @@ export interface TournamentDetails {
   playoffQualifiersPerGroup?: number
   minTeams: number
   maxTeams?: number | null
+  enrollmentMode?: TournamentEnrollmentMode
+  eligibilityProfile?: TournamentEligibilityProfile
+  rosterMinPlayers?: number | null
+  rosterMaxPlayers?: number | null
+  rosterDeadlineAt?: string | null
   registrationEnabled?: boolean
   registrationOpensAt?: string | null
   registrationClosesAt?: string | null

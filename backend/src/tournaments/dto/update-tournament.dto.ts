@@ -19,6 +19,8 @@ import {
   TournamentFormat,
   TournamentMemberRole,
   TournamentStatus,
+  TournamentEnrollmentMode,
+  TournamentEligibilityProfile,
 } from '@prisma/client';
 
 class TournamentAdminDto {
@@ -292,6 +294,38 @@ export class UpdateTournamentDto {
   @IsArray()
   @IsString({ each: true })
   moderatorIds?: string[];
+
+  @ApiPropertyOptional({ enum: TournamentEnrollmentMode })
+  @IsOptional()
+  @IsEnum(TournamentEnrollmentMode)
+  enrollmentMode?: TournamentEnrollmentMode;
+
+  @ApiPropertyOptional({ enum: TournamentEligibilityProfile })
+  @IsOptional()
+  @IsEnum(TournamentEligibilityProfile)
+  eligibilityProfile?: TournamentEligibilityProfile;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Мин. игроков в составе на турнир' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  rosterMinPlayers?: number | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Макс. игроков в составе на турнир' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  rosterMaxPlayers?: number | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Дедлайн фиксации состава (ISO 8601)' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  rosterDeadlineAt?: string | null;
 
   @ApiPropertyOptional({ description: 'Включить приём заявок от команд' })
   @IsOptional()

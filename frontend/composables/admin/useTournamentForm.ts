@@ -1,4 +1,7 @@
 import type { TournamentDetails, TournamentFormat, TournamentStatus } from '~/types/admin/tournaments-index'
+import type { TournamentEnrollmentMode, TournamentEligibilityProfile } from '~/types/tournament-admin'
+
+export type { TournamentEnrollmentMode, TournamentEligibilityProfile }
 
 export type TournamentFormModel = {
   name: string
@@ -19,6 +22,15 @@ export type TournamentFormModel = {
   pointsDraw: number
   pointsLoss: number
   teamIds: string[]
+  enrollmentMode: TournamentEnrollmentMode
+  eligibilityProfile: TournamentEligibilityProfile
+  maxTeams: number | null
+  registrationEnabled: boolean
+  registrationOpensAt: Date | null
+  registrationClosesAt: Date | null
+  rosterMinPlayers: number | null
+  rosterMaxPlayers: number | null
+  rosterDeadlineAt: Date | null
   /** Площадки турнира по порядку; первый совпадает с основным стадионом в API. */
   stadiumIds: string[]
   seasonId: string
@@ -48,6 +60,15 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     pointsDraw: 1,
     pointsLoss: 0,
     teamIds: [],
+    enrollmentMode: 'MANUAL',
+    eligibilityProfile: 'STANDARD',
+    maxTeams: null,
+    registrationEnabled: false,
+    registrationOpensAt: null,
+    registrationClosesAt: null,
+    rosterMinPlayers: null,
+    rosterMaxPlayers: null,
+    rosterDeadlineAt: null,
     stadiumIds: [],
     seasonId: '',
     competitionId: '',
@@ -118,6 +139,28 @@ export function patchFormFromTournament(
   form.refereeIds = Array.isArray((res as TournamentDetails).tournamentReferees)
     ? (res as TournamentDetails).tournamentReferees!.map((x) => x.refereeId)
     : []
+
+  const details = res as TournamentDetails
+  form.enrollmentMode = details.enrollmentMode ?? 'MANUAL'
+  form.eligibilityProfile = details.eligibilityProfile ?? 'STANDARD'
+  form.maxTeams =
+    typeof details.maxTeams === 'number' && details.maxTeams > 0
+      ? details.maxTeams
+      : null
+  form.registrationEnabled = !!details.registrationEnabled
+  form.registrationOpensAt = details.registrationOpensAt
+    ? new Date(details.registrationOpensAt)
+    : null
+  form.registrationClosesAt = details.registrationClosesAt
+    ? new Date(details.registrationClosesAt)
+    : null
+  form.rosterMinPlayers =
+    typeof details.rosterMinPlayers === 'number' ? details.rosterMinPlayers : null
+  form.rosterMaxPlayers =
+    typeof details.rosterMaxPlayers === 'number' ? details.rosterMaxPlayers : null
+  form.rosterDeadlineAt = details.rosterDeadlineAt
+    ? new Date(details.rosterDeadlineAt)
+    : null
 
   const ids = Array.isArray(anyRes.tournamentTeams)
     ? anyRes.tournamentTeams.map((x: any) => x.teamId).filter(Boolean)

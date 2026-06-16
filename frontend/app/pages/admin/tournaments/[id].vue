@@ -38,6 +38,7 @@ import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import AdminTournamentTableShareImageDialog from '~/app/components/admin/AdminTournamentTableShareImageDialog.vue'
 import AdminTournamentStatsSection from '~/app/components/admin/AdminTournamentStatsSection.vue'
 import AdminTournamentRegistrationsPanel from '~/app/components/admin/tournaments/AdminTournamentRegistrationsPanel.vue'
+import AdminTournamentTeamRosterPanel from '~/app/components/admin/tournaments/AdminTournamentTeamRosterPanel.vue'
 
 definePageMeta({
   layout: 'admin',
@@ -955,22 +956,49 @@ async function copyTournamentCalendarFeedLink() {
 
 function tournamentTabSlugToIndex(slug: string | undefined | null, hasTable: boolean): number {
   const s = (slug ?? 'calendar').toString().toLowerCase()
-  if (s === 'calendar') return 0
-  if (s === 'matches') return 1
-  if (s === 'table') return hasTable ? 2 : 0
-  if (s === 'statistics') return hasTable ? 3 : 2
-  if (s === 'compositions' || s === 'squads') return hasTable ? 4 : 3
-  if (s === 'infrastructure') return hasTable ? 5 : 4
-  return 0
+  const withTable = [
+    'calendar',
+    'matches',
+    'table',
+    'statistics',
+    'registrations',
+    'compositions',
+    'infrastructure',
+  ] as const
+  const noTable = [
+    'calendar',
+    'matches',
+    'statistics',
+    'registrations',
+    'compositions',
+    'infrastructure',
+  ] as const
+  const list = hasTable ? withTable : noTable
+  if (s === 'squads') {
+    const idx = list.indexOf('compositions')
+    return idx >= 0 ? idx : 0
+  }
+  const idx = (list as readonly string[]).indexOf(s)
+  return idx >= 0 ? idx : 0
 }
 
 function tournamentIndexToSlug(index: number, hasTable: boolean): string {
   if (hasTable) {
     return (
-      ['calendar', 'matches', 'table', 'statistics', 'compositions', 'infrastructure'] as const
+      [
+        'calendar',
+        'matches',
+        'table',
+        'statistics',
+        'registrations',
+        'compositions',
+        'infrastructure',
+      ] as const
     )[index] ?? 'calendar'
   }
-  return (['calendar', 'matches', 'statistics', 'compositions', 'infrastructure'] as const)[index] ?? 'calendar'
+  return (
+    ['calendar', 'matches', 'statistics', 'registrations', 'compositions', 'infrastructure'] as const
+  )[index] ?? 'calendar'
 }
 
 let tournamentTabSyncInProgress = false
@@ -1001,7 +1029,7 @@ watch(activeTab, (i) => {
   if (tournamentTabSyncInProgress) return
   if (!tournament.value) return
   const hasTable = showTournamentTableTab.value
-  const max = hasTable ? 5 : 4
+  const max = hasTable ? 6 : 5
   if (i < 0 || i > max) return
   const slug = tournamentIndexToSlug(i, hasTable)
   if ((route.query.tab as string | undefined) === slug) return
@@ -1019,9 +1047,7 @@ watch(showTournamentTableTab, (hasTable) => {
   if (!tournament.value) return
   if (!hasTable) {
     if (activeTab.value === 2) activeTab.value = 0
-    else if (activeTab.value === 3) activeTab.value = 2
-    else if (activeTab.value === 4) activeTab.value = 3
-    else if (activeTab.value === 5) activeTab.value = 4
+    else if (activeTab.value >= 3) activeTab.value = Math.max(0, activeTab.value - 1)
   }
 })
 
@@ -1180,7 +1206,7 @@ type LaunchWizardStep = {
   title: string
   ok: boolean
   hint: string
-  tab: 'calendar' | 'squads' | 'infrastructure' | null
+  tab: 'calendar' | 'squads' | 'registrations' | 'infrastructure' | null
 }
 
 const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
@@ -1188,6 +1214,8 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
   if (!tRow) return []
   const teams = tRow.tournamentTeams?.length ?? 0
   const minTeams = Math.max(2, tRow.minTeams ?? 0)
+  const isApplicationsMode =
+    tRow.enrollmentMode === 'APPLICATIONS' || !!tRow.registrationEnabled
   const hasReferees = (tRow.tournamentReferees?.length ?? 0) > 0
   const hasStadiums = (tRow.tournamentStadiums?.length ?? 0) > 0 || !!tRow.stadiumId
   const hasDates =
@@ -1199,12 +1227,25 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
     ? (tRow.tournamentTeams ?? []).filter((tt) => !tt.group?.id).length
     : 0
   const teamsStepOk = teams >= minTeams && (!groupsRequired || unassignedTeams === 0)
-  const teamsStepHint =
-    teams < minTeams
-      ? `Добавьте минимум ${minTeams} команд (сейчас ${teams}).`
-      : groupsRequired && unassignedTeams > 0
-        ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
-        : 'Проверьте состав команд.'
+  let teamsStepHint = ''
+  if (isApplicationsMode) {
+    teamsStepHint =
+      teams < minTeams
+        ? `Одобрите заявки: нужно минимум ${minTeams} команд (сейчас ${teams}). Откройте вкладку «Заявки».`
+        : groupsRequired && unassignedTeams > 0
+          ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
+          : 'Команды добавлены через заявки.'
+  } else {
+    teamsStepHint =
+      teams < minTeams
+        ? `Добавьте минимум ${minTeams} команд (сейчас ${teams}).`
+        : groupsRequired && unassignedTeams > 0
+          ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
+          : 'Проверьте состав команд.'
+  }
+  if (tRow.rosterMinPlayers != null && tRow.rosterMinPlayers > 0) {
+    teamsStepHint += ` Заполните составы команд (мин. ${tRow.rosterMinPlayers} игроков).`
+  }
 
   return [
     {
@@ -1220,10 +1261,10 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
     },
     {
       id: 'teams',
-      title: '2) Команды и состав',
+      title: isApplicationsMode ? '2) Заявки и команды' : '2) Команды и состав',
       ok: teamsStepOk,
       hint: teamsStepHint,
-      tab: 'squads',
+      tab: isApplicationsMode ? 'registrations' : 'squads',
     },
     {
       id: 'staff_and_venues',
@@ -2575,12 +2616,16 @@ const mobileTabOptions = computed(() => {
     value: hasTable ? 3 : 2,
   })
   items.push({
-    label: t('admin.tournament_page.tab_compositions'),
+    label: t('admin.tournament_page.tab_registrations'),
     value: hasTable ? 4 : 3,
   })
   items.push({
-    label: t('admin.tournament_page.tab_infrastructure'),
+    label: t('admin.tournament_page.tab_compositions'),
     value: hasTable ? 5 : 4,
+  })
+  items.push({
+    label: t('admin.tournament_page.tab_infrastructure'),
+    value: hasTable ? 6 : 5,
   })
   return items
 })
@@ -4079,15 +4124,31 @@ onMounted(async () => {
         />
       </TabPanel>
 
+      <TabPanel value="registrations" :header="t('admin.tournament_page.tab_registrations')">
+        <template v-if="tournament">
+          <AdminTournamentRegistrationsPanel
+            v-if="tournament.enrollmentMode === 'APPLICATIONS' || tournament.registrationEnabled"
+            :tournament-id="tournamentId"
+            :tournament="tournament"
+            :can-manage="canEditTournament"
+            class="mb-4"
+            @updated="fetchTournament"
+            @settings-saved="fetchTournament"
+          />
+          <Message v-else severity="info" :closable="false">
+            {{ t('admin.tournament_page.registrations_manual_hint') }}
+          </Message>
+        </template>
+      </TabPanel>
+
       <TabPanel value="compositions" :header="t('admin.tournament_page.tab_compositions')">
-        <AdminTournamentRegistrationsPanel
+        <AdminTournamentTeamRosterPanel
           v-if="tournament"
           :tournament-id="tournamentId"
           :tournament="tournament"
+          :teams="tournament.tournamentTeams ?? []"
           :can-manage="canEditTournament"
           class="mb-4"
-          @updated="fetchTournament"
-          @settings-saved="fetchTournament"
         />
         <div class="grid gap-4 lg:grid-cols-3">
           <div class="flex flex-col gap-4 lg:col-span-2">

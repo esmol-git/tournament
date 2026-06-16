@@ -19,6 +19,8 @@ import {
   TournamentFormat,
   TournamentMemberRole,
   TournamentStatus,
+  TournamentEnrollmentMode,
+  TournamentEligibilityProfile,
 } from '@prisma/client';
 import { Type } from 'class-transformer';
 
@@ -231,6 +233,75 @@ export class CreateTournamentDto {
   @IsInt()
   @Min(2)
   minTeams?: number;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Максимум команд (заявки + ручное добавление)',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(2)
+  @Max(512)
+  maxTeams?: number | null;
+
+  @ApiProperty({
+    required: false,
+    enum: TournamentEnrollmentMode,
+    description: 'MANUAL — команды при создании; APPLICATIONS — приём заявок',
+  })
+  @IsOptional()
+  @IsEnum(TournamentEnrollmentMode)
+  enrollmentMode?: TournamentEnrollmentMode;
+
+  @ApiProperty({
+    required: false,
+    enum: TournamentEligibilityProfile,
+    description: 'YOUTH — детский турнир; STANDARD — расширенные правила',
+  })
+  @IsOptional()
+  @IsEnum(TournamentEligibilityProfile)
+  eligibilityProfile?: TournamentEligibilityProfile;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Мин. игроков в составе на турнир' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  rosterMinPlayers?: number | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Макс. игроков в составе на турнир' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  rosterMaxPlayers?: number | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Дедлайн фиксации состава (ISO 8601)' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  rosterDeadlineAt?: string | null;
+
+  @ApiProperty({ required: false, description: 'Включить приём заявок (для APPLICATIONS включается автоматически)' })
+  @IsOptional()
+  @IsBoolean()
+  registrationEnabled?: boolean;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Начало приёма заявок (ISO 8601)' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  registrationOpensAt?: string | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Окончание приёма заявок (ISO 8601)' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  registrationClosesAt?: string | null;
 
   @ApiProperty({ required: false, example: 3 })
   @IsOptional()

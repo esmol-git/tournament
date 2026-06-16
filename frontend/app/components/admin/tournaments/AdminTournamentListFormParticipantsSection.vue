@@ -3,6 +3,7 @@
 import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
 import type { TeamLite } from '~/types/tournament-admin'
 import { adminTooltip } from '~/utils/adminTooltip'
+import { computed } from 'vue'
 
 type ModeratorOption = { id: string; label: string }
 
@@ -18,6 +19,8 @@ defineProps<{
 }>()
 
 const { t } = useI18n()
+
+const isManualEnrollment = computed(() => props.form.enrollmentMode !== 'APPLICATIONS')
 </script>
 
 <template>
@@ -56,29 +59,34 @@ const { t } = useI18n()
         </label>
       </FloatLabel>
 
-      <FloatLabel variant="on" class="block min-w-0">
-        <MultiSelect
-          inputId="t_teamIds"
-          v-model="form.teamIds"
-          :loading="teamsLoading"
-          :options="teams"
-          option-label="name"
-          option-value="id"
-          class="w-full"
-          :placeholder="t('admin.tournament_form.placeholder_teams')"
-          :emptyMessage="teamsEmptyMessage"
-          filter
-          :maxSelectedLabels="0"
-          :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
-          :invalid="showTeamsError"
-        />
-        <label for="t_teamIds">{{ t('admin.tournament_form.label_teams') }}</label>
-      </FloatLabel>
-      <p
-        v-if="showTeamsError"
-        class="mt-0 text-[11px] leading-4 text-red-500 md:col-span-2"
-      >
-        {{ teamsErrorMessage }}
+      <template v-if="isManualEnrollment">
+        <FloatLabel variant="on" class="block min-w-0">
+          <MultiSelect
+            inputId="t_teamIds"
+            v-model="form.teamIds"
+            :loading="teamsLoading"
+            :options="teams"
+            option-label="name"
+            option-value="id"
+            class="w-full"
+            :placeholder="t('admin.tournament_form.placeholder_teams')"
+            :emptyMessage="teamsEmptyMessage"
+            filter
+            :maxSelectedLabels="0"
+            :selectedItemsLabel="t('admin.tournament_page.selected_count', { count: '{0}' })"
+            :invalid="showTeamsError"
+          />
+          <label for="t_teamIds">{{ t('admin.tournament_form.label_teams') }}</label>
+        </FloatLabel>
+        <p
+          v-if="showTeamsError"
+          class="mt-0 text-[11px] leading-4 text-red-500 md:col-span-2"
+        >
+          {{ teamsErrorMessage }}
+        </p>
+      </template>
+      <p v-else class="text-sm leading-relaxed text-muted-color md:col-span-2">
+        {{ t('admin.tournament_form.teams_via_applications_hint') }}
       </p>
     </div>
   </section>

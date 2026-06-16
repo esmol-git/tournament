@@ -698,6 +698,7 @@ export class UsersService {
         telegramNotifyOnMatchRescheduled: true,
         telegramNotifyOnProtocolPublished: true,
         telegramNotifyOnMatchStartingSoon: true,
+        telegramNotifyOnRegistrationSubmitted: true,
       },
     });
     if (!tenant) throw new NotFoundException('Tenant not found');
@@ -728,6 +729,10 @@ export class UsersService {
       data.telegramNotifyOnMatchStartingSoon =
         dto.telegramNotifyOnMatchStartingSoon;
     }
+    if (dto.telegramNotifyOnRegistrationSubmitted !== undefined) {
+      data.telegramNotifyOnRegistrationSubmitted =
+        dto.telegramNotifyOnRegistrationSubmitted;
+    }
     if (Object.keys(data).length === 0) {
       return this.getMyTenantTelegramNotifications(userId, tenantId);
     }
@@ -739,6 +744,7 @@ export class UsersService {
         telegramNotifyOnMatchRescheduled: true,
         telegramNotifyOnProtocolPublished: true,
         telegramNotifyOnMatchStartingSoon: true,
+        telegramNotifyOnRegistrationSubmitted: true,
       },
     });
   }

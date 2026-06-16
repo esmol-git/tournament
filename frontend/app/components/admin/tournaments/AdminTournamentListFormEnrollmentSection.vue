@@ -1,0 +1,118 @@
+<script setup lang="ts">
+/* eslint-disable vue/no-mutating-props -- родитель передаёт общий reactive(form) */
+import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
+import { computed, watch } from 'vue'
+
+const props = defineProps<{
+  form: TournamentFormModel
+  isEdit: boolean
+}>()
+
+const { t } = useI18n()
+
+const isApplicationsMode = computed(() => props.form.enrollmentMode === 'APPLICATIONS')
+
+const enrollmentOptions = computed(() => [
+  { label: t('admin.tournament_form.enrollment_manual'), value: 'MANUAL' as const },
+  { label: t('admin.tournament_form.enrollment_applications'), value: 'APPLICATIONS' as const },
+])
+
+const profileOptions = computed(() => [
+  { label: t('admin.tournament_form.profile_youth'), value: 'YOUTH' as const },
+  { label: t('admin.tournament_form.profile_standard'), value: 'STANDARD' as const },
+])
+
+watch(
+  () => props.form.enrollmentMode,
+  (mode) => {
+    if (mode === 'APPLICATIONS') {
+      props.form.registrationEnabled = true
+      if (!props.isEdit) {
+        props.form.teamIds = []
+      }
+    }
+  },
+)
+
+watch(
+  () => props.form.eligibilityProfile,
+  (profile) => {
+    if (profile === 'YOUTH' && !props.isEdit) {
+      if (props.form.rosterMinPlayers == null) props.form.rosterMinPlayers = 8
+      if (props.form.rosterMaxPlayers == null) props.form.rosterMaxPlayers = 12
+    }
+  },
+)
+</script>
+
+<template>
+  <section
+    class="rounded-xl border border-surface-200 bg-surface-0 p-4 shadow-sm dark:border-surface-700 dark:bg-surface-900 md:p-5"
+  >
+    <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-color">
+      {{ t('admin.tournament_form.list_section_enrollment') }}
+    </h3>
+    <p class="mb-4 text-xs leading-relaxed text-muted-color">
+      {{ t('admin.tournament_form.enrollment_section_lead') }}
+    </p>
+
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <FloatLabel variant="on" class="block min-w-0">
+        <Select
+          input-id="t_enrollmentMode"
+          v-model="form.enrollmentMode"
+          :options="enrollmentOptions"
+          option-label="label"
+          option-value="value"
+          class="w-full"
+        />
+        <label for="t_enrollmentMode">{{ t('admin.tournament_form.label_enrollment_mode') }}</label>
+      </FloatLabel>
+
+      <FloatLabel variant="on" class="block min-w-0">
+        <Select
+          input-id="t_eligibilityProfile"
+          v-model="form.eligibilityProfile"
+          :options="profileOptions"
+          option-label="label"
+          option-value="value"
+          class="w-full"
+        />
+        <label for="t_eligibilityProfile">{{ t('admin.tournament_form.label_eligibility_profile') }}</label>
+      </FloatLabel>
+
+      <template v-if="isApplicationsMode">
+        <div class="flex flex-col gap-1 md:col-span-2">
+          <Message severity="info" :closable="false" class="text-sm">
+            {{ t('admin.tournament_form.enrollment_applications_hint') }}
+          </Message>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">{{ t('admin.tournament_registrations.opens_at') }}</label>
+          <DatePicker v-model="form.registrationOpensAt" show-time hour-format="24" class="w-full" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">{{ t('admin.tournament_registrations.closes_at') }}</label>
+          <DatePicker v-model="form.registrationClosesAt" show-time hour-format="24" class="w-full" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">{{ t('admin.tournament_registrations.max_teams') }}</label>
+          <InputNumber v-model="form.maxTeams" :min="2" :max="512" class="w-full" show-buttons />
+        </div>
+      </template>
+
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_roster_min') }}</label>
+        <InputNumber v-model="form.rosterMinPlayers" :min="1" :max="99" class="w-full" show-buttons />
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_roster_max') }}</label>
+        <InputNumber v-model="form.rosterMaxPlayers" :min="1" :max="99" class="w-full" show-buttons />
+      </div>
+      <div class="flex flex-col gap-1 md:col-span-2">
+        <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_roster_deadline') }}</label>
+        <DatePicker v-model="form.rosterDeadlineAt" show-time hour-format="24" class="w-full" />
+      </div>
+    </div>
+  </section>
+</template>

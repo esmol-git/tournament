@@ -34,14 +34,6 @@ import { TournamentRegistrationsService } from './tournament-registrations.servi
 export class TournamentRegistrationsController {
   constructor(private readonly service: TournamentRegistrationsService) {}
 
-  @Get('tenants/:tenantId/tournaments/registration-opportunities')
-  listOpportunities(
-    @Param('tenantId') tenantId: string,
-    @Req() req: Request & { user: JwtPayload },
-  ) {
-    return this.service.listOpportunities(tenantId, req.user);
-  }
-
   @Get('tournaments/:id/registrations')
   list(
     @Param('id') tournamentId: string,

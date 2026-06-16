@@ -11,6 +11,7 @@ import { UsersModule } from './users/users.module';
 import { MetaModule } from './meta/meta.module';
 import { TournamentsModule } from './tournaments/tournaments.module';
 import { TournamentRegistrationsModule } from './tournament-registrations/tournament-registrations.module';
+import { TournamentRostersModule } from './tournament-rosters/tournament-rosters.module';
 import { MatchesModule } from './matches/matches.module';
 import { TeamsModule } from './teams/teams.module';
 import { PlayersModule } from './players/players.module';
@@ -126,6 +127,7 @@ function skipThrottlingUnderJest(): boolean {
     MetaModule,
     TournamentsModule,
     TournamentRegistrationsModule,
+    TournamentRostersModule,
     MatchesModule,
     TeamsModule,
     PlayersModule,

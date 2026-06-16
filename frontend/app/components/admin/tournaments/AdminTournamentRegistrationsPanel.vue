@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
+import { useAdminTenantTeamsAllQuery } from '~/composables/admin/useAdminTenantListQueries'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { formatUserListLabel } from '~/utils/userDisplayName'
 import type { TournamentDetails } from '~/types/tournament-admin'
@@ -43,11 +44,16 @@ const emit = defineEmits<{
 
 const { token, authFetch } = useAuth()
 const { apiUrl } = useApiUrl()
+const { teams: catalogTeams } = useAdminTenantTeamsAllQuery()
 const toast = useToast()
 const { t } = useI18n()
 
 const loading = ref(false)
 const savingSettings = ref(false)
+const creatingRegistration = ref(false)
+const addDialogVisible = ref(false)
+const newTeamId = ref<string | null>(null)
+const newMessage = ref('')
 const items = ref<TournamentRegistrationRow[]>([])
 const loadError = ref<string | null>(null)
 
@@ -99,6 +105,68 @@ const statusSeverity = (status: string) => {
 const pendingCount = computed(
   () => items.value.filter((r) => r.status === 'SUBMITTED').length,
 )
+
+const registeredTeamIds = computed(() => {
+  const blocked = new Set<string>()
+  for (const row of items.value) {
+    if (
+      row.status === 'SUBMITTED' ||
+      row.status === 'WAITLIST' ||
+      row.status === 'APPROVED' ||
+      row.status === 'DRAFT'
+    ) {
+      blocked.add(row.teamId)
+    }
+  }
+  for (const tt of props.tournament.tournamentTeams ?? []) {
+    blocked.add(tt.teamId)
+  }
+  return blocked
+})
+
+const availableTeamOptions = computed(() =>
+  catalogTeams.value
+    .filter((team) => !registeredTeamIds.value.has(team.id))
+    .map((team) => ({ label: team.name, value: team.id })),
+)
+
+function openAddDialog() {
+  newTeamId.value = availableTeamOptions.value[0]?.value ?? null
+  newMessage.value = ''
+  addDialogVisible.value = true
+}
+
+async function createRegistration() {
+  if (!token.value || !props.canManage || !newTeamId.value) return
+  creatingRegistration.value = true
+  try {
+    await authFetch(apiUrl(`/tournaments/${props.tournamentId}/registrations`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: {
+        teamId: newTeamId.value,
+        ...(newMessage.value.trim() ? { message: newMessage.value.trim() } : {}),
+      },
+    })
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_registrations.add_registration_success'),
+      life: 3000,
+    })
+    addDialogVisible.value = false
+    await fetchRegistrations()
+    emit('updated')
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_registrations.add_registration_error'),
+      detail: getApiErrorMessage(e),
+      life: 6500,
+    })
+  } finally {
+    creatingRegistration.value = false
+  }
+}
 
 async function fetchRegistrations() {
   if (!token.value) return
@@ -246,9 +314,19 @@ onMounted(() => {
     </div>
 
     <div class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900">
-      <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
-        {{ t('admin.tournament_registrations.list_title') }}
-      </h2>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+          {{ t('admin.tournament_registrations.list_title') }}
+        </h2>
+        <Button
+          v-if="canManage"
+          :label="t('admin.tournament_registrations.add_registration')"
+          icon="pi pi-plus"
+          size="small"
+          :disabled="!availableTeamOptions.length"
+          @click="openAddDialog"
+        />
+      </div>
 
       <Message v-if="loadError" severity="error" class="mt-3" :closable="false">
         {{ loadError }}
@@ -324,5 +402,59 @@ onMounted(() => {
         </Column>
       </DataTable>
     </div>
+
+    <Dialog
+      v-model:visible="addDialogVisible"
+      modal
+      :header="t('admin.tournament_registrations.add_registration_title')"
+      class="w-full max-w-md"
+    >
+      <p class="text-sm text-muted-color">
+        {{ t('admin.tournament_registrations.add_registration_lead') }}
+      </p>
+      <div v-if="!availableTeamOptions.length" class="mt-4 text-sm text-muted-color">
+        {{ t('admin.tournament_registrations.no_teams_available') }}
+      </div>
+      <div v-else class="mt-4 flex flex-col gap-3">
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">
+            {{ t('admin.tournament_registrations.pick_team') }}
+          </label>
+          <Select
+            v-model="newTeamId"
+            :options="availableTeamOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+          />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">
+            {{ t('admin.tournament_registrations.col_message') }}
+          </label>
+          <Textarea
+            v-model="newMessage"
+            rows="3"
+            class="w-full"
+            :placeholder="t('admin.tournament_registrations.message_placeholder')"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <Button
+          :label="t('admin.tournament_registrations.cancel')"
+          text
+          severity="secondary"
+          @click="addDialogVisible = false"
+        />
+        <Button
+          :label="t('admin.tournament_registrations.add_registration')"
+          icon="pi pi-check"
+          :loading="creatingRegistration"
+          :disabled="!newTeamId"
+          @click="createRegistration"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>

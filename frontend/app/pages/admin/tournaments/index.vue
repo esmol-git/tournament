@@ -11,6 +11,7 @@ import { useAdminTournamentListFormUi } from '~/composables/admin/useAdminTourna
 import { useAdminTournamentListDeleteDialog } from '~/composables/admin/useAdminTournamentListDeleteDialog'
 import { useAdminTournamentListFormBodyBindings } from '~/composables/admin/useAdminTournamentListFormBodyBindings'
 import { useAdminTournamentListFormSave } from '~/composables/admin/useAdminTournamentListFormSave'
+import { useAdminTournamentCreateWizard } from '~/composables/admin/useAdminTournamentCreateWizard'
 import { useAdminTournamentListTemplates } from '~/composables/admin/useAdminTournamentListTemplates'
 import { useAdminTournamentListFormOpen } from '~/composables/admin/useAdminTournamentListFormOpen'
 import { useTournamentReferences } from '~/composables/admin/useTournamentReferences'
@@ -34,12 +35,11 @@ import AdminTournamentListFilters from '~/app/components/admin/tournaments/Admin
 import AdminTournamentsTemplatesPanel from '~/app/components/admin/tournaments/AdminTournamentsTemplatesPanel.vue'
 import AdminTournamentListFormBody from '~/app/components/admin/tournaments/AdminTournamentListFormBody.vue'
 import AdminTournamentListDeleteDialog from '~/app/components/admin/tournaments/AdminTournamentListDeleteDialog.vue'
-import AdminTournamentRegistrationOpportunities from '~/app/components/admin/tournaments/AdminTournamentRegistrationOpportunities.vue'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import type { Ref } from 'vue'
-import { computed, onMounted, reactive, ref, toRef } from 'vue'
+import { computed, onMounted, reactive, ref, toRef, watch } from 'vue'
 import type { TournamentListFormVuelidate } from '~/composables/admin/useAdminTournamentListFormSave'
 
 definePageMeta({
@@ -255,7 +255,9 @@ const submitAttempted = ref(false)
 const tournamentValidationRules = computed(() => ({
   name: { required },
   teamIds: {
-    required: (value: unknown) => Array.isArray(value) && value.length > 0,
+    required: () =>
+      form.enrollmentMode === 'APPLICATIONS' ||
+      (Array.isArray(form.teamIds) && form.teamIds.length > 0),
   },
   logoUrl: {},
   startsAt: {},
@@ -371,6 +373,27 @@ const {
 })
 
 const {
+  step: createWizardStep,
+  stepLabels: createWizardStepLabels,
+  isWizard: createWizardActive,
+  isFirst: createWizardIsFirst,
+  isLast: createWizardIsLast,
+  canGoNext: createWizardCanGoNext,
+  reset: resetCreateWizard,
+  next: createWizardNext,
+  prev: createWizardPrev,
+  isStepVisible: createWizardIsStepVisible,
+} = useAdminTournamentCreateWizard({
+  isEdit,
+  form,
+  tournamentFormErrors,
+})
+
+watch(showForm, (open) => {
+  if (!open) resetCreateWizard()
+})
+
+const {
   deleteDialogVisible,
   deleteTarget,
   deleteSaving,
@@ -439,21 +462,6 @@ const tournamentListFormBodyBindings = useAdminTournamentListFormBodyBindings({
   showTeamsError,
 })
 
-const myTeamsForRegistration = ref<Array<{ id: string; name: string }>>([])
-
-async function fetchMyTeamsForRegistration() {
-  if (user.value?.role !== 'TEAM_ADMIN' || !token.value) return
-  try {
-    const res = await authFetch<{ items: Array<{ id: string; name: string }> }>(
-      apiUrl(`/tenants/${tenantId.value}/teams?page=1&pageSize=200`),
-      { headers: { Authorization: `Bearer ${token.value}` } },
-    )
-    myTeamsForRegistration.value = res.items ?? []
-  } catch {
-    myTeamsForRegistration.value = []
-  }
-}
-
 onMounted(() => {
   void (async () => {
     if (typeof window !== 'undefined') {
@@ -464,7 +472,6 @@ onMounted(() => {
         return
       }
       await fetchMe()
-      void fetchMyTeamsForRegistration()
     }
     bootstrapListFromCurrentRoute()
     void fetchSeasonsList()
@@ -486,10 +493,6 @@ onMounted(() => {
     <AdminTenantTournamentLimits
       v-if="!loading && !isOrgModeratorReadOnly"
       :tournaments-count="tournamentsTotal"
-    />
-    <AdminTournamentRegistrationOpportunities
-      v-if="!isTemplatesTab"
-      :team-options="myTeamsForRegistration"
     />
     <header
       v-if="!tournamentsListSemanticallyEmpty || listError"
@@ -681,14 +684,23 @@ onMounted(() => {
       :saving="savingForm || loadingEdit"
       :submitAttempted="submitAttempted"
       :canSave="canSaveTournament"
+      :wizard-active="createWizardActive"
+      :wizard-step="createWizardStep"
+      :wizard-step-labels="createWizardStepLabels"
+      :wizard-can-go-next="createWizardCanGoNext"
+      :wizard-is-first="createWizardIsFirst"
+      :wizard-is-last="createWizardIsLast"
       @cancel="showForm = false"
       @save="saveTournament"
+      @wizard-next="createWizardNext"
+      @wizard-prev="createWizardPrev"
     >
       <AdminTournamentListFormBody
         v-model:create-template-id="createTemplateId"
         v-model:manual-playoff-enabled="manualPlayoffEnabled"
         v-model:calendar-picker="calendarColorPickerModel"
         :bindings="tournamentListFormBodyBindings"
+        :is-step-visible="createWizardIsStepVisible"
       />
     </AdminTournamentFormDialog>
 

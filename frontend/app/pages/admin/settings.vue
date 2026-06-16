@@ -115,6 +115,7 @@ const telegramSettings = ref({
   telegramNotifyOnMatchRescheduled: true,
   telegramNotifyOnProtocolPublished: true,
   telegramNotifyOnMatchStartingSoon: false,
+  telegramNotifyOnRegistrationSubmitted: true,
 })
 const emailLoading = ref(false)
 const emailSaving = ref(false)
@@ -404,12 +405,14 @@ async function loadTelegramSettings() {
       telegramNotifyOnMatchRescheduled?: boolean | null
       telegramNotifyOnProtocolPublished?: boolean | null
       telegramNotifyOnMatchStartingSoon?: boolean | null
+      telegramNotifyOnRegistrationSubmitted?: boolean | null
     }>(apiUrl('/users/me/tenant-telegram-notifications'))
     telegramSettings.value = {
       telegramNotifyChatId: res.telegramNotifyChatId ?? '',
       telegramNotifyOnMatchRescheduled: res.telegramNotifyOnMatchRescheduled !== false,
       telegramNotifyOnProtocolPublished: res.telegramNotifyOnProtocolPublished !== false,
       telegramNotifyOnMatchStartingSoon: res.telegramNotifyOnMatchStartingSoon === true,
+      telegramNotifyOnRegistrationSubmitted: res.telegramNotifyOnRegistrationSubmitted !== false,
     }
     telegramForbidden.value = false
   } catch (e: unknown) {
@@ -440,6 +443,7 @@ async function saveTelegramSettings() {
         telegramNotifyOnMatchRescheduled: telegramSettings.value.telegramNotifyOnMatchRescheduled,
         telegramNotifyOnProtocolPublished: telegramSettings.value.telegramNotifyOnProtocolPublished,
         telegramNotifyOnMatchStartingSoon: telegramSettings.value.telegramNotifyOnMatchStartingSoon,
+        telegramNotifyOnRegistrationSubmitted: telegramSettings.value.telegramNotifyOnRegistrationSubmitted,
       },
     })
     toast.add({ severity: 'success', summary: 'Telegram-настройки сохранены', life: 3000 })
@@ -1131,6 +1135,10 @@ watch(
             <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">
               <span class="text-sm">Скорый старт матча (резерв под v1.1)</span>
               <ToggleSwitch v-model="telegramSettings.telegramNotifyOnMatchStartingSoon" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">
+              <span class="text-sm">Новая заявка команды на турнир</span>
+              <ToggleSwitch v-model="telegramSettings.telegramNotifyOnRegistrationSubmitted" />
             </label>
           </div>
           <div class="flex flex-wrap justify-end gap-2">

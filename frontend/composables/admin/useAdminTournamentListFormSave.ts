@@ -88,14 +88,16 @@ export function useAdminTournamentListFormSave(options: {
         ? t('admin.validation.invalid_url')
         : ''
     const teamsError =
-      !form.teamIds.length
-        ? t('admin.validation.tournament_teams_required')
-        : form.teamIds.length !== form.minTeams
-          ? t('admin.validation.tournament_teams_exact', {
-              expected: form.minTeams,
-              selected: form.teamIds.length,
-            })
-          : ''
+      form.enrollmentMode === 'APPLICATIONS'
+        ? ''
+        : !form.teamIds.length
+          ? t('admin.validation.tournament_teams_required')
+          : form.teamIds.length !== form.minTeams
+            ? t('admin.validation.tournament_teams_exact', {
+                expected: form.minTeams,
+                selected: form.teamIds.length,
+              })
+            : ''
     const datesError =
       form.startsAt && form.endsAt && form.startsAt > form.endsAt
         ? t('admin.validation.end_after_start')
@@ -187,11 +189,14 @@ export function useAdminTournamentListFormSave(options: {
 
   const showTeamsError = computed(
     () =>
-      (submitAttempted.value || v$.value.teamIds.$dirty) && !!tournamentFormErrors.value.teamsError,
+      form.enrollmentMode !== 'APPLICATIONS' &&
+      (submitAttempted.value || v$.value.teamIds.$dirty) &&
+      !!tournamentFormErrors.value.teamsError,
   )
 
   async function syncTournamentTeams(tournamentId: string) {
     if (!token.value) return
+    if (form.enrollmentMode === 'APPLICATIONS') return
     const next = new Set(form.teamIds)
     const prev = new Set(initialTeamIds.value)
     const toAdd = [...next].filter((id): id is string => typeof id === 'string' && !prev.has(id))
@@ -248,6 +253,15 @@ export function useAdminTournamentListFormSave(options: {
         pointsDraw: form.pointsDraw,
         pointsLoss: form.pointsLoss,
         moderatorIds: [...form.moderatorIds],
+        enrollmentMode: form.enrollmentMode,
+        eligibilityProfile: form.eligibilityProfile,
+        maxTeams: form.maxTeams,
+        registrationEnabled: form.registrationEnabled,
+        registrationOpensAt: form.registrationOpensAt?.toISOString() ?? null,
+        registrationClosesAt: form.registrationClosesAt?.toISOString() ?? null,
+        rosterMinPlayers: form.rosterMinPlayers,
+        rosterMaxPlayers: form.rosterMaxPlayers,
+        rosterDeadlineAt: form.rosterDeadlineAt?.toISOString() ?? null,
       }
 
       const calendarColorNormalized = String(form.calendarColor ?? '')

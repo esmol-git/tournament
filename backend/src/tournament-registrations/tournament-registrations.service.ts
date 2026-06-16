@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   TournamentRegistrationStatus,
   TournamentStatus,
@@ -15,6 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TournamentsService } from '../tournaments/tournaments.service';
 import { CreateTournamentRegistrationDto } from './dto/create-tournament-registration.dto';
 import { ReviewTournamentRegistrationDto } from './dto/review-tournament-registration.dto';
+import { deliverTenantTelegramNotification } from '../notifications/tenant-telegram-delivery.util';
 
 const REGISTRATION_INCLUDE = {
   team: { select: { id: true, name: true, slug: true, logoUrl: true } },
@@ -33,6 +35,7 @@ export class TournamentRegistrationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tournamentsService: TournamentsService,
+    private readonly config: ConfigService,
   ) {}
 
   private mapRow(row: {
@@ -77,49 +80,6 @@ export class TournamentRegistrationsService {
     };
   }
 
-  private async assertTeamAdminForTeam(
-    teamId: string,
-    user: JwtPayload,
-  ): Promise<void> {
-    const link = await this.prisma.teamAdmin.findFirst({
-      where: { teamId, userId: user.sub },
-      select: { id: true },
-    });
-    if (!link) {
-      throw new ForbiddenException('Нет прав на эту команду');
-    }
-  }
-
-  private async teamIdsForTeamAdmin(userId: string): Promise<string[]> {
-    const rows = await this.prisma.teamAdmin.findMany({
-      where: { userId },
-      select: { teamId: true },
-    });
-    return rows.map((r) => r.teamId);
-  }
-
-  private isRegistrationWindowOpen(tournament: {
-    registrationEnabled: boolean
-    registrationOpensAt: Date | null
-    registrationClosesAt: Date | null
-  }): boolean {
-    if (!tournament.registrationEnabled) return false;
-    const now = Date.now();
-    if (
-      tournament.registrationOpensAt &&
-      tournament.registrationOpensAt.getTime() > now
-    ) {
-      return false;
-    }
-    if (
-      tournament.registrationClosesAt &&
-      tournament.registrationClosesAt.getTime() < now
-    ) {
-      return false;
-    }
-    return true;
-  }
-
   private async tournamentCapacity(tournamentId: string, maxTeams: number | null) {
     const current = await this.prisma.tournamentTeam.count({
       where: { tournamentId },
@@ -133,6 +93,7 @@ export class TournamentRegistrationsService {
       where: { id: tournamentId },
       select: {
         id: true,
+        name: true,
         tenantId: true,
         status: true,
         ageGroupId: true,
@@ -157,19 +118,12 @@ export class TournamentRegistrationsService {
       user.role === UserRole.TENANT_ADMIN ||
       user.role === UserRole.TOURNAMENT_ADMIN;
 
-    let teamFilter: string[] | null = null;
-    if (user.role === UserRole.TEAM_ADMIN) {
-      teamFilter = await this.teamIdsForTeamAdmin(user.sub);
-      if (teamFilter.length === 0) return { items: [], total: 0 };
-    } else if (!isStaff) {
+    if (!isStaff) {
       throw new ForbiddenException('Недостаточно прав');
     }
 
     const rows = await this.prisma.tournamentRegistration.findMany({
-      where: {
-        tournamentId,
-        ...(teamFilter ? { teamId: { in: teamFilter } } : {}),
-      },
+      where: { tournamentId },
       orderBy: [{ status: 'asc' }, { submittedAt: 'desc' }, { createdAt: 'desc' }],
       include: REGISTRATION_INCLUDE,
     });
@@ -180,77 +134,44 @@ export class TournamentRegistrationsService {
     };
   }
 
-  async listOpportunities(tenantId: string, user: JwtPayload) {
-    if (user.role !== UserRole.TEAM_ADMIN) {
-      throw new ForbiddenException('Доступно только администраторам команд');
-    }
-    if (user.tenantId !== tenantId) {
-      throw new ForbiddenException('Нет доступа к ресурсу другой организации');
-    }
-
-    const teamIds = await this.teamIdsForTeamAdmin(user.sub);
-    if (teamIds.length === 0) return { items: [] };
-
-    const now = new Date();
-    const tournaments = await this.prisma.tournament.findMany({
-      where: {
-        tenantId,
-        status: TournamentStatus.DRAFT,
-        registrationEnabled: true,
-        OR: [
-          { registrationOpensAt: null },
-          { registrationOpensAt: { lte: now } },
-        ],
-        AND: [
-          {
-            OR: [
-              { registrationClosesAt: null },
-              { registrationClosesAt: { gte: now } },
-            ],
-          },
-        ],
-      },
-      orderBy: { startsAt: 'asc' },
+  private async notifyRegistrationSubmitted(
+    row: ReturnType<typeof this.mapRow>,
+    tournament: { id: string; name: string; tenantId: string },
+  ) {
+    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
+    if (!botToken) return;
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tournament.tenantId },
       select: {
-        id: true,
-        name: true,
-        slug: true,
-        startsAt: true,
-        endsAt: true,
-        minTeams: true,
-        maxTeams: true,
-        registrationEnabled: true,
-        registrationOpensAt: true,
-        registrationClosesAt: true,
-        ageGroup: { select: { id: true, name: true, shortLabel: true } },
-        registrations: {
-          where: { teamId: { in: teamIds } },
-          select: {
-            id: true,
-            teamId: true,
-            status: true,
-            submittedAt: true,
-          },
-        },
-        _count: { select: { tournamentTeams: true } },
+        telegramNotifyChatId: true,
+        telegramNotifyOnRegistrationSubmitted: true,
       },
     });
+    if (!tenant?.telegramNotifyOnRegistrationSubmitted) return;
 
-    return {
-      items: tournaments.map((t) => ({
-        id: t.id,
-        name: t.name,
-        slug: t.slug,
-        startsAt: t.startsAt,
-        endsAt: t.endsAt,
-        minTeams: t.minTeams,
-        maxTeams: t.maxTeams,
-        ageGroup: t.ageGroup,
-        teamsCount: t._count.tournamentTeams,
-        myRegistrations: t.registrations,
-        registrationOpen: this.isRegistrationWindowOpen(t),
-      })),
-    };
+    await deliverTenantTelegramNotification({
+      prisma: this.prisma,
+      botToken,
+      tenantId: tournament.tenantId,
+      kind: 'registration_submitted',
+      tournamentId: tournament.id,
+      enabled: tenant.telegramNotifyOnRegistrationSubmitted,
+      chatId: tenant.telegramNotifyChatId,
+      lines: [
+        'Новая заявка на турнир',
+        `Турнир: ${tournament.name}`,
+        `Команда: ${row.team.name}`,
+        row.message ? `Комментарий: ${row.message}` : '',
+      ].filter(Boolean),
+    });
+  }
+
+  private isOrganizerStaff(user: JwtPayload): boolean {
+    return (
+      user.role === UserRole.SUPER_ADMIN ||
+      user.role === UserRole.TENANT_ADMIN ||
+      user.role === UserRole.TOURNAMENT_ADMIN
+    );
   }
 
   async create(
@@ -267,26 +188,26 @@ export class TournamentRegistrationsService {
         'Заявки принимаются только для турниров в статусе «Черновик»',
       );
     }
-    if (!this.isRegistrationWindowOpen(tournament)) {
-      throw new BadRequestException('Приём заявок на этот турнир сейчас закрыт');
+
+    const organizerRecords = this.isOrganizerStaff(user);
+    const teamId = dto.teamId.trim();
+
+    if (!organizerRecords) {
+      throw new ForbiddenException('Недостаточно прав');
+    }
+    if (user.role === UserRole.TOURNAMENT_ADMIN) {
+      await assertTournamentStaffCanManage(
+        this.prisma,
+        tournamentId,
+        user,
+      );
     }
 
-    const teamId = dto.teamId.trim();
     const team = await this.prisma.team.findFirst({
       where: { id: teamId, tenantId: tournament.tenantId },
       select: { id: true, ageGroupId: true },
     });
     if (!team) throw new BadRequestException('Команда не найдена');
-
-    if (user.role === UserRole.TEAM_ADMIN) {
-      await this.assertTeamAdminForTeam(teamId, user);
-    } else if (
-      user.role !== UserRole.TENANT_ADMIN &&
-      user.role !== UserRole.TOURNAMENT_ADMIN &&
-      user.role !== UserRole.SUPER_ADMIN
-    ) {
-      throw new ForbiddenException('Недостаточно прав');
-    }
 
     if (tournament.ageGroupId && team.ageGroupId !== tournament.ageGroupId) {
       throw new BadRequestException(
@@ -301,44 +222,39 @@ export class TournamentRegistrationsService {
       throw new BadRequestException('Команда уже добавлена в турнир');
     }
 
+    const now = new Date();
+    const submittedFields = {
+      status: TournamentRegistrationStatus.SUBMITTED,
+      submittedAt: now,
+      submittedByUserId: user.sub,
+      adminNote: null,
+      reviewedAt: null,
+      reviewedByUserId: null,
+    };
+
     const row = await this.prisma.tournamentRegistration.upsert({
       where: { tournamentId_teamId: { tournamentId, teamId } },
       create: {
         tenantId: tournament.tenantId,
         tournamentId,
         teamId,
-        status: TournamentRegistrationStatus.DRAFT,
         message: dto.message?.trim() || null,
-        submittedByUserId: user.sub,
+        ...submittedFields,
       },
       update: {
         message: dto.message?.trim() || null,
-        ...(user.role === UserRole.TEAM_ADMIN
-          ? {}
-          : { submittedByUserId: user.sub }),
+        ...submittedFields,
       },
       include: REGISTRATION_INCLUDE,
     });
 
-    if (
-      row.status === TournamentRegistrationStatus.REJECTED ||
-      row.status === TournamentRegistrationStatus.WITHDRAWN
-    ) {
-      const reset = await this.prisma.tournamentRegistration.update({
-        where: { id: row.id },
-        data: {
-          status: TournamentRegistrationStatus.DRAFT,
-          adminNote: null,
-          reviewedAt: null,
-          reviewedByUserId: null,
-          submittedAt: null,
-        },
-        include: REGISTRATION_INCLUDE,
-      });
-      return this.mapRow(reset);
+    const mapped = this.mapRow(row);
+    if (row.status === TournamentRegistrationStatus.SUBMITTED) {
+      void this.notifyRegistrationSubmitted(mapped, tournament).catch(
+        () => undefined,
+      );
     }
-
-    return this.mapRow(row);
+    return mapped;
   }
 
   async submit(registrationId: string, tournamentId: string, user: JwtPayload) {
@@ -348,18 +264,11 @@ export class TournamentRegistrationsService {
     });
     if (!reg) throw new NotFoundException('Заявка не найдена');
 
-    if (user.role === UserRole.TEAM_ADMIN) {
-      await this.assertTeamAdminForTeam(reg.teamId, user);
-    } else if (
-      user.role !== UserRole.TENANT_ADMIN &&
-      user.role !== UserRole.TOURNAMENT_ADMIN &&
-      user.role !== UserRole.SUPER_ADMIN
-    ) {
+    if (!this.isOrganizerStaff(user)) {
       throw new ForbiddenException('Недостаточно прав');
     }
-
-    if (!this.isRegistrationWindowOpen(reg.tournament)) {
-      throw new BadRequestException('Приём заявок на этот турнир сейчас закрыт');
+    if (user.role === UserRole.TOURNAMENT_ADMIN) {
+      await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
     }
 
     if (
@@ -381,7 +290,11 @@ export class TournamentRegistrationsService {
       },
       include: REGISTRATION_INCLUDE,
     });
-    return this.mapRow(updated);
+    const mapped = this.mapRow(updated);
+    void this.notifyRegistrationSubmitted(mapped, reg.tournament).catch(
+      () => undefined,
+    );
+    return mapped;
   }
 
   async withdraw(registrationId: string, tournamentId: string, user: JwtPayload) {
@@ -390,11 +303,7 @@ export class TournamentRegistrationsService {
     });
     if (!reg) throw new NotFoundException('Заявка не найдена');
 
-    if (user.role === UserRole.TEAM_ADMIN) {
-      await this.assertTeamAdminForTeam(reg.teamId, user);
-    } else {
-      await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
-    }
+    await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
 
     if (reg.status === TournamentRegistrationStatus.APPROVED) {
       throw new BadRequestException(

@@ -25,4 +25,9 @@ export class UpdateTenantTelegramNotificationsDto {
   @IsOptional()
   @IsBoolean()
   telegramNotifyOnMatchStartingSoon?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  telegramNotifyOnRegistrationSubmitted?: boolean;
 }

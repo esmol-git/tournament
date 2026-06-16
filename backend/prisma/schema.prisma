@@ -81,6 +81,8 @@ model Tenant {
   telegramNotifyOnProtocolPublished Boolean @default(true)
   /** Включено ли Telegram-уведомление о старте матча (резерв под v1.1). */
   telegramNotifyOnMatchStartingSoon Boolean @default(false)
+  /** Telegram: новая заявка команды на турнир. */
+  telegramNotifyOnRegistrationSubmitted Boolean @default(true)
   /** Email-уведомления организации: список получателей через запятую. */
   emailNotifyRecipients String?
   emailNotifyEnabled Boolean @default(false)
@@ -139,6 +141,7 @@ model Tenant {
   tournamentStadiums        TournamentStadium[]
   telegramNotificationDeliveries TelegramNotificationDelivery[]
   tournamentRegistrations   TournamentRegistration[]
+  tournamentTeamPlayers     TournamentTeamPlayer[]
 
   @@index([subscriptionEndsAt])
 }
@@ -702,6 +705,16 @@ model Tournament {
   registrationEnabled Boolean @default(false)
   registrationOpensAt DateTime?
   registrationClosesAt DateTime?
+  /// MANUAL — команды выбираются при создании; APPLICATIONS — приём заявок после публикации.
+  enrollmentMode TournamentEnrollmentMode @default(MANUAL)
+  /// YOUTH — упрощённые правила состава; STANDARD — расширенные лимиты.
+  eligibilityProfile TournamentEligibilityProfile @default(STANDARD)
+  /// Минимум игроков в заявочном составе на турнир (null — без ограничения).
+  rosterMinPlayers Int?
+  /// Максимум игроков в заявочном составе на турнир (null — без ограничения).
+  rosterMaxPlayers Int?
+  /// Дедлайн фиксации состава (опционально).
+  rosterDeadlineAt DateTime?
   pointsWin   Int      @default(3)
   pointsDraw  Int      @default(1)
   pointsLoss  Int      @default(0)
@@ -739,6 +752,7 @@ model Tournament {
   referenceDocuments ReferenceDocument[]
   tournamentStadiums TournamentStadium[]
   registrations TournamentRegistration[]
+  rosterPlayers TournamentTeamPlayer[]
 
   @@unique([tenantId, slug])
   @@index([tenantId, status, createdAt])
@@ -860,6 +874,7 @@ model Team {
   players      TeamPlayer[]
   tournamentTeams TournamentTeam[]
   tournamentRegistrations TournamentRegistration[]
+  tournamentTeamPlayers TournamentTeamPlayer[]
   homeMatches  Match[]      @relation("HomeTeam")
   awayMatches  Match[]      @relation("AwayTeam")
   tableRows    TournamentTableRow[]
@@ -1105,6 +1120,7 @@ model Player {
 
   tenant      Tenant       @relation(fields: [tenantId], references: [id])
   teamPlayers TeamPlayer[]
+  tournamentTeamPlayers TournamentTeamPlayer[]
 
   @@index([tenantId, firstName, lastName])
 }
@@ -1117,6 +1133,44 @@ enum UserRole {
   MODERATOR
   USER
   REFEREE
+}
+
+enum TournamentEnrollmentMode {
+  MANUAL
+  APPLICATIONS
+}
+
+enum TournamentEligibilityProfile {
+  YOUTH
+  STANDARD
+}
+
+enum TournamentRosterPlayerStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+}
+
+/// Игрок в заявочном составе команды на конкретный турнир.
+model TournamentTeamPlayer {
+  id           String                     @id @default(cuid())
+  tenantId     String
+  tournamentId String
+  teamId       String
+  playerId     String
+  jerseyNumber Int?
+  status       TournamentRosterPlayerStatus @default(DRAFT)
+  createdAt    DateTime                   @default(now())
+  updatedAt    DateTime                   @updatedAt
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  team       Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  player     Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, teamId, playerId])
+  @@index([tenantId, tournamentId, teamId])
+  @@index([playerId])
 }
 
 /// Формат турнира. MANUAL — только ручные матчи, без автогенерации расписания.

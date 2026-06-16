@@ -14,6 +14,8 @@ import {
   TournamentFormat,
   TournamentMemberRole,
   TournamentStatus,
+  TournamentEnrollmentMode,
+  TournamentEligibilityProfile,
   UserRole,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -238,6 +240,81 @@ export class TournamentsService {
       raw.templateId.trim(),
       raw,
     );
+  }
+
+  private assertRosterLimits(
+    min: number | null | undefined,
+    max: number | null | undefined,
+  ) {
+    if (min != null && max != null && min > max) {
+      throw new BadRequestException(
+        'Минимум игроков в составе не может быть больше максимума',
+      );
+    }
+  }
+
+  private parseOptionalDate(
+    value: string | null | undefined,
+    field: string,
+  ): Date | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null || value === '') return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException(`Invalid ${field}`);
+    }
+    return d;
+  }
+
+  private resolveEnrollmentForCreate(dto: CreateTournamentDto) {
+    const enrollmentMode =
+      dto.enrollmentMode ?? TournamentEnrollmentMode.MANUAL;
+    const eligibilityProfile =
+      dto.eligibilityProfile ?? TournamentEligibilityProfile.STANDARD;
+    this.assertRosterLimits(dto.rosterMinPlayers, dto.rosterMaxPlayers);
+
+    let registrationEnabled = dto.registrationEnabled ?? false;
+    if (enrollmentMode === TournamentEnrollmentMode.APPLICATIONS) {
+      registrationEnabled = true;
+    }
+
+    const registrationOpensAt = this.parseOptionalDate(
+      dto.registrationOpensAt,
+      'registrationOpensAt',
+    );
+    const registrationClosesAt = this.parseOptionalDate(
+      dto.registrationClosesAt,
+      'registrationClosesAt',
+    );
+    const rosterDeadlineAt = this.parseOptionalDate(
+      dto.rosterDeadlineAt,
+      'rosterDeadlineAt',
+    );
+
+    if (
+      registrationOpensAt instanceof Date &&
+      registrationClosesAt instanceof Date &&
+      registrationOpensAt >= registrationClosesAt
+    ) {
+      throw new BadRequestException(
+        'registrationOpensAt must be before registrationClosesAt',
+      );
+    }
+
+    return {
+      enrollmentMode,
+      eligibilityProfile,
+      registrationEnabled,
+      registrationOpensAt:
+        registrationOpensAt === undefined ? undefined : registrationOpensAt,
+      registrationClosesAt:
+        registrationClosesAt === undefined ? undefined : registrationClosesAt,
+      rosterMinPlayers: dto.rosterMinPlayers ?? undefined,
+      rosterMaxPlayers: dto.rosterMaxPlayers ?? undefined,
+      rosterDeadlineAt:
+        rosterDeadlineAt === undefined ? undefined : rosterDeadlineAt,
+      maxTeams: dto.maxTeams ?? undefined,
+    };
   }
 
   /** Уникальные id стадионов в порядке запроса (для основной площадки и списка). */
@@ -2612,6 +2689,8 @@ export class TournamentsService {
         ageGroupIdToSet = ag.id;
       }
 
+      const enrollment = this.resolveEnrollmentForCreate(dto);
+
       const created = await tx.tournament.create({
         data: {
           tenantId,
@@ -2643,6 +2722,25 @@ export class TournamentsService {
           dayStartTimeOverrides:
             (dto.dayStartTimeOverrides as any) ?? undefined,
           minTeams: dto.minTeams ?? 2,
+          maxTeams: enrollment.maxTeams,
+          enrollmentMode: enrollment.enrollmentMode,
+          eligibilityProfile: enrollment.eligibilityProfile,
+          registrationEnabled: enrollment.registrationEnabled,
+          ...(enrollment.registrationOpensAt !== undefined
+            ? { registrationOpensAt: enrollment.registrationOpensAt }
+            : {}),
+          ...(enrollment.registrationClosesAt !== undefined
+            ? { registrationClosesAt: enrollment.registrationClosesAt }
+            : {}),
+          ...(enrollment.rosterMinPlayers !== undefined
+            ? { rosterMinPlayers: enrollment.rosterMinPlayers }
+            : {}),
+          ...(enrollment.rosterMaxPlayers !== undefined
+            ? { rosterMaxPlayers: enrollment.rosterMaxPlayers }
+            : {}),
+          ...(enrollment.rosterDeadlineAt !== undefined
+            ? { rosterDeadlineAt: enrollment.rosterDeadlineAt }
+            : {}),
           pointsWin: dto.pointsWin ?? 3,
           pointsDraw: dto.pointsDraw ?? 1,
           pointsLoss: dto.pointsLoss ?? 0,
@@ -3223,6 +3321,21 @@ export class TournamentsService {
       );
     }
 
+    const rosterDeadlineAt = this.parseOptionalDate(
+      dto.rosterDeadlineAt,
+      'rosterDeadlineAt',
+    );
+    if (dto.rosterMinPlayers !== undefined || dto.rosterMaxPlayers !== undefined) {
+      this.assertRosterLimits(dto.rosterMinPlayers, dto.rosterMaxPlayers);
+    }
+
+    let registrationEnabledForUpdate: boolean | undefined;
+    if (dto.enrollmentMode === TournamentEnrollmentMode.APPLICATIONS) {
+      registrationEnabledForUpdate = true;
+    } else if (dto.registrationEnabled !== undefined) {
+      registrationEnabledForUpdate = dto.registrationEnabled;
+    }
+
     const tenantId = existing.tenantId;
     const adminIds = dto.admins?.map((a) => a.userId) ?? [];
     if (dto.admins) {
@@ -3481,8 +3594,23 @@ export class TournamentsService {
               : (dto.dayStartTimeOverrides as any),
           minTeams: dto.minTeams,
           ...(dto.maxTeams !== undefined ? { maxTeams: dto.maxTeams } : {}),
-          ...(dto.registrationEnabled !== undefined
-            ? { registrationEnabled: dto.registrationEnabled }
+          ...(dto.enrollmentMode !== undefined
+            ? { enrollmentMode: dto.enrollmentMode }
+            : {}),
+          ...(dto.eligibilityProfile !== undefined
+            ? { eligibilityProfile: dto.eligibilityProfile }
+            : {}),
+          ...(dto.rosterMinPlayers !== undefined
+            ? { rosterMinPlayers: dto.rosterMinPlayers }
+            : {}),
+          ...(dto.rosterMaxPlayers !== undefined
+            ? { rosterMaxPlayers: dto.rosterMaxPlayers }
+            : {}),
+          ...(rosterDeadlineAt !== undefined
+            ? { rosterDeadlineAt }
+            : {}),
+          ...(registrationEnabledForUpdate !== undefined
+            ? { registrationEnabled: registrationEnabledForUpdate }
             : {}),
           ...(registrationOpensAt !== undefined
             ? { registrationOpensAt }

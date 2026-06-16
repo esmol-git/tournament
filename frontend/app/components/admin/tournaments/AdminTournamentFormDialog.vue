@@ -7,12 +7,20 @@ const props = defineProps<{
   saving: boolean
   submitAttempted: boolean
   canSave: boolean
+  wizardActive?: boolean
+  wizardStep?: number
+  wizardStepLabels?: string[]
+  wizardCanGoNext?: boolean
+  wizardIsFirst?: boolean
+  wizardIsLast?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void
   (e: 'save'): void
   (e: 'cancel'): void
+  (e: 'wizard-next'): void
+  (e: 'wizard-prev'): void
 }>()
 
 const { t } = useI18n()
@@ -69,8 +77,15 @@ function focusFirstFormField() {
         : t('admin.tournament_form.dialog_title_create')
     "
     :style="{ width: '46rem', maxWidth: 'min(46rem, calc(100vw - 2rem))' }"
-    :contentStyle="{ paddingTop: '1.75rem' }"
+    :contentStyle="{ paddingTop: props.wizardActive ? '1rem' : '1.75rem' }"
   >
+    <Steps
+      v-if="props.wizardActive && props.wizardStepLabels?.length"
+      :model="props.wizardStepLabels.map((label, i) => ({ label }))"
+      :activeStep="props.wizardStep ?? 0"
+      :readonly="true"
+      class="mb-5"
+    />
     <slot />
     <template #footer>
       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -82,6 +97,24 @@ function focusFirstFormField() {
             @click="emit('cancel')"
           />
           <Button
+            v-if="props.wizardActive && !props.wizardIsFirst"
+            type="button"
+            :label="t('admin.tournament_wizard.back')"
+            icon="pi pi-arrow-left"
+            outlined
+            @click="emit('wizard-prev')"
+          />
+          <Button
+            v-if="props.wizardActive && !props.wizardIsLast"
+            type="button"
+            :label="t('admin.tournament_wizard.next')"
+            icon="pi pi-arrow-right"
+            icon-pos="right"
+            :disabled="!props.wizardCanGoNext"
+            @click="emit('wizard-next')"
+          />
+          <Button
+            v-if="!props.wizardActive || props.wizardIsLast"
             type="button"
             :label="primarySaveLabel"
             :icon="primarySaveIcon"
