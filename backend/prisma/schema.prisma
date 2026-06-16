@@ -464,6 +464,8 @@ model Stadium {
   city      String?
   regionId  String?
   /// Покрытие: натуральный газон, искусственное, зал, лёд и т.д.
+  surfaceType StadiumSurfaceType?
+  /// Уточнение покрытия (для OTHER или доп. детали).
   surface   String?
   /// Число игровых полей / кортов на объекте.
   pitchCount Int?
@@ -710,6 +712,10 @@ model Tournament {
   enrollmentMode TournamentEnrollmentMode @default(MANUAL)
   /// YOUTH — упрощённые правила состава; STANDARD — расширенные лимиты.
   eligibilityProfile TournamentEligibilityProfile @default(STANDARD)
+  /// Игровой формат на поле: 3×3, 5+1, 11×11 и т.д.
+  gameFormat TournamentGameFormat?
+  /// Уточнение при gameFormat = CUSTOM.
+  gameFormatNote String?
   /// Минимум игроков в заявочном составе на турнир (null — без ограничения).
   rosterMinPlayers Int?
   /// Максимум игроков в заявочном составе на турнир (null — без ограничения).
@@ -1145,6 +1151,26 @@ enum TournamentEnrollmentMode {
 enum TournamentEligibilityProfile {
   YOUTH
   STANDARD
+}
+
+enum TournamentGameFormat {
+  THREE_V_THREE_NO_GK
+  FOUR_PLUS_ONE
+  FIVE_PLUS_ONE
+  SIX_PLUS_ONE
+  SEVEN_PLUS_ONE
+  EIGHT_V_EIGHT
+  NINE_V_NINE
+  ELEVEN_V_ELEVEN
+  CUSTOM
+}
+
+enum StadiumSurfaceType {
+  NATURAL_GRASS
+  ARTIFICIAL_TURF
+  PARQUET
+  INDOOR
+  OTHER
 }
 
 enum TournamentRosterPlayerStatus {

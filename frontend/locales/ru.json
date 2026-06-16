@@ -14,7 +14,8 @@
       "header_title": "Админ-панель",
       "header_subtitle": "Панель организатора",
       "local_time": "Местное время",
-      "local_time_title": "Местное время вашего устройства. Сверяйте с расписанием матчей."
+      "local_time_title": "Местное время вашего устройства. Сверяйте с расписанием матчей.",
+      "nav_tournaments_cta": "Турниры"
     },
     "matches_list": {
       "date_range_placeholder": "Выберите период"
@@ -596,6 +597,20 @@
       "label_eligibility_profile": "Профиль турнира",
       "profile_youth": "Детский / любительский",
       "profile_standard": "Стандартный / регламентный",
+      "label_game_format": "Формат игры на поле",
+      "label_game_format_note": "Уточнение формата",
+      "game_format_note_placeholder": "Например, 3+1 без вратаря",
+      "game_formats": {
+        "THREE_V_THREE_NO_GK": "3×3 без вратарей",
+        "FOUR_PLUS_ONE": "4+1",
+        "FIVE_PLUS_ONE": "5+1",
+        "SIX_PLUS_ONE": "6+1",
+        "SEVEN_PLUS_ONE": "7+1",
+        "EIGHT_V_EIGHT": "8×8",
+        "NINE_V_NINE": "9×9",
+        "ELEVEN_V_ELEVEN": "11×11",
+        "CUSTOM": "Другой"
+      },
       "label_roster_min": "Мин. игроков в составе",
       "label_roster_max": "Макс. игроков в составе",
       "label_roster_deadline": "Дедлайн фиксации состава",
@@ -1199,6 +1214,16 @@
       "management": {
         "title": "Руководство",
         "desc": "Члены руководства организации (должность, контакты). Для внутреннего учёта."
+      }
+    },
+    "stadiums": {
+      "surface_note_placeholder": "Дополнительно, если нужно уточнить",
+      "surface_types": {
+        "NATURAL_GRASS": "Натуральный газон",
+        "ARTIFICIAL_TURF": "Искусственное покрытие",
+        "PARQUET": "Паркет / зал",
+        "INDOOR": "Манеж",
+        "OTHER": "Другое"
       }
     },
     "tournament_registrations": {

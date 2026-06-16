@@ -2,6 +2,7 @@
 /* eslint-disable vue/no-mutating-props -- родитель передаёт общий reactive(form) */
 import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
 import { computed, watch } from 'vue'
+import { TOURNAMENT_GAME_FORMAT_VALUES } from '~/utils/tournamentGameFormat'
 
 const props = defineProps<{
   form: TournamentFormModel
@@ -11,6 +12,7 @@ const props = defineProps<{
 const { t } = useI18n()
 
 const isApplicationsMode = computed(() => props.form.enrollmentMode === 'APPLICATIONS')
+const isCustomGameFormat = computed(() => props.form.gameFormat === 'CUSTOM')
 
 const enrollmentOptions = computed(() => [
   { label: t('admin.tournament_form.enrollment_manual'), value: 'MANUAL' as const },
@@ -21,6 +23,13 @@ const profileOptions = computed(() => [
   { label: t('admin.tournament_form.profile_youth'), value: 'YOUTH' as const },
   { label: t('admin.tournament_form.profile_standard'), value: 'STANDARD' as const },
 ])
+
+const gameFormatOptions = computed(() =>
+  TOURNAMENT_GAME_FORMAT_VALUES.map((value) => ({
+    label: t(`admin.tournament_form.game_formats.${value}`),
+    value,
+  })),
+)
 
 watch(
   () => props.form.enrollmentMode,
@@ -40,7 +49,15 @@ watch(
     if (profile === 'YOUTH' && !props.isEdit) {
       if (props.form.rosterMinPlayers == null) props.form.rosterMinPlayers = 8
       if (props.form.rosterMaxPlayers == null) props.form.rosterMaxPlayers = 12
+      if (!props.form.gameFormat) props.form.gameFormat = 'FIVE_PLUS_ONE'
     }
+  },
+)
+
+watch(
+  () => props.form.gameFormat,
+  (format) => {
+    if (format !== 'CUSTOM') props.form.gameFormatNote = ''
   },
 )
 </script>
@@ -80,6 +97,28 @@ watch(
         />
         <label for="t_eligibilityProfile">{{ t('admin.tournament_form.label_eligibility_profile') }}</label>
       </FloatLabel>
+
+      <FloatLabel variant="on" class="block min-w-0">
+        <Select
+          input-id="t_gameFormat"
+          v-model="form.gameFormat"
+          :options="gameFormatOptions"
+          option-label="label"
+          option-value="value"
+          show-clear
+          class="w-full"
+        />
+        <label for="t_gameFormat">{{ t('admin.tournament_form.label_game_format') }}</label>
+      </FloatLabel>
+
+      <div v-if="isCustomGameFormat" class="flex flex-col gap-1 md:col-span-2">
+        <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_game_format_note') }}</label>
+        <InputText
+          v-model="form.gameFormatNote"
+          class="w-full"
+          :placeholder="t('admin.tournament_form.game_format_note_placeholder')"
+        />
+      </div>
 
       <template v-if="isApplicationsMode">
         <div class="flex flex-col gap-1 md:col-span-2">

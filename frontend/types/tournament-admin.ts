@@ -2,6 +2,17 @@
 export type TournamentEnrollmentMode = 'MANUAL' | 'APPLICATIONS'
 export type TournamentEligibilityProfile = 'YOUTH' | 'STANDARD'
 
+export type TournamentGameFormat =
+  | 'THREE_V_THREE_NO_GK'
+  | 'FOUR_PLUS_ONE'
+  | 'FIVE_PLUS_ONE'
+  | 'SIX_PLUS_ONE'
+  | 'SEVEN_PLUS_ONE'
+  | 'EIGHT_V_EIGHT'
+  | 'NINE_V_NINE'
+  | 'ELEVEN_V_ELEVEN'
+  | 'CUSTOM'
+
 export interface TournamentDetails {
   id: string
   name: string
@@ -37,6 +48,8 @@ export interface TournamentDetails {
   maxTeams?: number | null
   enrollmentMode?: TournamentEnrollmentMode
   eligibilityProfile?: TournamentEligibilityProfile
+  gameFormat?: TournamentGameFormat | null
+  gameFormatNote?: string | null
   rosterMinPlayers?: number | null
   rosterMaxPlayers?: number | null
   rosterDeadlineAt?: string | null

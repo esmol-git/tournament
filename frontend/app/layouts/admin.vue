@@ -175,6 +175,17 @@ function onMobileNavLogout() {
               </p>
             </div>
           </div>
+          <NuxtLink
+            to="/admin/tournaments"
+            class="hidden shrink-0 sm:inline-flex"
+          >
+            <Button
+              :label="t('admin.layout.nav_tournaments_cta')"
+              icon="pi pi-trophy"
+              size="small"
+              class="!font-semibold"
+            />
+          </NuxtLink>
           <div
             class="flex min-w-0 max-w-[min(100%,calc(100vw-5rem))] shrink-0 flex-nowrap items-center justify-end gap-x-1 overflow-x-auto text-end sm:max-w-none sm:gap-x-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             aria-live="polite"

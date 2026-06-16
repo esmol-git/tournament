@@ -305,6 +305,11 @@ export class TournamentsService {
     return {
       enrollmentMode,
       eligibilityProfile,
+      gameFormat: dto.gameFormat ?? undefined,
+      gameFormatNote:
+        dto.gameFormatNote !== undefined
+          ? dto.gameFormatNote?.trim() || null
+          : undefined,
       registrationEnabled,
       registrationOpensAt:
         registrationOpensAt === undefined ? undefined : registrationOpensAt,
@@ -2852,6 +2857,12 @@ export class TournamentsService {
           maxTeams: enrollment.maxTeams,
           enrollmentMode: enrollment.enrollmentMode,
           eligibilityProfile: enrollment.eligibilityProfile,
+          ...(enrollment.gameFormat !== undefined
+            ? { gameFormat: enrollment.gameFormat }
+            : {}),
+          ...(enrollment.gameFormatNote !== undefined
+            ? { gameFormatNote: enrollment.gameFormatNote }
+            : {}),
           registrationEnabled: enrollment.registrationEnabled,
           ...(enrollment.registrationOpensAt !== undefined
             ? { registrationOpensAt: enrollment.registrationOpensAt }
@@ -3726,6 +3737,10 @@ export class TournamentsService {
             : {}),
           ...(dto.eligibilityProfile !== undefined
             ? { eligibilityProfile: dto.eligibilityProfile }
+            : {}),
+          ...(dto.gameFormat !== undefined ? { gameFormat: dto.gameFormat } : {}),
+          ...(dto.gameFormatNote !== undefined
+            ? { gameFormatNote: dto.gameFormatNote?.trim() || null }
             : {}),
           ...(dto.rosterMinPlayers !== undefined
             ? { rosterMinPlayers: dto.rosterMinPlayers }

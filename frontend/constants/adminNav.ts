@@ -131,6 +131,11 @@ export function filterAdminNavForRole(
 export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
   { to: '/admin', labelKey: 'admin.nav.dashboard', icon: 'pi pi-home', exact: true },
   {
+    to: '/admin/tournaments',
+    labelKey: 'admin.nav.tournaments',
+    icon: 'pi pi-trophy',
+  },
+  {
     to: '/admin/docs',
     labelKey: 'admin.nav.documentation',
     icon: 'pi pi-info-circle',
@@ -274,7 +279,6 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     labelKey: 'admin.nav.group_tournaments',
     icon: 'pi pi-trophy',
     items: [
-      { to: '/admin/tournaments', labelKey: 'admin.nav.tournaments', icon: 'pi pi-sitemap' },
       {
         to: '/admin/news',
         labelKey: 'admin.nav.news',

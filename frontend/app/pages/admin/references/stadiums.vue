@@ -7,6 +7,8 @@ import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import type { RegionRow } from '~/types/admin/region'
 import type { StadiumRow } from '~/types/admin/stadium'
+import { STADIUM_SURFACE_TYPE_VALUES, stadiumSurfaceTypeLabel } from '~/utils/stadiumSurfaceType'
+import type { StadiumSurfaceType } from '~/utils/stadiumSurfaceType'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
@@ -44,6 +46,7 @@ const form = reactive({
   address: '',
   city: '',
   regionId: '',
+  surfaceType: null as StadiumSurfaceType | null,
   surface: '',
   pitchCount: null as number | null,
   capacity: null as number | null,
@@ -57,6 +60,14 @@ const canSave = computed(() => !v$.value.$invalid && !formErrors.value.name)
 const showNameError = computed(
   () => (submitAttempted.value || v$.value.name.$dirty) && !!formErrors.value.name,
 )
+
+const surfaceTypeOptions = computed(() => [
+  { label: 'Не указано', value: null as StadiumSurfaceType | null },
+  ...STADIUM_SURFACE_TYPE_VALUES.map((value) => ({
+    label: t(`admin.stadiums.surface_types.${value}`),
+    value,
+  })),
+])
 
 const regionSelectOptions = computed(() => [
   { label: 'Не указано', value: '' },
@@ -104,6 +115,7 @@ const openCreate = () => {
   form.address = ''
   form.city = ''
   form.regionId = ''
+  form.surfaceType = null
   form.surface = ''
   form.pitchCount = null
   form.capacity = null
@@ -120,6 +132,7 @@ const openEdit = (row: StadiumRow) => {
   form.address = row.address ?? ''
   form.city = row.city ?? ''
   form.regionId = row.regionId ?? ''
+  form.surfaceType = row.surfaceType ?? null
   form.surface = row.surface ?? ''
   form.pitchCount = row.pitchCount ?? null
   form.capacity = row.capacity ?? null
@@ -148,12 +161,14 @@ const save = async () => {
     if (isEdit.value) {
       Object.assign(body, {
         regionId: rid || null,
+        surfaceType: form.surfaceType,
         surface: form.surface.trim() || null,
         pitchCount: form.pitchCount ?? null,
         capacity: form.capacity ?? null,
       })
     } else {
       if (rid) body.regionId = rid
+      if (form.surfaceType) body.surfaceType = form.surfaceType
       if (form.surface.trim()) body.surface = form.surface.trim()
       if (form.pitchCount != null) body.pitchCount = form.pitchCount
       if (form.capacity != null) body.capacity = form.capacity
@@ -304,8 +319,7 @@ onMounted(() => {
         <Column field="name" header="Название" />
         <Column header="Покрытие" style="min-width: 6rem">
           <template #body="{ data }">
-            <span v-if="data.surface">{{ data.surface }}</span>
-            <span v-else class="text-muted-color">—</span>
+            <span>{{ stadiumSurfaceTypeLabel(data.surfaceType, data.surface, t) }}</span>
           </template>
         </Column>
         <Column header="Полей" style="width: 4.5rem">
@@ -371,11 +385,22 @@ onMounted(() => {
           <InputText v-model="form.address" class="w-full" />
         </div>
         <div>
-          <label class="text-sm block mb-1">Покрытие</label>
+          <label class="text-sm block mb-1">Тип покрытия</label>
+          <Select
+            v-model="form.surfaceType"
+            :options="surfaceTypeOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            input-id="stadium_surface_type"
+          />
+        </div>
+        <div>
+          <label class="text-sm block mb-1">Уточнение покрытия</label>
           <InputText
             v-model="form.surface"
             class="w-full"
-            placeholder="Например, натуральная трава, синтетика"
+            :placeholder="t('admin.stadiums.surface_note_placeholder')"
           />
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">

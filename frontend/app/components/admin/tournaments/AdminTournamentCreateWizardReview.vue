@@ -2,6 +2,7 @@
 import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
 import { computed } from 'vue'
 import { tournamentFormatLabel } from '~/utils/tournamentAdminUi'
+import { tournamentGameFormatLabel } from '~/utils/tournamentGameFormat'
 
 const props = defineProps<{
   form: TournamentFormModel
@@ -19,6 +20,10 @@ const profileLabel = computed(() =>
   props.form.eligibilityProfile === 'YOUTH'
     ? t('admin.tournament_form.profile_youth')
     : t('admin.tournament_form.profile_standard'),
+)
+
+const gameFormatLabel = computed(() =>
+  tournamentGameFormatLabel(props.form.gameFormat, props.form.gameFormatNote, t),
 )
 
 const rosterLimits = computed(() => {
@@ -68,6 +73,10 @@ const teamsSummary = computed(() => {
       <div class="grid gap-0.5">
         <dt class="text-xs text-muted-color">{{ t('admin.tournament_form.label_eligibility_profile') }}</dt>
         <dd>{{ profileLabel }} · {{ rosterLimits }}</dd>
+      </div>
+      <div class="grid gap-0.5">
+        <dt class="text-xs text-muted-color">{{ t('admin.tournament_form.label_game_format') }}</dt>
+        <dd>{{ gameFormatLabel }}</dd>
       </div>
       <div class="grid gap-0.5">
         <dt class="text-xs text-muted-color">{{ t('admin.tournament_wizard.review_teams_label') }}</dt>

@@ -11,6 +11,7 @@ import {
   IsString,
   Matches,
   Max,
+  MaxLength,
   Min,
   ValidateIf,
   ValidateNested,
@@ -21,6 +22,7 @@ import {
   TournamentStatus,
   TournamentEnrollmentMode,
   TournamentEligibilityProfile,
+  TournamentGameFormat,
 } from '@prisma/client';
 import { Type } from 'class-transformer';
 
@@ -263,6 +265,23 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsEnum(TournamentEligibilityProfile)
   eligibilityProfile?: TournamentEligibilityProfile;
+
+  @ApiProperty({
+    required: false,
+    enum: TournamentGameFormat,
+    description: 'Игровой формат на поле: 3×3, 5+1, 11×11',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsEnum(TournamentGameFormat)
+  gameFormat?: TournamentGameFormat | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Уточнение при gameFormat = CUSTOM' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  @MaxLength(200)
+  gameFormatNote?: string | null;
 
   @ApiProperty({ required: false, nullable: true, description: 'Мин. игроков в составе на турнир' })
   @IsOptional()

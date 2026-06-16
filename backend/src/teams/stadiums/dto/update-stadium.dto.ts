@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -7,6 +8,7 @@ import {
   Min,
   ValidateIf,
 } from 'class-validator';
+import { StadiumSurfaceType } from '@prisma/client';
 
 export class UpdateStadiumDto {
   @IsOptional()
@@ -25,6 +27,11 @@ export class UpdateStadiumDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsString()
   regionId?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsEnum(StadiumSurfaceType)
+  surfaceType?: StadiumSurfaceType | null;
 
   @IsOptional()
   @ValidateIf((_, v) => v !== null && v !== undefined)

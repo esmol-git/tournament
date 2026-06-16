@@ -255,6 +255,11 @@ export function useAdminTournamentListFormSave(options: {
         moderatorIds: [...form.moderatorIds],
         enrollmentMode: form.enrollmentMode,
         eligibilityProfile: form.eligibilityProfile,
+        gameFormat: form.gameFormat,
+        gameFormatNote:
+          form.gameFormat === 'CUSTOM' && form.gameFormatNote.trim()
+            ? form.gameFormatNote.trim()
+            : null,
         maxTeams: form.maxTeams,
         registrationEnabled: form.registrationEnabled,
         registrationOpensAt: form.registrationOpensAt?.toISOString() ?? null,

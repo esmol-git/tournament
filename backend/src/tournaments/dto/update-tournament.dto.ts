@@ -21,6 +21,7 @@ import {
   TournamentStatus,
   TournamentEnrollmentMode,
   TournamentEligibilityProfile,
+  TournamentGameFormat,
 } from '@prisma/client';
 
 class TournamentAdminDto {
@@ -304,6 +305,18 @@ export class UpdateTournamentDto {
   @IsOptional()
   @IsEnum(TournamentEligibilityProfile)
   eligibilityProfile?: TournamentEligibilityProfile;
+
+  @ApiPropertyOptional({ enum: TournamentGameFormat, nullable: true })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsEnum(TournamentGameFormat)
+  gameFormat?: TournamentGameFormat | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  gameFormatNote?: string | null;
 
   @ApiPropertyOptional({ nullable: true, description: 'Мин. игроков в составе на турнир' })
   @IsOptional()

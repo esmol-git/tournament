@@ -4,10 +4,12 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsEnum,
   MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
+import { StadiumSurfaceType } from '@prisma/client';
 
 export class CreateStadiumDto {
   @IsString()
@@ -28,6 +30,11 @@ export class CreateStadiumDto {
   )
   @IsString()
   regionId?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsEnum(StadiumSurfaceType)
+  surfaceType?: StadiumSurfaceType | null;
 
   @IsOptional()
   @IsString()

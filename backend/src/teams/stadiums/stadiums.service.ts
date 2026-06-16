@@ -47,6 +47,10 @@ export class StadiumsService {
         address: dto.address?.trim() || null,
         city: dto.city?.trim() || null,
         regionId: regionIdToSet,
+        surfaceType:
+          dto.surfaceType !== undefined && dto.surfaceType !== null
+            ? dto.surfaceType
+            : null,
         surface: dto.surface?.trim() || null,
         pitchCount:
           dto.pitchCount !== undefined && dto.pitchCount !== null
@@ -92,6 +96,7 @@ export class StadiumsService {
           ? { address: dto.address?.trim() || null }
           : {}),
         ...(dto.city !== undefined ? { city: dto.city?.trim() || null } : {}),
+        ...(dto.surfaceType !== undefined ? { surfaceType: dto.surfaceType } : {}),
         ...(dto.surface !== undefined
           ? { surface: dto.surface?.trim() || null }
           : {}),

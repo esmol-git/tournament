@@ -1,7 +1,8 @@
 import type { TournamentDetails, TournamentFormat, TournamentStatus } from '~/types/admin/tournaments-index'
 import type { TournamentEnrollmentMode, TournamentEligibilityProfile } from '~/types/tournament-admin'
+import type { TournamentGameFormat } from '~/utils/tournamentGameFormat'
 
-export type { TournamentEnrollmentMode, TournamentEligibilityProfile }
+export type { TournamentEnrollmentMode, TournamentEligibilityProfile, TournamentGameFormat }
 
 export type TournamentFormModel = {
   name: string
@@ -24,6 +25,8 @@ export type TournamentFormModel = {
   teamIds: string[]
   enrollmentMode: TournamentEnrollmentMode
   eligibilityProfile: TournamentEligibilityProfile
+  gameFormat: TournamentGameFormat | null
+  gameFormatNote: string
   maxTeams: number | null
   registrationEnabled: boolean
   registrationOpensAt: Date | null
@@ -62,6 +65,8 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     teamIds: [],
     enrollmentMode: 'MANUAL',
     eligibilityProfile: 'STANDARD',
+    gameFormat: null,
+    gameFormatNote: '',
     maxTeams: null,
     registrationEnabled: false,
     registrationOpensAt: null,
@@ -143,6 +148,8 @@ export function patchFormFromTournament(
   const details = res as TournamentDetails
   form.enrollmentMode = details.enrollmentMode ?? 'MANUAL'
   form.eligibilityProfile = details.eligibilityProfile ?? 'STANDARD'
+  form.gameFormat = details.gameFormat ?? null
+  form.gameFormatNote = details.gameFormatNote?.trim() ?? ''
   form.maxTeams =
     typeof details.maxTeams === 'number' && details.maxTeams > 0
       ? details.maxTeams

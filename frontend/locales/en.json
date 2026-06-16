@@ -14,7 +14,8 @@
       "header_title": "Admin",
       "header_subtitle": "Organizer console",
       "local_time": "Local time",
-      "local_time_title": "Local time on your device. Use it to cross-check match schedules."
+      "local_time_title": "Local time on your device. Use it to cross-check match schedules.",
+      "nav_tournaments_cta": "Tournaments"
     },
     "matches_list": {
       "date_range_placeholder": "Select date range"
@@ -596,6 +597,20 @@
       "label_eligibility_profile": "Tournament profile",
       "profile_youth": "Youth / amateur",
       "profile_standard": "Standard / regulated",
+      "label_game_format": "On-field game format",
+      "label_game_format_note": "Format details",
+      "game_format_note_placeholder": "e.g. 3+1 without goalkeeper",
+      "game_formats": {
+        "THREE_V_THREE_NO_GK": "3×3 no goalkeepers",
+        "FOUR_PLUS_ONE": "4+1",
+        "FIVE_PLUS_ONE": "5+1",
+        "SIX_PLUS_ONE": "6+1",
+        "SEVEN_PLUS_ONE": "7+1",
+        "EIGHT_V_EIGHT": "8×8",
+        "NINE_V_NINE": "9×9",
+        "ELEVEN_V_ELEVEN": "11×11",
+        "CUSTOM": "Other"
+      },
       "label_roster_min": "Min players in roster",
       "label_roster_max": "Max players in roster",
       "label_roster_deadline": "Roster lock deadline",
@@ -1199,6 +1214,16 @@
       "management": {
         "title": "Management",
         "desc": "Organization leadership (role, contacts). Internal directory."
+      }
+    },
+    "stadiums": {
+      "surface_note_placeholder": "Optional extra detail",
+      "surface_types": {
+        "NATURAL_GRASS": "Natural grass",
+        "ARTIFICIAL_TURF": "Artificial turf",
+        "PARQUET": "Parquet / indoor court",
+        "INDOOR": "Indoor arena",
+        "OTHER": "Other"
       }
     },
     "tournament_registrations": {
