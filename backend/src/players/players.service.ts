@@ -952,6 +952,7 @@ export class PlayersService {
         bioNumber: true,
         biography: true,
         photoUrl: true,
+        isActive: true,
         teamPlayers: {
           take: 1,
           select: {
@@ -975,6 +976,7 @@ export class PlayersService {
         bioNumber: p.bioNumber,
         biography: p.biography,
         photoUrl: p.photoUrl,
+        isActive: p.isActive,
         team: p.teamPlayers[0]?.team ?? null,
       })),
       total,
@@ -1052,6 +1054,7 @@ export class PlayersService {
         bioNumber: true,
         biography: true,
         photoUrl: true,
+        isActive: true,
       },
     });
     if (!player) throw new NotFoundException('Player not found');
@@ -1091,6 +1094,7 @@ export class PlayersService {
             dto.biography !== undefined ? dto.biography : player.biography,
           photoUrl:
             photoUrlResolved !== undefined ? photoUrlResolved : player.photoUrl,
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         },
       });
       if (dto.teamId !== undefined) {

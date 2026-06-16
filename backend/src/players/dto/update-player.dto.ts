@@ -75,4 +75,10 @@ export class UpdatePlayerDto {
   @IsString()
   @IsNotEmpty()
   teamId?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Активен в организации (неактивные скрыты из составов турниров)',
+  })
+  @IsOptional()
+  isActive?: boolean;
 }

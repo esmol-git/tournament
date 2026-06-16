@@ -45,6 +45,8 @@ export class TournamentRegistrationsService {
     status: TournamentRegistrationStatus
     message: string | null
     adminNote: string | null
+    attachmentUrl: string | null
+    attachmentFileName: string | null
     submittedAt: Date | null
     reviewedAt: Date | null
     createdAt: Date
@@ -70,6 +72,8 @@ export class TournamentRegistrationsService {
       status: row.status,
       message: row.message,
       adminNote: row.adminNote,
+      attachmentUrl: row.attachmentUrl,
+      attachmentFileName: row.attachmentFileName,
       submittedAt: row.submittedAt,
       reviewedAt: row.reviewedAt,
       createdAt: row.createdAt,
@@ -232,6 +236,9 @@ export class TournamentRegistrationsService {
       reviewedByUserId: null,
     };
 
+    const attachmentUrl = dto.attachmentUrl?.trim() || null;
+    const attachmentFileName = dto.attachmentFileName?.trim() || null;
+
     const row = await this.prisma.tournamentRegistration.upsert({
       where: { tournamentId_teamId: { tournamentId, teamId } },
       create: {
@@ -239,10 +246,14 @@ export class TournamentRegistrationsService {
         tournamentId,
         teamId,
         message: dto.message?.trim() || null,
+        attachmentUrl,
+        attachmentFileName,
         ...submittedFields,
       },
       update: {
         message: dto.message?.trim() || null,
+        attachmentUrl,
+        attachmentFileName,
         ...submittedFields,
       },
       include: REGISTRATION_INCLUDE,

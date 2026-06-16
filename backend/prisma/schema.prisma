@@ -654,6 +654,7 @@ model User {
   refreshTokens RefreshToken[]
   submittedTournamentRegistrations TournamentRegistration[] @relation("TournamentRegistrationSubmitter")
   reviewedTournamentRegistrations TournamentRegistration[] @relation("TournamentRegistrationReviewer")
+  sanctionedTournamentTeamPlayers TournamentTeamPlayer[] @relation("TournamentTeamPlayerSanctionedBy")
 
   @@unique([tenantId, username])
 }
@@ -1115,6 +1116,7 @@ model Player {
   position  String?
   phone     String?
   photoUrl  String?
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1149,6 +1151,7 @@ enum TournamentRosterPlayerStatus {
   DRAFT
   SUBMITTED
   APPROVED
+  DISQUALIFIED
 }
 
 /// Игрок в заявочном составе команды на конкретный турнир.
@@ -1160,6 +1163,9 @@ model TournamentTeamPlayer {
   playerId     String
   jerseyNumber Int?
   status       TournamentRosterPlayerStatus @default(DRAFT)
+  sanctionNote String?
+  sanctionedAt DateTime?
+  sanctionedByUserId String?
   createdAt    DateTime                   @default(now())
   updatedAt    DateTime                   @updatedAt
 
@@ -1167,6 +1173,7 @@ model TournamentTeamPlayer {
   tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   team       Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
   player     Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  sanctionedBy User?    @relation("TournamentTeamPlayerSanctionedBy", fields: [sanctionedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([tournamentId, teamId, playerId])
   @@index([tenantId, tournamentId, teamId])
@@ -1191,6 +1198,8 @@ model TournamentRegistration {
   status            TournamentRegistrationStatus @default(DRAFT)
   message           String?
   adminNote         String?
+  attachmentUrl     String?
+  attachmentFileName String?
   submittedAt       DateTime?
   reviewedAt        DateTime?
   submittedByUserId String?

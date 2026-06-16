@@ -478,7 +478,11 @@ export class TournamentsService {
       const stat = stats.get(row.teamId);
       if (!stat) continue;
       stat.count += 1;
-      if (row.status !== TournamentRosterPlayerStatus.SUBMITTED) {
+      if (
+        row.status !== TournamentRosterPlayerStatus.SUBMITTED &&
+        row.status !== TournamentRosterPlayerStatus.DISQUALIFIED &&
+        row.status !== TournamentRosterPlayerStatus.APPROVED
+      ) {
         stat.submitted = false;
       }
     }

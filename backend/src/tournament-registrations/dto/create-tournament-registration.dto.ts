@@ -11,4 +11,16 @@ export class CreateTournamentRegistrationDto {
   @IsString()
   @MaxLength(2000)
   message?: string;
+
+  @ApiPropertyOptional({ description: 'URL вложения (Excel/CSV от клуба)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  attachmentUrl?: string;
+
+  @ApiPropertyOptional({ description: 'Имя файла вложения' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  attachmentFileName?: string;
 }

@@ -1,4 +1,5 @@
 import { csvRow, parseCsv } from '../players/players-csv.util';
+import * as XLSX from 'xlsx';
 
 export const ROSTER_CSV_HEADERS = [
   'lastName',
@@ -161,3 +162,13 @@ export function normalizePersonKey(
 }
 
 export { sameUtcDate };
+
+export function parseRosterXlsx(buffer: Buffer): ParsedRosterCsvRow[] {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const name = wb.SheetNames[0];
+  if (!name) throw new Error('XLSX: нет листов');
+  const sheet = wb.Sheets[name];
+  if (!sheet) throw new Error('XLSX: пустой лист');
+  const csv = XLSX.utils.sheet_to_csv(sheet);
+  return parseRosterCsv(csv);
+}

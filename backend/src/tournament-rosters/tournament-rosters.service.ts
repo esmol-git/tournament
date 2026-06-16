@@ -15,10 +15,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { assertPlayerFitsTeamCategory } from '../teams/team-category-player.assert';
 import { SetTournamentRosterDto } from './dto/set-tournament-roster.dto';
 import { ImportTournamentRosterCsvDto } from './dto/import-tournament-roster-csv.dto';
+import { ImportTournamentRosterXlsxDto } from './dto/import-tournament-roster-xlsx.dto';
+import { SetTournamentRosterSanctionDto } from './dto/set-tournament-roster-sanction.dto';
 import {
   buildRosterTemplateCsv,
   normalizePersonKey,
   parseRosterCsv,
+  parseRosterXlsx,
   sameUtcDate,
 } from './tournament-roster-csv.util';
 
@@ -105,6 +108,8 @@ export class TournamentRostersService {
     playerId: string
     jerseyNumber: number | null
     status: TournamentRosterPlayerStatus
+    sanctionNote: string | null
+    sanctionedAt: Date | null
     player: {
       id: string
       firstName: string
@@ -119,8 +124,18 @@ export class TournamentRostersService {
       playerId: row.playerId,
       jerseyNumber: row.jerseyNumber,
       status: row.status,
+      sanctionNote: row.sanctionNote,
+      sanctionedAt: row.sanctionedAt,
       player: row.player,
     };
+  }
+
+  private isRosterStatusFinalized(status: TournamentRosterPlayerStatus): boolean {
+    return (
+      status === TournamentRosterPlayerStatus.SUBMITTED ||
+      status === TournamentRosterPlayerStatus.DISQUALIFIED ||
+      status === TournamentRosterPlayerStatus.APPROVED
+    );
   }
 
   async listForTeam(
@@ -233,7 +248,12 @@ export class TournamentRostersService {
 
     if (playerIds.length) {
       const teamPlayers = await this.prisma.teamPlayer.findMany({
-        where: { teamId, playerId: { in: playerIds }, isActive: true },
+        where: {
+          teamId,
+          playerId: { in: playerIds },
+          isActive: true,
+          player: { isActive: true },
+        },
         select: { playerId: true },
       });
       const allowed = new Set(teamPlayers.map((tp) => tp.playerId));
@@ -256,20 +276,46 @@ export class TournamentRostersService {
       }
     }
 
+    const previousRows = await this.prisma.tournamentTeamPlayer.findMany({
+      where: { tournamentId, teamId },
+      select: {
+        playerId: true,
+        status: true,
+        sanctionNote: true,
+        sanctionedAt: true,
+        sanctionedByUserId: true,
+      },
+    });
+    const previousByPlayer = new Map(
+      previousRows.map((r) => [r.playerId, r] as const),
+    );
+
     await this.prisma.$transaction(async (tx) => {
       await tx.tournamentTeamPlayer.deleteMany({
         where: { tournamentId, teamId },
       });
       if (dto.players.length) {
         await tx.tournamentTeamPlayer.createMany({
-          data: dto.players.map((p) => ({
-            tenantId: tournament.tenantId,
-            tournamentId,
-            teamId,
-            playerId: p.playerId,
-            jerseyNumber: p.jerseyNumber ?? null,
-            status: TournamentRosterPlayerStatus.DRAFT,
-          })),
+          data: dto.players.map((p) => {
+            const prev = previousByPlayer.get(p.playerId);
+            const disqualified =
+              prev?.status === TournamentRosterPlayerStatus.DISQUALIFIED;
+            return {
+              tenantId: tournament.tenantId,
+              tournamentId,
+              teamId,
+              playerId: p.playerId,
+              jerseyNumber: p.jerseyNumber ?? null,
+              status: disqualified
+                ? TournamentRosterPlayerStatus.DISQUALIFIED
+                : TournamentRosterPlayerStatus.DRAFT,
+              sanctionNote: disqualified ? prev?.sanctionNote ?? null : null,
+              sanctionedAt: disqualified ? prev?.sanctionedAt ?? null : null,
+              sanctionedByUserId: disqualified
+                ? prev?.sanctionedByUserId ?? null
+                : null,
+            };
+          }),
         });
       }
     });
@@ -302,7 +348,11 @@ export class TournamentRostersService {
     );
 
     await this.prisma.tournamentTeamPlayer.updateMany({
-      where: { tournamentId, teamId },
+      where: {
+        tournamentId,
+        teamId,
+        status: { not: TournamentRosterPlayerStatus.DISQUALIFIED },
+      },
       data: { status: TournamentRosterPlayerStatus.SUBMITTED },
     });
 
@@ -337,7 +387,7 @@ export class TournamentRostersService {
     );
 
     const teamPlayers = await this.prisma.teamPlayer.findMany({
-      where: { teamId, isActive: true },
+      where: { teamId, isActive: true, player: { isActive: true } },
       include: {
         player: {
           select: {
@@ -420,7 +470,7 @@ export class TournamentRostersService {
     );
 
     const teamPlayers = await this.prisma.teamPlayer.findMany({
-      where: { teamId, isActive: true },
+      where: { teamId, isActive: true, player: { isActive: true } },
       include: {
         player: {
           select: {
@@ -602,6 +652,109 @@ export class TournamentRostersService {
     };
   }
 
+  async importFromXlsx(
+    tournamentId: string,
+    teamId: string,
+    dto: ImportTournamentRosterXlsxDto,
+    user: JwtPayload,
+  ) {
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(dto.fileBase64, 'base64');
+    } catch {
+      throw new BadRequestException('Неверный формат файла');
+    }
+    if (!buffer.length) {
+      throw new BadRequestException('Пустой файл');
+    }
+    let parsed;
+    try {
+      parsed = parseRosterXlsx(buffer);
+    } catch (e: unknown) {
+      throw new BadRequestException(
+        e instanceof Error ? e.message : 'Неверный XLSX',
+      );
+    }
+    const csvText = [
+      'lastName,firstName,birthDate,jerseyNumber,position',
+      ...parsed.map((r) =>
+        [
+          r.lastName,
+          r.firstName,
+          r.birthDate ? r.birthDate.toISOString().slice(0, 10) : '',
+          r.jerseyNumber ?? '',
+          r.position ?? '',
+        ].join(','),
+      ),
+    ].join('\n');
+    return this.importFromCsv(
+      tournamentId,
+      teamId,
+      { csvText, createMissingPlayers: dto.createMissingPlayers },
+      user,
+    );
+  }
+
+  async setPlayerSanction(
+    tournamentId: string,
+    teamId: string,
+    playerId: string,
+    dto: SetTournamentRosterSanctionDto,
+    user: JwtPayload,
+  ) {
+    await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
+    const tournament = await this.loadTournamentContext(tournamentId);
+    if (tournament.status !== TournamentStatus.DRAFT) {
+      throw new BadRequestException(
+        'Санкции можно менять только пока турнир в черновике',
+      );
+    }
+    await this.assertTeamInTournament(tournamentId, teamId, tournament.tenantId);
+
+    const row = await this.prisma.tournamentTeamPlayer.findUnique({
+      where: {
+        tournamentId_teamId_playerId: { tournamentId, teamId, playerId },
+      },
+      include: ROSTER_PLAYER_INCLUDE,
+    });
+    if (!row) throw new NotFoundException('Игрок не в составе турнира');
+
+    if (dto.disqualified) {
+      if (row.status === TournamentRosterPlayerStatus.DRAFT) {
+        throw new BadRequestException('Сначала подтвердите состав игрока');
+      }
+      if (row.status === TournamentRosterPlayerStatus.DISQUALIFIED) {
+        return this.mapRow(row);
+      }
+      const updated = await this.prisma.tournamentTeamPlayer.update({
+        where: { id: row.id },
+        data: {
+          status: TournamentRosterPlayerStatus.DISQUALIFIED,
+          sanctionNote: dto.note?.trim() || null,
+          sanctionedAt: new Date(),
+          sanctionedByUserId: user.sub,
+        },
+        include: ROSTER_PLAYER_INCLUDE,
+      });
+      return this.mapRow(updated);
+    }
+
+    if (row.status !== TournamentRosterPlayerStatus.DISQUALIFIED) {
+      return this.mapRow(row);
+    }
+    const updated = await this.prisma.tournamentTeamPlayer.update({
+      where: { id: row.id },
+      data: {
+        status: TournamentRosterPlayerStatus.SUBMITTED,
+        sanctionNote: null,
+        sanctionedAt: null,
+        sanctionedByUserId: null,
+      },
+      include: ROSTER_PLAYER_INCLUDE,
+    });
+    return this.mapRow(updated);
+  }
+
   async getSummaryForTournament(tournamentId: string, user: JwtPayload) {
     const tournament = await this.loadTournamentContext(tournamentId);
     if (
@@ -630,7 +783,7 @@ export class TournamentRostersService {
       const stat = statsByTeam.get(row.teamId);
       if (!stat) continue;
       stat.count += 1;
-      if (row.status !== TournamentRosterPlayerStatus.SUBMITTED) {
+      if (!this.isRosterStatusFinalized(row.status)) {
         stat.submitted = false;
       }
     }

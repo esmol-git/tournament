@@ -15,5 +15,6 @@ export interface PlayerRow {
   bioNumber: string | null
   photoUrl: string | null
   biography: string | null
+  isActive?: boolean
   team: PlayerTeam | null
 }

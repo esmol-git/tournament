@@ -23,6 +23,8 @@ type RosterRow = {
   playerId: string
   jerseyNumber: number | null
   status: string
+  sanctionNote?: string | null
+  sanctionedAt?: string | null
   player: RosterCandidate['player']
 }
 
@@ -49,8 +51,11 @@ const submitting = ref(false)
 const confirmingAll = ref(false)
 const templateDownloading = ref(false)
 const csvImporting = ref(false)
+const xlsxImporting = ref(false)
+const sanctioningPlayerId = ref<string | null>(null)
 const createMissingPlayers = ref(true)
 const csvFile = ref<File | null>(null)
+const xlsxFile = ref<File | null>(null)
 const importErrors = ref<Array<{ row: number; message: string }>>([])
 const candidates = ref<RosterCandidate[]>([])
 const rosterItems = ref<RosterRow[]>([])
@@ -136,6 +141,20 @@ const countLabel = computed(() => {
 })
 
 const rosterStatus = computed(() => rosterItems.value[0]?.status ?? 'DRAFT')
+
+const rosterStatusByPlayer = computed(() => {
+  const map = new Map<string, { status: string; sanctionNote?: string | null }>()
+  for (const row of rosterItems.value) {
+    map.set(row.playerId, { status: row.status, sanctionNote: row.sanctionNote })
+  }
+  return map
+})
+
+const showSanctionActions = computed(() =>
+  rosterItems.value.some(
+    (r) => r.status === 'SUBMITTED' || r.status === 'DISQUALIFIED' || r.status === 'APPROVED',
+  ),
+)
 
 watch(
   () => props.teams,
@@ -244,10 +263,62 @@ async function loadRosterData() {
 
 function togglePlayer(playerId: string, eligible: boolean) {
   if (!props.canManage || !eligible) return
+  if (rosterStatusByPlayer.value.get(playerId)?.status === 'DISQUALIFIED') return
   const set = new Set(selectedPlayerIds.value)
   if (set.has(playerId)) set.delete(playerId)
   else set.add(playerId)
   selectedPlayerIds.value = [...set]
+}
+
+function isPlayerDisqualified(playerId: string) {
+  return rosterStatusByPlayer.value.get(playerId)?.status === 'DISQUALIFIED'
+}
+
+function canDisqualifyPlayer(playerId: string) {
+  const status = rosterStatusByPlayer.value.get(playerId)?.status
+  return status === 'SUBMITTED' || status === 'APPROVED'
+}
+
+async function setPlayerSanction(playerId: string, disqualified: boolean) {
+  if (!token.value || !selectedTeamId.value || !props.canManage) return
+  let note: string | undefined
+  if (disqualified) {
+    const promptNote = window.prompt(t('admin.tournament_roster.sanction_note_prompt'))
+    if (promptNote === null) return
+    note = promptNote.trim() || undefined
+  }
+  sanctioningPlayerId.value = playerId
+  try {
+    const updated = await authFetch<RosterRow>(
+      apiUrl(
+        `/tournaments/${props.tournamentId}/teams/${selectedTeamId.value}/roster/players/${playerId}/sanction`,
+      ),
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: { disqualified, note },
+      },
+    )
+    const idx = rosterItems.value.findIndex((r) => r.playerId === playerId)
+    if (idx >= 0) rosterItems.value[idx] = { ...rosterItems.value[idx]!, ...updated }
+    toast.add({
+      severity: 'success',
+      summary: disqualified
+        ? t('admin.tournament_roster.sanction_disqualified')
+        : t('admin.tournament_roster.sanction_reinstated'),
+      life: 3000,
+    })
+    emit('updated')
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_roster.sanction_error'),
+      detail: getApiErrorMessage(e),
+      life: 6500,
+    })
+  } finally {
+    sanctioningPlayerId.value = null
+  }
 }
 
 async function saveRoster() {
@@ -340,8 +411,25 @@ async function submitRoster() {
 function onCsvFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   csvFile.value = input.files?.[0] ?? null
+  xlsxFile.value = null
   importErrors.value = []
   input.value = ''
+}
+
+function onXlsxFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  xlsxFile.value = input.files?.[0] ?? null
+  csvFile.value = null
+  importErrors.value = []
+  input.value = ''
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
+  return btoa(binary)
 }
 
 async function downloadTemplate() {
@@ -427,6 +515,65 @@ async function importCsv() {
     })
   } finally {
     csvImporting.value = false
+  }
+}
+
+async function importXlsx() {
+  if (!token.value || !selectedTeamId.value || !props.canManage || !xlsxFile.value) return
+  xlsxImporting.value = true
+  importErrors.value = []
+  try {
+    const fileBase64 = await fileToBase64(xlsxFile.value)
+    const res = await authFetch<{
+      imported: number
+      skipped: number
+      errors: Array<{ row: number; message: string }>
+      roster: {
+        items: RosterRow[]
+        limits: {
+          minPlayers: number | null
+          maxPlayers: number | null
+          deadlineAt: string | null
+        }
+      }
+    }>(
+      apiUrl(
+        `/tournaments/${props.tournamentId}/teams/${selectedTeamId.value}/roster/import-xlsx`,
+      ),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: { fileBase64, createMissingPlayers: createMissingPlayers.value },
+      },
+    )
+    rosterItems.value = res.roster?.items ?? []
+    limits.value = res.roster?.limits ?? null
+    selectedPlayerIds.value = rosterItems.value.map((r) => r.playerId)
+    importErrors.value = res.errors ?? []
+    xlsxFile.value = null
+    const summary =
+      res.skipped > 0
+        ? t('admin.tournament_roster.import_partial', {
+            imported: res.imported,
+            skipped: res.skipped,
+          })
+        : t('admin.tournament_roster.import_success', { count: res.imported })
+    toast.add({
+      severity: res.skipped > 0 ? 'warn' : 'success',
+      summary,
+      life: 6000,
+    })
+    await loadRosterData()
+    emit('updated')
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_roster.import_xlsx_error'),
+      detail: getApiErrorMessage(e),
+      life: 6500,
+    })
+  } finally {
+    xlsxImporting.value = false
   }
 }
 
@@ -583,6 +730,30 @@ onMounted(() => {
             :disabled="!csvFile"
             @click="importCsv"
           />
+          <label class="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              class="hidden"
+              @change="onXlsxFileChange"
+            />
+            <Button
+              as="span"
+              :label="xlsxFile?.name ?? t('admin.tournament_roster.pick_xlsx_file')"
+              icon="pi pi-file-excel"
+              size="small"
+              outlined
+              severity="secondary"
+            />
+          </label>
+          <Button
+            :label="t('admin.tournament_roster.import_xlsx')"
+            icon="pi pi-upload"
+            size="small"
+            :loading="xlsxImporting"
+            :disabled="!xlsxFile"
+            @click="importXlsx"
+          />
         </div>
         <div class="flex items-center gap-2">
           <Checkbox v-model="createMissingPlayers" input-id="roster-create-missing" binary />
@@ -627,15 +798,27 @@ onMounted(() => {
               <Checkbox
                 :model-value="selectedPlayerIds.includes(data.playerId)"
                 :binary="true"
-                :disabled="!canManage || !data.eligible"
+                :disabled="!canManage || !data.eligible || isPlayerDisqualified(data.playerId)"
                 @update:model-value="() => togglePlayer(data.playerId, data.eligible)"
               />
             </template>
           </Column>
           <Column :header="t('admin.tournament_roster.col_player')">
             <template #body="{ data }">
-              <span :class="data.eligible ? '' : 'text-muted-color line-through'">
+              <span
+                :class="[
+                  data.eligible && !isPlayerDisqualified(data.playerId)
+                    ? ''
+                    : 'text-muted-color line-through',
+                ]"
+              >
                 {{ playerLabel(data.player) }}
+              </span>
+              <span
+                v-if="rosterStatusByPlayer.get(data.playerId)?.sanctionNote"
+                class="mt-0.5 block text-xs text-red-500"
+              >
+                {{ rosterStatusByPlayer.get(data.playerId)?.sanctionNote }}
               </span>
             </template>
           </Column>
@@ -652,11 +835,48 @@ onMounted(() => {
           <Column :header="t('admin.tournament_roster.col_eligibility')">
             <template #body="{ data }">
               <Tag
-                v-if="data.eligible"
+                v-if="isPlayerDisqualified(data.playerId)"
+                severity="danger"
+                :value="t('admin.tournament_roster.status_disqualified')"
+              />
+              <Tag
+                v-else-if="data.eligible"
                 severity="success"
                 :value="t('admin.tournament_roster.eligible')"
               />
               <span v-else class="text-xs text-red-500">{{ data.reason }}</span>
+            </template>
+          </Column>
+          <Column
+            v-if="canManage && showSanctionActions"
+            :header="t('admin.tournament_roster.col_sanction')"
+            style="width: 8rem"
+          >
+            <template #body="{ data }">
+              <div v-if="selectedPlayerIds.includes(data.playerId)" class="flex justify-end gap-1">
+                <Button
+                  v-if="canDisqualifyPlayer(data.playerId)"
+                  icon="pi pi-ban"
+                  severity="danger"
+                  text
+                  rounded
+                  size="small"
+                  :loading="sanctioningPlayerId === data.playerId"
+                  :aria-label="t('admin.tournament_roster.disqualify')"
+                  @click="setPlayerSanction(data.playerId, true)"
+                />
+                <Button
+                  v-else-if="isPlayerDisqualified(data.playerId)"
+                  icon="pi pi-undo"
+                  severity="success"
+                  text
+                  rounded
+                  size="small"
+                  :loading="sanctioningPlayerId === data.playerId"
+                  :aria-label="t('admin.tournament_roster.reinstate')"
+                  @click="setPlayerSanction(data.playerId, false)"
+                />
+              </div>
             </template>
           </Column>
         </DataTable>

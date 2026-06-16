@@ -14,6 +14,8 @@ export type TournamentRegistrationRow = {
   status: string
   message?: string | null
   adminNote?: string | null
+  attachmentUrl?: string | null
+  attachmentFileName?: string | null
   submittedAt?: string | null
   reviewedAt?: string | null
   team: { id: string; name: string; slug?: string | null; logoUrl?: string | null }
@@ -54,6 +56,8 @@ const creatingRegistration = ref(false)
 const addDialogVisible = ref(false)
 const newTeamId = ref<string | null>(null)
 const newMessage = ref('')
+const newAttachmentFile = ref<File | null>(null)
+const attachmentUploading = ref(false)
 const items = ref<TournamentRegistrationRow[]>([])
 const loadError = ref<string | null>(null)
 
@@ -133,19 +137,49 @@ const availableTeamOptions = computed(() =>
 function openAddDialog() {
   newTeamId.value = availableTeamOptions.value[0]?.value ?? null
   newMessage.value = ''
+  newAttachmentFile.value = null
   addDialogVisible.value = true
+}
+
+function onAttachmentFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  newAttachmentFile.value = input.files?.[0] ?? null
+  input.value = ''
+}
+
+async function uploadRegistrationAttachment(file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await authFetch<{ key: string; url: string }>(
+    apiUrl('/upload?folder=registrations'),
+    { method: 'POST', body },
+  )
+  return { url: res.url, fileName: file.name }
 }
 
 async function createRegistration() {
   if (!token.value || !props.canManage || !newTeamId.value) return
   creatingRegistration.value = true
   try {
+    let attachmentUrl: string | undefined
+    let attachmentFileName: string | undefined
+    if (newAttachmentFile.value) {
+      attachmentUploading.value = true
+      try {
+        const uploaded = await uploadRegistrationAttachment(newAttachmentFile.value)
+        attachmentUrl = uploaded.url
+        attachmentFileName = uploaded.fileName
+      } finally {
+        attachmentUploading.value = false
+      }
+    }
     await authFetch(apiUrl(`/tournaments/${props.tournamentId}/registrations`), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token.value}` },
       body: {
         teamId: newTeamId.value,
         ...(newMessage.value.trim() ? { message: newMessage.value.trim() } : {}),
+        ...(attachmentUrl ? { attachmentUrl, attachmentFileName } : {}),
       },
     })
     toast.add({
@@ -356,6 +390,21 @@ onMounted(() => {
             <span class="text-sm text-muted-color">{{ data.message || '—' }}</span>
           </template>
         </Column>
+        <Column :header="t('admin.tournament_registrations.col_attachment')" style="width: 10rem">
+          <template #body="{ data }">
+            <a
+              v-if="data.attachmentUrl"
+              :href="data.attachmentUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+            >
+              <i class="pi pi-paperclip" aria-hidden="true" />
+              {{ data.attachmentFileName || t('admin.tournament_registrations.attachment_link') }}
+            </a>
+            <span v-else class="text-muted-color">—</span>
+          </template>
+        </Column>
         <Column :header="t('admin.tournament_registrations.col_submitted')" style="width: 10rem">
           <template #body="{ data }">
             <span class="text-xs text-muted-color">
@@ -439,6 +488,30 @@ onMounted(() => {
             :placeholder="t('admin.tournament_registrations.message_placeholder')"
           />
         </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-muted-color">
+            {{ t('admin.tournament_registrations.attachment_label') }}
+          </label>
+          <label class="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              class="hidden"
+              @change="onAttachmentFileChange"
+            />
+            <Button
+              as="span"
+              :label="newAttachmentFile?.name ?? t('admin.tournament_registrations.pick_attachment')"
+              icon="pi pi-paperclip"
+              size="small"
+              outlined
+              severity="secondary"
+            />
+          </label>
+          <p class="text-xs text-muted-color">
+            {{ t('admin.tournament_registrations.attachment_hint') }}
+          </p>
+        </div>
       </div>
       <template #footer>
         <Button
@@ -450,7 +523,7 @@ onMounted(() => {
         <Button
           :label="t('admin.tournament_registrations.add_registration')"
           icon="pi pi-check"
-          :loading="creatingRegistration"
+          :loading="creatingRegistration || attachmentUploading"
           :disabled="!newTeamId"
           @click="createRegistration"
         />

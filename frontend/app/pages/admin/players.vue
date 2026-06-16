@@ -867,6 +867,29 @@ const savePlayer = async () => {
 
 const deletePlayerConfirmOpen = ref(false)
 const deletePlayerPending = ref<PlayerRow | null>(null)
+const playerActiveTogglingId = ref<string | null>(null)
+
+async function setPlayerActive(p: PlayerRow, value: boolean) {
+  if (!token.value || isModeratorReadOnly.value) return
+  playerActiveTogglingId.value = p.id
+  try {
+    await authFetch(apiUrl(`/tenants/${tenantId.value}/players/${p.id}`), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token.value}` },
+      body: { isActive: value },
+    })
+    await fetchPlayers()
+  } catch (err: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось изменить статус',
+      detail: getApiErrorMessage(err),
+      life: 6000,
+    })
+  } finally {
+    playerActiveTogglingId.value = null
+  }
+}
 
 const deletePlayerMessage = computed(() => {
   const p = deletePlayerPending.value
@@ -1256,6 +1279,7 @@ onMounted(() => {
     <DataTable
       :value="players"
       striped-rows
+      :row-class="(data: PlayerRow) => (data.isActive === false ? 'opacity-70' : undefined)"
       :paginator="showPlayersPaginator"
       lazy
       :total-records="totalPlayers"
@@ -1331,6 +1355,18 @@ onMounted(() => {
         <template #body="{ data }">
           <span v-if="data.position">{{ data.position }}</span>
           <span v-else class="text-muted-color">—</span>
+        </template>
+      </Column>
+      <Column v-if="!isModeratorReadOnly" header="Активен" style="width: 7rem">
+        <template #body="{ data }">
+          <div class="flex items-center justify-center">
+            <InputSwitch
+              :model-value="data.isActive !== false"
+              :disabled="playerActiveTogglingId === data.id"
+              :input-id="`player-active-${data.id}`"
+              @update:model-value="(v: boolean) => setPlayerActive(data, v)"
+            />
+          </div>
         </template>
       </Column>
       <Column v-if="!isModeratorReadOnly" header="Действия" style="width: 8rem">

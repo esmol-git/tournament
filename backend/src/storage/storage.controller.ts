@@ -47,6 +47,7 @@ const UPLOAD_FOLDERS = [
   'news',
   'gallery',
   'tenant-branding',
+  'registrations',
 ] as const;
 type UploadFolder = (typeof UPLOAD_FOLDERS)[number];
 
