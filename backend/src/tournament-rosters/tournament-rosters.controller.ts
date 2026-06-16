@@ -71,6 +71,23 @@ export class TournamentRostersController {
     return this.service.submitForTeam(tournamentId, teamId, req.user);
   }
 
+  @Get('tournaments/:id/roster/summary')
+  summary(
+    @Param('id') tournamentId: string,
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.service.getSummaryForTournament(tournamentId, req.user);
+  }
+
+  @Post('tournaments/:id/roster/confirm-all')
+  @UseGuards(TournamentManageGuard)
+  confirmAll(
+    @Param('id') tournamentId: string,
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.service.confirmAllForTournament(tournamentId, req.user);
+  }
+
   @Get('tournaments/:id/teams/:teamId/roster/template.csv')
   @UseGuards(TournamentManageGuard)
   @Header('Content-Type', 'text/csv; charset=utf-8')

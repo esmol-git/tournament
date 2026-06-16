@@ -105,6 +105,7 @@ const calendarSaving = ref(false)
 const calendarSubmitAttempted = ref(false)
 const launchChecklistSaving = ref(false)
 const launchBlockCollapsed = ref(true)
+const rosterSummary = ref<{ allConfirmed: boolean } | null>(null)
 const diagnosticsBlockCollapsed = ref(true)
 const infrastructureLoading = ref(false)
 const infrastructureSaving = ref(false)
@@ -574,6 +575,7 @@ const fetchTournament = async () => {
       groupColumns.value = []
     }
 
+    void fetchRosterSummary()
   } catch (e: any) {
     if (isInitial) {
       tournamentPageError.value = getApiErrorMessage(e, t('admin.errors.request_failed'))
@@ -588,6 +590,29 @@ const fetchTournament = async () => {
     } else {
       calendarRefreshing.value = false
     }
+  }
+}
+
+async function fetchRosterSummary() {
+  if (!token.value || !tournament.value) {
+    rosterSummary.value = null
+    return
+  }
+  const needsRoster =
+    (tournament.value.rosterMinPlayers != null && tournament.value.rosterMinPlayers > 0) ||
+    tournament.value.rosterMaxPlayers != null
+  if (!needsRoster || !(tournament.value.tournamentTeams?.length ?? 0)) {
+    rosterSummary.value = null
+    return
+  }
+  try {
+    const res = await authFetch<{ allConfirmed: boolean }>(
+      apiUrl(`/tournaments/${tournamentId.value}/roster/summary`),
+      { headers: { Authorization: `Bearer ${token.value}` } },
+    )
+    rosterSummary.value = res
+  } catch {
+    rosterSummary.value = null
   }
 }
 
@@ -1226,7 +1251,14 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
   const unassignedTeams = groupsRequired
     ? (tRow.tournamentTeams ?? []).filter((tt) => !tt.group?.id).length
     : 0
-  const teamsStepOk = teams >= minTeams && (!groupsRequired || unassignedTeams === 0)
+  const teamsStepRostersOk =
+    tRow.rosterMinPlayers == null && tRow.rosterMaxPlayers == null
+      ? true
+      : rosterSummary.value?.allConfirmed === true
+  const teamsStepOk =
+    teams >= minTeams &&
+    (!groupsRequired || unassignedTeams === 0) &&
+    teamsStepRostersOk
   let teamsStepHint = ''
   if (isApplicationsMode) {
     teamsStepHint =
@@ -1244,7 +1276,12 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
           : 'Проверьте состав команд.'
   }
   if (tRow.rosterMinPlayers != null && tRow.rosterMinPlayers > 0) {
-    teamsStepHint += ` Заполните составы команд (мин. ${tRow.rosterMinPlayers} игроков).`
+    teamsStepHint += ` Заполните и подтвердите составы команд (мин. ${tRow.rosterMinPlayers} игроков).`
+  } else if (tRow.rosterMaxPlayers != null) {
+    teamsStepHint += ' Подтвердите составы всех команд.'
+  }
+  if (!teamsStepRostersOk && teams >= minTeams) {
+    teamsStepHint += ' Есть команды с неподтверждённым составом — откройте вкладку «Составы».'
   }
 
   return [
@@ -2293,6 +2330,16 @@ const calendarFormErrors = computed(() => {
         : '',
   }
 })
+const rostersBlockCalendar = computed(() => {
+  const tRow = tournament.value
+  if (!tRow) return false
+  const needsRoster =
+    (tRow.rosterMinPlayers != null && tRow.rosterMinPlayers > 0) ||
+    tRow.rosterMaxPlayers != null
+  if (!needsRoster) return false
+  return rosterSummary.value?.allConfirmed !== true
+})
+
 const canGenerateCalendar = computed(
   () =>
     !modPolicy.value.locksCalendarAndPlayoffAutomation &&
@@ -2300,7 +2347,8 @@ const canGenerateCalendar = computed(
     !calendarFormErrors.value.startDate &&
     !calendarFormErrors.value.endDate &&
     !calendarFormErrors.value.dayStartTimeDefault &&
-    !calendarFormErrors.value.schedule,
+    !calendarFormErrors.value.schedule &&
+    !rostersBlockCalendar.value,
 )
 
 watch(calendarDialog, (open) => {
@@ -2325,6 +2373,15 @@ const generateCalendar = async () => {
       summary: t('admin.tournament_page.calendar_manual_summary'),
       detail: t('admin.tournament_page.calendar_manual_detail'),
       life: 4000,
+    })
+    return
+  }
+  if (rostersBlockCalendar.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_roster.calendar_blocked_title'),
+      detail: t('admin.tournament_roster.calendar_blocked_detail'),
+      life: 6500,
     })
     return
   }
@@ -4149,6 +4206,7 @@ onMounted(async () => {
           :teams="tournament.tournamentTeams ?? []"
           :can-manage="canEditTournament"
           class="mb-4"
+          @updated="fetchRosterSummary"
         />
         <div class="grid gap-4 lg:grid-cols-3">
           <div class="flex flex-col gap-4 lg:col-span-2">

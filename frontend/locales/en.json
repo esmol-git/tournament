@@ -1259,7 +1259,7 @@
     },
     "tournament_roster": {
       "title": "Tournament roster",
-      "lead": "Select players for this tournament. Ineligible players are flagged automatically.",
+      "lead": "Select active team players for this tournament. Ineligible players are flagged automatically.",
       "pick_team": "Team",
       "no_teams": "Add teams to the tournament first.",
       "load_error": "Failed to load roster",
@@ -1287,7 +1287,15 @@
       "import_partial": "Imported: {imported}, skipped: {skipped}",
       "import_error": "CSV import failed",
       "template_download_error": "Could not download template",
-      "pick_csv_file": "Choose a CSV file"
+      "pick_csv_file": "Choose a CSV file",
+      "select_all_eligible": "Select all eligible",
+      "confirm_all": "Confirm all rosters",
+      "confirm_all_done": "Confirmed teams: {confirmed}, skipped: {failed}",
+      "confirm_all_error": "Could not confirm rosters",
+      "unconfirmed_teams": "Unconfirmed: {count}",
+      "all_confirmed": "All rosters confirmed",
+      "calendar_blocked_title": "Confirm rosters first",
+      "calendar_blocked_detail": "Every team needs a confirmed roster within tournament limits."
     },
     "stub": {
       "placeholder": "This section is under construction.",

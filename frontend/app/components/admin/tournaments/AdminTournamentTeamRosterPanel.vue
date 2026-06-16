@@ -33,6 +33,10 @@ const props = defineProps<{
   canManage: boolean
 }>()
 
+const emit = defineEmits<{
+  updated: []
+}>()
+
 const { token, authFetch, authFetchBlob } = useAuth()
 const { apiUrl } = useApiUrl()
 const toast = useToast()
@@ -42,6 +46,7 @@ const selectedTeamId = ref<string | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const submitting = ref(false)
+const confirmingAll = ref(false)
 const templateDownloading = ref(false)
 const csvImporting = ref(false)
 const createMissingPlayers = ref(true)
@@ -56,6 +61,45 @@ const limits = ref<{
   deadlineAt: string | null
 } | null>(null)
 const loadError = ref<string | null>(null)
+
+type RosterSummaryItem = {
+  teamId: string
+  teamName: string
+  playerCount: number
+  status: string
+  ok: boolean
+  reason?: string
+}
+
+const rosterSummary = ref<{
+  items: RosterSummaryItem[]
+  allConfirmed: boolean
+  requiresRoster: boolean
+} | null>(null)
+
+const eligibleCandidates = computed(() => candidates.value.filter((c) => c.eligible))
+
+const eligibleSelectedCount = computed(
+  () => eligibleCandidates.value.filter((c) => selectedPlayerIds.value.includes(c.playerId)).length,
+)
+
+const allEligibleSelected = computed(() => {
+  if (!eligibleCandidates.value.length) return false
+  const max = limits.value?.maxPlayers
+  const limit = max != null ? Math.min(max, eligibleCandidates.value.length) : eligibleCandidates.value.length
+  return eligibleSelectedCount.value >= limit
+})
+
+const selectAllIndeterminate = computed(() => {
+  const n = eligibleSelectedCount.value
+  const max = limits.value?.maxPlayers
+  const target = max != null ? Math.min(max, eligibleCandidates.value.length) : eligibleCandidates.value.length
+  return n > 0 && n < target
+})
+
+const unconfirmedTeamsCount = computed(
+  () => rosterSummary.value?.items.filter((i) => !i.ok).length ?? 0,
+)
 
 const teamOptions = computed(() =>
   props.teams.map((tt) => ({
@@ -107,6 +151,30 @@ watch(selectedTeamId, () => {
   void loadRosterData()
 })
 
+watch(
+  () => props.teams,
+  () => {
+    void loadRosterSummary()
+  },
+  { deep: true },
+)
+
+function toggleSelectAllEligible() {
+  if (!props.canManage) return
+  const eligibleIds = eligibleCandidates.value.map((c) => c.playerId)
+  const max = limits.value?.maxPlayers
+  const targetIds =
+    max != null ? eligibleIds.slice(0, max) : eligibleIds
+
+  if (allEligibleSelected.value) {
+    const remove = new Set(targetIds)
+    selectedPlayerIds.value = selectedPlayerIds.value.filter((id) => !remove.has(id))
+    return
+  }
+
+  selectedPlayerIds.value = [...new Set([...selectedPlayerIds.value, ...targetIds])]
+}
+
 function playerLabel(p: RosterCandidate['player']) {
   return `${p.lastName} ${p.firstName}`.trim()
 }
@@ -115,6 +183,24 @@ function birthYear(birthDate?: string | null) {
   if (!birthDate) return '—'
   const y = new Date(birthDate).getUTCFullYear()
   return Number.isFinite(y) ? String(y) : '—'
+}
+
+async function loadRosterSummary() {
+  if (!token.value || !props.teams.length) {
+    rosterSummary.value = null
+    return
+  }
+  try {
+    rosterSummary.value = await authFetch<{
+      items: RosterSummaryItem[]
+      allConfirmed: boolean
+      requiresRoster: boolean
+    }>(apiUrl(`/tournaments/${props.tournamentId}/roster/summary`), {
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+  } catch {
+    rosterSummary.value = null
+  }
 }
 
 async function loadRosterData() {
@@ -153,6 +239,7 @@ async function loadRosterData() {
   } finally {
     loading.value = false
   }
+  void loadRosterSummary()
 }
 
 function togglePlayer(playerId: string, eligible: boolean) {
@@ -197,6 +284,7 @@ async function saveRoster() {
       summary: t('admin.tournament_roster.saved'),
       life: 3000,
     })
+    emit('updated')
   } catch (e: unknown) {
     toast.add({
       severity: 'error',
@@ -236,6 +324,7 @@ async function submitRoster() {
       summary: t('admin.tournament_roster.submitted'),
       life: 3000,
     })
+    emit('updated')
   } catch (e: unknown) {
     toast.add({
       severity: 'error',
@@ -328,6 +417,7 @@ async function importCsv() {
       life: 6000,
     })
     await loadRosterData()
+    emit('updated')
   } catch (e: unknown) {
     toast.add({
       severity: 'error',
@@ -340,8 +430,56 @@ async function importCsv() {
   }
 }
 
+async function confirmAllRosters() {
+  if (!token.value || !props.canManage) return
+  confirmingAll.value = true
+  try {
+    const res = await authFetch<{
+      confirmed: number
+      failed: number
+      results: Array<{ teamName: string; ok: boolean; message?: string }>
+      summary: {
+        items: RosterSummaryItem[]
+        allConfirmed: boolean
+        requiresRoster: boolean
+      }
+    }>(apiUrl(`/tournaments/${props.tournamentId}/roster/confirm-all`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    rosterSummary.value = res.summary ?? rosterSummary.value
+    if (selectedTeamId.value) await loadRosterData()
+    else void loadRosterSummary()
+    const errPreview = res.results
+      .filter((r) => !r.ok)
+      .slice(0, 3)
+      .map((r) => `${r.teamName}: ${r.message ?? '—'}`)
+      .join('; ')
+    toast.add({
+      severity: res.failed > 0 ? 'warn' : 'success',
+      summary: t('admin.tournament_roster.confirm_all_done', {
+        confirmed: res.confirmed,
+        failed: res.failed,
+      }),
+      detail: errPreview || undefined,
+      life: 8000,
+    })
+    emit('updated')
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_roster.confirm_all_error'),
+      detail: getApiErrorMessage(e),
+      life: 6500,
+    })
+  } finally {
+    confirmingAll.value = false
+  }
+}
+
 onMounted(() => {
   if (selectedTeamId.value) void loadRosterData()
+  else void loadRosterSummary()
 })
 </script>
 
@@ -363,6 +501,28 @@ onMounted(() => {
         severity="success"
         :value="t('admin.tournament_roster.status_submitted')"
       />
+      <Tag
+        v-else-if="rosterSummary && !rosterSummary.allConfirmed && unconfirmedTeamsCount > 0"
+        severity="warn"
+        :value="t('admin.tournament_roster.unconfirmed_teams', { count: unconfirmedTeamsCount })"
+      />
+    </div>
+
+    <div
+      v-if="canManage && teams.length > 1 && rosterSummary?.requiresRoster"
+      class="mt-3 flex flex-wrap items-center gap-2"
+    >
+      <Button
+        :label="t('admin.tournament_roster.confirm_all')"
+        icon="pi pi-check-circle"
+        size="small"
+        :loading="confirmingAll"
+        :disabled="rosterSummary.allConfirmed"
+        @click="confirmAllRosters"
+      />
+      <span v-if="rosterSummary.allConfirmed" class="text-xs text-muted-color">
+        {{ t('admin.tournament_roster.all_confirmed') }}
+      </span>
     </div>
 
     <div v-if="!teams.length" class="mt-4 text-sm text-muted-color">
@@ -452,6 +612,17 @@ onMounted(() => {
           :empty-message="t('admin.tournament_roster.empty_candidates')"
         >
           <Column style="width: 3rem">
+            <template #header>
+              <Checkbox
+                v-if="canManage"
+                :model-value="allEligibleSelected"
+                :indeterminate="selectAllIndeterminate"
+                :binary="true"
+                :disabled="!eligibleCandidates.length"
+                :aria-label="t('admin.tournament_roster.select_all_eligible')"
+                @update:model-value="toggleSelectAllEligible"
+              />
+            </template>
             <template #body="{ data }">
               <Checkbox
                 :model-value="selectedPlayerIds.includes(data.playerId)"

@@ -16,6 +16,7 @@ import {
   TournamentStatus,
   TournamentEnrollmentMode,
   TournamentEligibilityProfile,
+  TournamentRosterPlayerStatus,
   UserRole,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -445,6 +446,68 @@ export class TournamentsService {
     if (format === TournamentFormat.MANUAL) {
       throw new BadRequestException(
         'Для турнира с ручным расписанием автогенерация календаря недоступна.',
+      );
+    }
+  }
+
+  private async assertTournamentRostersConfirmedForCalendar(tournament: {
+    id: string
+    rosterMinPlayers: number | null
+    rosterMaxPlayers: number | null
+  }) {
+    const requiresRoster =
+      tournament.rosterMinPlayers != null || tournament.rosterMaxPlayers != null;
+    if (!requiresRoster) return;
+
+    const teams = await this.prisma.tournamentTeam.findMany({
+      where: { tournamentId: tournament.id },
+      select: { teamId: true, team: { select: { name: true } } },
+    });
+    if (!teams.length) return;
+
+    const rosterRows = await this.prisma.tournamentTeamPlayer.findMany({
+      where: { tournamentId: tournament.id },
+      select: { teamId: true, status: true },
+    });
+
+    const stats = new Map<string, { count: number; submitted: boolean }>();
+    for (const tt of teams) {
+      stats.set(tt.teamId, { count: 0, submitted: true });
+    }
+    for (const row of rosterRows) {
+      const stat = stats.get(row.teamId);
+      if (!stat) continue;
+      stat.count += 1;
+      if (row.status !== TournamentRosterPlayerStatus.SUBMITTED) {
+        stat.submitted = false;
+      }
+    }
+
+    const min = tournament.rosterMinPlayers;
+    const max = tournament.rosterMaxPlayers;
+    const problems: string[] = [];
+    for (const tt of teams) {
+      const stat = stats.get(tt.teamId) ?? { count: 0, submitted: false };
+      if (stat.count === 0) {
+        problems.push(`${tt.team.name}: состав не заполнен`);
+        continue;
+      }
+      if (!stat.submitted) {
+        problems.push(`${tt.team.name}: состав не подтверждён`);
+        continue;
+      }
+      if (min != null && stat.count < min) {
+        problems.push(`${tt.team.name}: в составе ${stat.count}, нужно минимум ${min}`);
+        continue;
+      }
+      if (max != null && stat.count > max) {
+        problems.push(`${tt.team.name}: в составе ${stat.count}, максимум ${max}`);
+      }
+    }
+
+    if (problems.length) {
+      throw new BadRequestException(
+        `Подтвердите составы всех команд перед генерацией календаря. ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? '…' : ''}`,
       );
     }
   }
@@ -5268,6 +5331,7 @@ export class TournamentsService {
     if (!tournament) throw new BadRequestException('Tournament not found');
     await this.assertTournamentAutomationAllowed(tournament.tenantId);
     this.assertNotManualCalendarFormat(tournament.format);
+    await this.assertTournamentRostersConfirmedForCalendar(tournament);
 
     const teamRatingsById: Record<string, number> = {};
     for (const tt of tournament.tournamentTeams) {

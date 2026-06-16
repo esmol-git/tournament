@@ -601,4 +601,167 @@ export class TournamentRostersService {
       roster,
     };
   }
+
+  async getSummaryForTournament(tournamentId: string, user: JwtPayload) {
+    const tournament = await this.loadTournamentContext(tournamentId);
+    if (
+      user.tenantId !== tournament.tenantId &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException('Нет доступа к ресурсу другой организации');
+    }
+
+    const teams = await this.prisma.tournamentTeam.findMany({
+      where: { tournamentId },
+      orderBy: { createdAt: 'asc' },
+      include: { team: { select: { id: true, name: true } } },
+    });
+
+    const rosterRows = await this.prisma.tournamentTeamPlayer.findMany({
+      where: { tournamentId },
+      select: { teamId: true, status: true },
+    });
+
+    const statsByTeam = new Map<string, { count: number; submitted: boolean }>();
+    for (const tt of teams) {
+      statsByTeam.set(tt.teamId, { count: 0, submitted: true });
+    }
+    for (const row of rosterRows) {
+      const stat = statsByTeam.get(row.teamId);
+      if (!stat) continue;
+      stat.count += 1;
+      if (row.status !== TournamentRosterPlayerStatus.SUBMITTED) {
+        stat.submitted = false;
+      }
+    }
+
+    const min = tournament.rosterMinPlayers;
+    const max = tournament.rosterMaxPlayers;
+    const requiresRoster = min != null || max != null;
+
+    const items = teams.map((tt) => {
+      const stat = statsByTeam.get(tt.teamId) ?? { count: 0, submitted: false };
+      let ok = true;
+      let reason: string | undefined;
+      if (!requiresRoster) {
+        ok = stat.count === 0 || stat.submitted;
+        if (!ok) reason = 'Состав не подтверждён';
+      } else if (stat.count === 0) {
+        ok = false;
+        reason = 'Состав не заполнен';
+      } else if (!stat.submitted) {
+        ok = false;
+        reason = 'Состав не подтверждён';
+      } else if (min != null && stat.count < min) {
+        ok = false;
+        reason = `Меньше минимума (${min})`;
+      } else if (max != null && stat.count > max) {
+        ok = false;
+        reason = `Больше максимума (${max})`;
+      }
+      return {
+        teamId: tt.teamId,
+        teamName: tt.team.name,
+        playerCount: stat.count,
+        status: stat.count === 0 ? 'EMPTY' : stat.submitted ? 'SUBMITTED' : 'DRAFT',
+        ok,
+        reason,
+      };
+    });
+
+    return {
+      items,
+      allConfirmed: items.length > 0 && items.every((i) => i.ok),
+      requiresRoster,
+      limits: {
+        minPlayers: min,
+        maxPlayers: max,
+      },
+    };
+  }
+
+  async confirmAllForTournament(tournamentId: string, user: JwtPayload) {
+    await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
+    const tournament = await this.loadTournamentContext(tournamentId);
+    if (tournament.status !== TournamentStatus.DRAFT) {
+      throw new BadRequestException(
+        'Составы можно менять только пока турнир в черновике',
+      );
+    }
+
+    const teams = await this.prisma.tournamentTeam.findMany({
+      where: { tournamentId },
+      select: { teamId: true, team: { select: { name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const results: Array<{
+      teamId: string
+      teamName: string
+      ok: boolean
+      playerCount?: number
+      message?: string
+    }> = [];
+
+    for (const tt of teams) {
+      try {
+        const { items } = await this.listEligibleCandidates(
+          tournamentId,
+          tt.teamId,
+          user,
+        );
+        const eligible = items.filter((c) => c.eligible);
+        const min = tournament.rosterMinPlayers ?? 1;
+        const max = tournament.rosterMaxPlayers ?? eligible.length;
+
+        if (eligible.length < min) {
+          results.push({
+            teamId: tt.teamId,
+            teamName: tt.team.name,
+            ok: false,
+            message: `Подходящих игроков: ${eligible.length}, нужно минимум ${min}`,
+          });
+          continue;
+        }
+
+        const picked = eligible.slice(0, max);
+        await this.setForTeam(
+          tournamentId,
+          tt.teamId,
+          {
+            players: picked.map((p) => ({
+              playerId: p.playerId,
+              ...(p.jerseyNumber != null ? { jerseyNumber: p.jerseyNumber } : {}),
+            })),
+          },
+          user,
+        );
+        await this.submitForTeam(tournamentId, tt.teamId, user);
+        results.push({
+          teamId: tt.teamId,
+          teamName: tt.team.name,
+          ok: true,
+          playerCount: picked.length,
+        });
+      } catch (e: unknown) {
+        results.push({
+          teamId: tt.teamId,
+          teamName: tt.team.name,
+          ok: false,
+          message:
+            e instanceof BadRequestException
+              ? String(e.message)
+              : 'Не удалось подтвердить состав',
+        });
+      }
+    }
+
+    const confirmed = results.filter((r) => r.ok).length;
+    return {
+      confirmed,
+      failed: results.length - confirmed,
+      results,
+      summary: await this.getSummaryForTournament(tournamentId, user),
+    };
+  }
 }
