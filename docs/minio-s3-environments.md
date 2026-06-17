@@ -43,18 +43,41 @@ S3_SECRET_KEY=minioadmin
 
 - **Backend** подключается к MinIO по **внутреннему** адресу (часто `http://127.0.0.1:9000`), чтобы не гонять трафик S3 наружу и обойтись без лишнего NAT.
 - **Браузеры пользователей** не должны получать ссылки вида `http://127.0.0.1:9000/...` или `http://46.8.78.207:9000/...` — это не откроется у клиента или даст mixed content на HTTPS-сайте.
-- Задайте **`S3_PUBLIC_BASE_URL`** — базовый URL, по которому **публично** отдаются объекты бакета (path-style: `/имя_бакета/ключ`):
+- **Рекомендуемый вариант (прокси через API):** задайте **`PUBLIC_FILES_BASE_URL`** — тогда `POST /upload` и картинки в UI идут через тот же домен, что и API (`https://api.tournament-platform.ru/public/files/...`). Backend читает файл из MinIO по `S3_ENDPOINT`. Отдельный поддомен `files.*` не обязателен.
+- **Альтернатива:** **`S3_PUBLIC_BASE_URL`** — базовый URL, по которому **публично** отдаются объекты бакета (path-style: `/имя_бакета/ключ`):
 
   - либо отдельный поддомен и Nginx reverse proxy на MinIO (например `https://files.tournament-platform.ru` → `http://127.0.0.1:9000`),
   - либо внешний S3 (AWS и т.д.) — тогда `S3_PUBLIC_BASE_URL` совпадает с публичным endpoint провайдера.
 
-Пример фрагмента `.env` на сервере:
+Пример фрагмента `.env` на сервере (прокси через API):
+
+```env
+NODE_ENV=production
+S3_ENDPOINT=http://127.0.0.1:9000
+S3_BUCKET=images
+S3_ACCESS_KEY=...
+S3_SECRET_KEY=...
+PUBLIC_FILES_BASE_URL=https://api.tournament-platform.ru/public/files
+S3_CREATE_BUCKET_IF_MISSING=false
+```
+
+После смены переменных: `pm2 restart api --update-env` и пересборка фронта (`NUXT_PUBLIC_API_BASE` без изменений).
+
+Проверка:
+
+```bash
+curl -I "https://api.tournament-platform.ru/public/files/tenants/<tenantId>/players/<file>.webp"
+```
+
+Старые URL в БД вида `https://files.tournament-platform.ru/images/tenants/...` фронт переписывает на API-прокси автоматически (`utils/storageUrl.ts`).
+
+Пример фрагмента `.env` на сервере (отдельный поддомен files):
 
 ```env
 NODE_ENV=production
 S3_ENDPOINT=http://127.0.0.1:9000
 S3_PUBLIC_BASE_URL=https://files.tournament-platform.ru
-S3_BUCKET=tournament-uploads
+S3_BUCKET=images
 S3_ACCESS_KEY=...
 S3_SECRET_KEY=...
 S3_CREATE_BUCKET_IF_MISSING=false

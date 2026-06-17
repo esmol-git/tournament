@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
@@ -9,6 +9,7 @@ import type { MatchScheduleReasonRow } from '~/types/admin/match-schedule-reason
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import { referenceCodeFromName } from '~/utils/referenceCode'
 
 definePageMeta({
   layout: 'admin',
@@ -50,6 +51,22 @@ const form = reactive({
   active: true,
   note: '',
 })
+const codeTouched = ref(false)
+
+watch(
+  () => form.name,
+  (name) => {
+    if (isEdit.value) return
+    if (codeTouched.value) return
+    if (form.code.trim()) return
+    form.code = referenceCodeFromName(name)
+  },
+)
+
+const generateCode = () => {
+  form.code = referenceCodeFromName(form.name)
+  codeTouched.value = true
+}
 const submitAttempted = ref(false)
 const rules = computed(() => ({ name: { required } }))
 const v$ = useVuelidate(rules, form, { $autoDirty: true })
@@ -77,6 +94,7 @@ const openCreate = () => {
   editing.value = null
   form.name = ''
   form.code = ''
+  codeTouched.value = false
   form.scope = 'BOTH'
   form.sortOrder = 0
   form.active = true
@@ -90,6 +108,7 @@ const openEdit = (row: MatchScheduleReasonRow) => {
   editing.value = row
   form.name = row.name
   form.code = row.code ?? ''
+  codeTouched.value = true
   form.scope = row.scope
   form.sortOrder = row.sortOrder
   form.active = row.active
@@ -296,7 +315,10 @@ onMounted(() => {
         </div>
         <div>
           <label class="text-sm block mb-1">Код</label>
-          <InputText v-model="form.code" class="w-full" placeholder="WEATHER" />
+          <div class="flex gap-2">
+            <InputText v-model="form.code" class="w-full" placeholder="WEATHER" @input="codeTouched = true" />
+            <Button type="button" label="Сгенерировать" severity="secondary" outlined @click="generateCode" />
+          </div>
         </div>
         <div>
           <label class="text-sm block mb-1">Область применения *</label>

@@ -42,11 +42,11 @@ const { data: edition, pending, error } = await useAsyncData(
 <template>
   <div v-if="ready" class="mx-auto max-w-4xl px-4 py-8">
     <NuxtLink :to="`/${tenantSlug}/editions`" class="text-sm text-primary-500 hover:underline">
-      ← Все зачёты
+      ← Все серии
     </NuxtLink>
 
     <div v-if="pending" class="py-12 text-center text-muted-color">Загрузка…</div>
-    <p v-else-if="error" class="py-8 text-red-500">Зачёт не найден</p>
+    <p v-else-if="error" class="py-8 text-red-500">Серия не найдена</p>
     <template v-else-if="edition">
       <h1 class="mt-4 text-2xl font-bold text-surface-900 dark:text-surface-0">{{ edition.name }}</h1>
       <p class="mt-1 text-sm text-muted-color">

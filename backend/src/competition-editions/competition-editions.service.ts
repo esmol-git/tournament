@@ -92,8 +92,19 @@ export class CompetitionEditionsService {
       select: { id: true },
     });
     if (existing) {
-      throw new BadRequestException('Зачёт с таким slug уже существует');
+      throw new BadRequestException('Серия с таким slug уже существует');
     }
+  }
+
+  private async countActiveLinkedTournaments(tenantId: string, editionId: string) {
+    return this.prisma.tournament.count({
+      where: {
+        tenantId,
+        editionId,
+        status: TournamentStatus.ACTIVE,
+        published: true,
+      },
+    });
   }
 
   private parseOptionalDate(value?: string | null) {
@@ -169,7 +180,7 @@ export class CompetitionEditionsService {
       where: { id, tenantId },
       include: editionDetailInclude,
     });
-    if (!row) throw new NotFoundException('Зачёт не найден');
+    if (!row) throw new NotFoundException('Серия не найдена');
     return row;
   }
 
@@ -216,6 +227,12 @@ export class CompetitionEditionsService {
       },
     });
 
+    if (created.published || created.status === EditionStatus.ACTIVE) {
+      throw new BadRequestException(
+        'Нельзя публиковать/активировать серию без привязки активного турнира.',
+      );
+    }
+
     if (dto.eligibility) {
       await this.upsertEditionEligibility(
         tenantId,
@@ -233,7 +250,7 @@ export class CompetitionEditionsService {
     const row = await this.prisma.competitionEdition.findFirst({
       where: { id, tenantId },
     });
-    if (!row) throw new NotFoundException('Зачёт не найден');
+    if (!row) throw new NotFoundException('Серия не найдена');
 
     if (dto.slug !== undefined) {
       const slug = this.normalizeSlug(dto.slug);
@@ -310,6 +327,15 @@ export class CompetitionEditionsService {
       },
     });
 
+    if (updated.published || updated.status === EditionStatus.ACTIVE) {
+      const activeCount = await this.countActiveLinkedTournaments(tenantId, id);
+      if (activeCount < 1) {
+        throw new BadRequestException(
+          'Нельзя публиковать/активировать серию без привязки активного турнира.',
+        );
+      }
+    }
+
     if (dto.eligibility) {
       await this.upsertEditionEligibility(
         tenantId,
@@ -332,10 +358,10 @@ export class CompetitionEditionsService {
       where: { id, tenantId },
       include: { _count: { select: { tournaments: true } } },
     });
-    if (!row) throw new NotFoundException('Зачёт не найден');
+    if (!row) throw new NotFoundException('Серия не найдена');
     if (row._count.tournaments > 0) {
       throw new BadRequestException(
-        'Нельзя удалить зачёт с привязанными турнирами. Сначала отвяжите турниры.',
+        'Нельзя удалить серию с привязанными турнирами. Сначала отвяжите турниры.',
       );
     }
     await this.prisma.competitionEdition.delete({ where: { id } });
@@ -374,7 +400,7 @@ export class CompetitionEditionsService {
     const edition = await this.prisma.competitionEdition.findFirst({
       where: { id: editionId, tenantId },
     });
-    if (!edition) throw new NotFoundException('Зачёт не найден');
+    if (!edition) throw new NotFoundException('Серия не найдена');
 
     const tournament = await this.prisma.tournament.findFirst({
       where: { id: tournamentId, tenantId },
@@ -383,7 +409,7 @@ export class CompetitionEditionsService {
     if (!tournament) throw new NotFoundException('Турнир не найден');
     if (tournament.editionId && tournament.editionId !== editionId) {
       throw new BadRequestException(
-        'Турнир уже привязан к другому зачёту. Сначала отвяжите его.',
+        'Турнир уже привязан к другой серии. Сначала отвяжите его.',
       );
     }
 
@@ -417,7 +443,7 @@ export class CompetitionEditionsService {
       select: { id: true },
     });
     if (!tournament) {
-      throw new NotFoundException('Турнир не найден в этом зачёте');
+      throw new NotFoundException('Турнир не найден в этой серии');
     }
 
     await this.prisma.tournament.update({
@@ -427,6 +453,17 @@ export class CompetitionEditionsService {
         regulationMode: TournamentRegulationMode.INHERIT,
       },
     });
+
+    const activeLeft = await this.countActiveLinkedTournaments(tenantId, editionId);
+    if (activeLeft < 1) {
+      await this.prisma.competitionEdition.update({
+        where: { id: editionId },
+        data: {
+          published: false,
+          status: EditionStatus.DRAFT,
+        },
+      });
+    }
 
     return this.getById(tenantId, editionId);
   }

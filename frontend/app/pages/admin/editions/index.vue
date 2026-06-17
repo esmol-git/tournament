@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
@@ -11,6 +11,8 @@ import type { CompetitionRow } from '~/types/admin/competition'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import { slugifyFromTitle } from '~/utils/slugify'
+import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 
 definePageMeta({
   layout: 'admin',
@@ -30,11 +32,17 @@ const { items, loading, error, isEmpty, run, retry } = useAdminAsyncListState<Co
   clearItemsOnError: true,
 })
 
+const SKELETON_ROW_COUNT = 6
+const skeletonRows = Array.from({ length: SKELETON_ROW_COUNT }, (_, i) => ({ id: `edn-sk-${i}` }))
+
 const seasons = ref<SeasonRow[]>([])
 const competitions = ref<CompetitionRow[]>([])
 const refsLoading = ref(false)
 const saving = ref(false)
 const showForm = ref(false)
+const deleteDialogVisible = ref(false)
+const deleteTarget = ref<CompetitionEditionListRow | null>(null)
+const deleteSaving = ref(false)
 
 const form = reactive({
   name: '',
@@ -76,14 +84,29 @@ const statusOptions = computed(() => [
   { label: t('admin.editions.status_archived'), value: 'ARCHIVED' },
 ])
 
-function slugifyName(name: string) {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9а-яё]+/gi, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80)
+function ensureUniqueSlug(base: string, reserved: Set<string>) {
+  const trimmed = String(base ?? '').trim().toLowerCase().slice(0, 80)
+  if (!trimmed) return ''
+  if (!reserved.has(trimmed)) return trimmed
+  for (let i = 2; i < 10_000; i++) {
+    const next = `${trimmed}-${i}`.slice(0, 80)
+    if (!reserved.has(next)) return next
+  }
+  return trimmed
 }
+
+const slugTouched = ref(false)
+const existingSlugs = computed(() => new Set(items.value.map((x) => String(x.slug ?? '').toLowerCase())))
+
+watch(
+  () => form.name,
+  (name) => {
+    if (slugTouched.value) return
+    if (form.slug.trim()) return
+    const base = slugifyFromTitle(name, '')
+    form.slug = ensureUniqueSlug(base, existingSlugs.value)
+  },
+)
 
 const fetchItems = async () => {
   if (!token.value) {
@@ -114,10 +137,18 @@ const fetchRefs = async () => {
   }
 }
 
+const openEdition = (row: CompetitionEditionListRow) => {
+  router.push({
+    path: `/admin/editions/${row.id}`,
+    state: { editionPreview: { name: row.name, slug: row.slug } },
+  })
+}
+
 const openCreate = () => {
   submitAttempted.value = false
   form.name = ''
   form.slug = ''
+  slugTouched.value = false
   form.description = ''
   form.seasonId = seasons.value[0]?.id ?? ''
   form.competitionId = competitions.value[0]?.id ?? ''
@@ -127,6 +158,31 @@ const openCreate = () => {
   form.published = false
   v$.value.$reset()
   showForm.value = true
+}
+
+const openDeleteDialog = (row: CompetitionEditionListRow) => {
+  deleteTarget.value = row
+  deleteDialogVisible.value = true
+}
+
+const confirmDelete = async () => {
+  if (!token.value || !deleteTarget.value) return
+  const row = deleteTarget.value
+  deleteSaving.value = true
+  try {
+    await authFetch(apiUrl(`/tenants/${tenantId.value}/editions/${row.id}`), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    toast.add({ severity: 'success', summary: 'Удалено', life: 2500 })
+    deleteDialogVisible.value = false
+    deleteTarget.value = null
+    await fetchItems()
+  } catch (e) {
+    toast.add({ severity: 'error', summary: getApiErrorMessage(e), life: 5000 })
+  } finally {
+    deleteSaving.value = false
+  }
 }
 
 const save = async () => {
@@ -153,7 +209,10 @@ const save = async () => {
     })
     toast.add({ severity: 'success', summary: t('admin.editions.created'), life: 3000 })
     showForm.value = false
-    await router.push(`/admin/editions/${created.id}`)
+    await router.push({
+      path: `/admin/editions/${created.id}`,
+      state: { editionPreview: { name: form.name.trim(), slug: form.slug.trim() } },
+    })
   } catch (e) {
     toast.add({ severity: 'error', summary: getApiErrorMessage(e), life: 5000 })
   } finally {
@@ -169,8 +228,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="admin-page-stack">
-    <div class="flex flex-wrap items-start justify-between gap-3">
+  <section class="admin-page space-y-4 sm:space-y-6">
+    <header class="admin-toolbar-responsive flex flex-wrap items-start justify-between gap-2 sm:gap-3">
       <div>
         <h1 class="text-xl font-bold text-surface-900 dark:text-surface-0 sm:text-2xl">
           {{ t('admin.editions.title') }}
@@ -180,23 +239,61 @@ onMounted(async () => {
         </p>
       </div>
       <Button :label="t('admin.editions.create')" icon="pi pi-plus" @click="openCreate" />
-    </div>
+    </header>
 
     <AdminDataState
       :loading="loading"
       :error="error"
-      :is-empty="isEmpty"
+      :empty="isEmpty"
+      empty-title="Пока нет серий"
+      empty-description="Создайте серию, а затем привяжите к ней один или несколько турниров — сезон, тип соревнования и регламент будут общими."
+      empty-icon="pi pi-sitemap"
+      error-title="Не удалось загрузить серии"
       @retry="retry(fetchItems)"
     >
+      <template #loading>
+        <div class="min-h-[22rem]">
+          <div
+            class="grid grid-cols-[minmax(0,1fr)_8rem_10rem_5rem_7rem_3rem] items-center gap-3 border-b border-surface-200 bg-surface-50/80 px-4 py-3 text-xs uppercase tracking-wide text-muted-color dark:border-surface-700 dark:bg-surface-800/50"
+          >
+            <Skeleton height="0.75rem" width="6rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="6rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="3rem" class="rounded-md" />
+            <Skeleton height="0.75rem" width="4rem" class="rounded-md" />
+            <div class="flex justify-end">
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+            </div>
+          </div>
+          <div
+            v-for="row in skeletonRows"
+            :key="row.id"
+            class="grid grid-cols-[minmax(0,1fr)_8rem_10rem_5rem_7rem_3rem] items-center gap-3 border-b border-surface-100 px-4 py-3.5 dark:border-surface-800 last:border-0"
+          >
+            <Skeleton width="70%" height="1rem" class="rounded-md max-w-xs" />
+            <Skeleton width="55%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="75%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="35%" height="0.875rem" class="rounded-md" />
+            <Skeleton width="55%" height="0.875rem" class="rounded-md" />
+            <div class="flex justify-end">
+              <Skeleton shape="circle" width="2rem" height="2rem" />
+            </div>
+          </div>
+        </div>
+      </template>
+      <template #empty-actions>
+        <Button :label="t('admin.editions.create')" icon="pi pi-plus" @click="openCreate" />
+      </template>
       <div class="overflow-x-auto rounded-xl border border-surface-200 dark:border-surface-700">
-        <table class="w-full min-w-[720px] text-sm">
+        <table class="w-full min-w-[640px] table-fixed text-sm">
           <thead class="bg-surface-50 text-left text-xs uppercase tracking-wide text-muted-color dark:bg-surface-900">
             <tr>
               <th class="px-4 py-3">{{ t('admin.editions.col_name') }}</th>
-              <th class="px-4 py-3">{{ t('admin.editions.col_season') }}</th>
-              <th class="px-4 py-3">{{ t('admin.editions.col_competition') }}</th>
-              <th class="px-4 py-3">{{ t('admin.editions.col_tournaments') }}</th>
-              <th class="px-4 py-3">{{ t('admin.editions.col_status') }}</th>
+              <th class="px-4 py-3 w-32">{{ t('admin.editions.col_season') }}</th>
+              <th class="px-4 py-3 w-44">{{ t('admin.editions.col_competition') }}</th>
+              <th class="px-4 py-3 w-20">{{ t('admin.editions.col_tournaments') }}</th>
+              <th class="px-4 py-3 w-28">{{ t('admin.editions.col_status') }}</th>
+              <th class="px-2 py-3 w-12 text-right"></th>
             </tr>
           </thead>
           <tbody>
@@ -204,17 +301,27 @@ onMounted(async () => {
               v-for="row in items"
               :key="row.id"
               class="cursor-pointer border-t border-surface-200 hover:bg-surface-50 dark:border-surface-700 dark:hover:bg-surface-900/60"
-              @click="router.push(`/admin/editions/${row.id}`)"
+              @click="openEdition(row)"
             >
-              <td class="px-4 py-3 font-medium text-surface-900 dark:text-surface-0">
+              <td class="px-4 py-3 font-medium text-surface-900 dark:text-surface-0 truncate">
                 {{ row.name }}
                 <span v-if="row.published" class="ml-2 text-xs text-primary-500">{{ t('admin.editions.published_badge') }}</span>
               </td>
-              <td class="px-4 py-3 text-muted-color">{{ row.season.name }}</td>
-              <td class="px-4 py-3 text-muted-color">{{ row.competition.name }}</td>
+              <td class="px-4 py-3 text-muted-color truncate">{{ row.season.name }}</td>
+              <td class="px-4 py-3 text-muted-color truncate">{{ row.competition.name }}</td>
               <td class="px-4 py-3">{{ row._count.tournaments }}</td>
               <td class="px-4 py-3">
                 <Tag :value="row.status" severity="secondary" />
+              </td>
+              <td class="px-2 py-3 text-right">
+                <Button
+                  icon="pi pi-trash"
+                  text
+                  rounded
+                  severity="danger"
+                  :disabled="row._count.tournaments > 0"
+                  @click.stop="openDeleteDialog(row)"
+                />
               </td>
             </tr>
           </tbody>
@@ -222,15 +329,20 @@ onMounted(async () => {
       </div>
     </AdminDataState>
 
-    <Dialog v-model:visible="showForm" modal :header="t('admin.editions.create')" :style="{ width: '36rem' }">
+    <Dialog
+      v-model:visible="showForm"
+      modal
+      :header="t('admin.editions.create')"
+      :style="{ width: 'min(36rem, calc(100vw - 2rem))' }"
+    >
       <div class="flex flex-col gap-3">
         <div>
           <label class="mb-1 block text-xs font-medium text-muted-color">{{ t('admin.editions.field_name') }}</label>
-          <InputText v-model="form.name" class="w-full" @blur="form.slug = form.slug || slugifyName(form.name)" />
+          <InputText v-model="form.name" class="w-full" />
         </div>
         <div>
           <label class="mb-1 block text-xs font-medium text-muted-color">Slug</label>
-          <InputText v-model="form.slug" class="w-full" />
+          <InputText v-model="form.slug" class="w-full" @input="slugTouched = true" />
         </div>
         <div class="grid gap-3 sm:grid-cols-2">
           <div>
@@ -262,5 +374,30 @@ onMounted(async () => {
         <Button :label="t('admin.editions.save')" icon="pi pi-check" :loading="saving" @click="save" />
       </template>
     </Dialog>
-  </div>
+
+    <Dialog
+      v-model:visible="deleteDialogVisible"
+      modal
+      header="Удалить серию"
+      :style="{ width: 'min(28rem, calc(100vw - 2rem))' }"
+    >
+      <p class="m-0 text-sm text-muted-color">
+        {{ deleteTarget?.name }}
+      </p>
+      <p class="mt-2 text-sm text-muted-color">
+        Удаление возможно только если нет привязанных турниров.
+      </p>
+      <div class="mt-4 flex justify-end gap-2">
+        <Button type="button" label="Отмена" severity="secondary" text @click="deleteDialogVisible = false" />
+        <Button
+          type="button"
+          label="Удалить"
+          severity="danger"
+          :loading="deleteSaving"
+          :disabled="deleteSaving"
+          @click="confirmDelete"
+        />
+      </div>
+    </Dialog>
+  </section>
 </template>

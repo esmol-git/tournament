@@ -8,7 +8,7 @@ import {
   Min,
 } from 'class-validator';
 
-/** Регламент допуска на уровне зачёта (создаёт/обновляет EligibilityPolicy). */
+/** Регламент допуска на уровне серии (создаёт/обновляет EligibilityPolicy). */
 export class EditionEligibilityDto {
   @IsOptional()
   @IsString()

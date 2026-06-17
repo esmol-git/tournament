@@ -92,6 +92,7 @@ const toc: TocItem[] = [
       { id: 'refs-overview', label: 'Зачем справочники' },
       { id: 'refs-season-competition', label: 'Сезон и соревнование' },
       { id: 'refs-age-teamcat', label: 'Возраст и категории' },
+      { id: 'refs-age-convention', label: 'Y / A / OPEN' },
       { id: 'refs-stadiums', label: 'Стадионы' },
       { id: 'refs-referees', label: 'Судьи' },
       { id: 'refs-protocol', label: 'Протокол и переносы' },
@@ -974,6 +975,50 @@ function isChildActive(id: string) {
         <p class="docs-p">
           Это два разных слоя правил. Их часто путают — в таблице ниже ключевое отличие.
         </p>
+
+        <h4 id="refs-age-convention" class="docs-h4 scroll-mt-28">Соглашение Y / A / OPEN</h4>
+        <p class="docs-p">
+          В справочнике «Возрастные группы» используйте <strong>единые коды</strong> — их не переименовывают каждый
+          сезон. Меняются только новые сезоны, турниры и (для взрослых) макс. год рождения у групп A##.
+        </p>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Префикс</th>
+                <th>Пример кода</th>
+                <th>Название</th>
+                <th>Годы рождения</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Y</strong> — дети, один год рождения</td>
+                <td><code>Y2018</code></td>
+                <td>2018 г.р.</td>
+                <td>мин = макс = 2018</td>
+              </tr>
+              <tr>
+                <td><strong>A</strong> — взрослые, от N лет</td>
+                <td><code>A35</code></td>
+                <td>Взрослые 35+</td>
+                <td>только макс. год (на 1 янв. сезона)</td>
+              </tr>
+              <tr>
+                <td><strong>OPEN</strong></td>
+                <td><code>OPEN</code></td>
+                <td>Открытая категория</td>
+                <td>без ограничений</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="docs-p">
+          <strong>Пример «Золотое кольцо»:</strong> кнопка «Набор Y…» создаёт Y2012…Y2020 за раз. Каждый весенний турнир
+          привязывается к своей группе (например Y2018); из года в год код <code>Y2018</code> тот же — новый только
+          сезон и карточка турнира.
+        </p>
+
         <div class="docs-table-wrap">
           <table class="docs-table">
             <thead>

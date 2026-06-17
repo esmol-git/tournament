@@ -745,18 +745,37 @@ export class TournamentsService {
     });
   }
 
+  private expectedGroupCountForFormat(
+    format: TournamentFormat,
+    groupCount: number | null | undefined,
+  ): number | null {
+    if (format === TournamentFormat.GROUPS_2) return 2;
+    if (format === TournamentFormat.GROUPS_3) return 3;
+    if (format === TournamentFormat.GROUPS_4) return 4;
+    if (format === TournamentFormat.GROUPS_PLUS_PLAYOFF) {
+      return Math.min(8, Math.max(1, groupCount ?? 2));
+    }
+    if (format === TournamentFormat.MANUAL) {
+      return Math.min(8, Math.max(1, groupCount ?? 1));
+    }
+    return null;
+  }
+
   /**
    * UI кладёт команды без groupId в колонки по round-robin, а /table?groupId= читает только БД —
    * без записи groupId таблицы по группам пустые. Записываем то же распределение, что и initGroupColumns.
    */
-  private async ensureManualLooseTeamsAssignedToGroups(tournamentId: string) {
+  private async ensureLooseTeamsAssignedToGroups(tournamentId: string) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
       select: { format: true, groupCount: true },
     });
-    if (!tournament || tournament.format !== TournamentFormat.MANUAL) return;
-    const gc = Math.min(8, Math.max(1, tournament.groupCount ?? 1));
-    if (gc < 2) return;
+    if (!tournament) return;
+    const gc = this.expectedGroupCountForFormat(
+      tournament.format,
+      tournament.groupCount,
+    );
+    if (!gc || gc < 2) return;
 
     const groups = await this.prisma.tournamentGroup.findMany({
       where: { tournamentId },
@@ -3099,7 +3118,10 @@ export class TournamentsService {
         tournament.groupCount ?? 1,
         tournament.groups ?? [],
       );
-      await this.ensureManualLooseTeamsAssignedToGroups(id);
+    }
+
+    if (isGrouped || tournament.format === TournamentFormat.MANUAL) {
+      await this.ensureLooseTeamsAssignedToGroups(id);
     }
 
     const parseYmdToLocalBoundary = (ymd: string, endOfDay: boolean) => {

@@ -1279,6 +1279,7 @@ onMounted(() => {
     <DataTable
       :value="players"
       striped-rows
+      data-key="id"
       :row-class="(data: PlayerRow) => (data.isActive === false ? 'opacity-70' : undefined)"
       :paginator="showPlayersPaginator"
       lazy
@@ -1315,6 +1316,7 @@ onMounted(() => {
               :src="data.photoUrl"
               :alt="`${data.firstName} ${data.lastName}`"
               placeholder-icon="user"
+              :lazy="false"
               class="h-10 w-10 rounded-lg"
             />
             <span class="min-w-0 truncate font-medium text-surface-900 dark:text-surface-0">

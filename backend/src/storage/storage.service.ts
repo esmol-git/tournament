@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,6 +12,7 @@ import {
   CreateBucketCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   ListObjectsV2Command,
   PutBucketPolicyCommand,
@@ -18,6 +20,7 @@ import {
   type PutObjectCommandInput,
   S3Client,
 } from '@aws-sdk/client-s3';
+import type { Readable } from 'node:stream';
 
 function truthyEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
@@ -327,10 +330,8 @@ export class StorageService implements OnModuleInit {
         }
       }
 
-      const publicBase =
-        this.config.get<string>('S3_PUBLIC_BASE_URL')?.trim() || endpoint;
-      const base = publicBase.replace(/\/$/, '');
-      return `${base}/${bucket}/${key}`;
+      const publicUrl = this.buildPublicUrl(bucket, key);
+      return publicUrl;
     } catch (e: unknown) {
       if (e instanceof HttpException) {
         throw e;
@@ -373,6 +374,111 @@ export class StorageService implements OnModuleInit {
   }
 
   /**
+   * Публичный URL объекта: через API-прокси (`PUBLIC_FILES_BASE_URL`) или прямой S3/MinIO.
+   */
+  buildPublicUrl(bucket: string, key: string): string {
+    const proxyBase = this.config.get<string>('PUBLIC_FILES_BASE_URL')?.trim();
+    if (proxyBase) {
+      return `${proxyBase.replace(/\/$/, '')}/${key}`;
+    }
+    const endpoint = this.config.get<string>('S3_ENDPOINT')?.trim() ?? '';
+    const publicBase =
+      this.config.get<string>('S3_PUBLIC_BASE_URL')?.trim() || endpoint;
+    return `${publicBase.replace(/\/$/, '')}/${bucket}/${key}`;
+  }
+
+  /**
+   * Читает объект из S3 для публичного прокси.
+   */
+  async getObject(key: string): Promise<{
+    stream: Readable;
+    contentType: string;
+    contentLength?: number;
+  }> {
+    const bucket = this.config.get<string>('S3_BUCKET')?.trim();
+    if (!bucket) {
+      throw new InternalServerErrorException(
+        'S3 is not configured (S3_BUCKET)',
+      );
+    }
+    try {
+      const res = await this.client.send(
+        new GetObjectCommand({ Bucket: bucket, Key: key }),
+      );
+      if (!res.Body) {
+        throw new NotFoundException('File not found');
+      }
+      return {
+        stream: res.Body as Readable,
+        contentType: res.ContentType ?? 'application/octet-stream',
+        contentLength: res.ContentLength,
+      };
+    } catch (e: unknown) {
+      const meta = s3ErrorMeta(e);
+      if (meta.code === 'NoSuchKey' || meta.code === 'NotFound') {
+        throw new NotFoundException('File not found');
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Извлекает S3-ключ из публичного URL (прямой S3 или API-прокси).
+   */
+  extractObjectKeyFromPublicUrl(publicUrl: string): string | null {
+    let objectUrl: URL;
+    try {
+      objectUrl = new URL(publicUrl.trim());
+    } catch {
+      return null;
+    }
+
+    const pathname = decodeURIComponent(objectUrl.pathname);
+    const apiFilesPrefix = '/public/files/';
+    if (pathname.startsWith(apiFilesPrefix)) {
+      const key = pathname.slice(apiFilesPrefix.length);
+      return key || null;
+    }
+
+    // files.* /images/tenants/... (bucket в hostname path)
+    if (
+      objectUrl.hostname === 'files.tournament-platform.ru' ||
+      objectUrl.hostname.startsWith('files.')
+    ) {
+      const m = pathname.match(/^\/images\/(.+)$/);
+      if (m?.[1]) return m[1];
+    }
+
+    const bucket = this.config.get<string>('S3_BUCKET')?.trim();
+    if (!bucket) return null;
+
+    const allowedOrigins = new Set<string>();
+    const epO = tryParseOrigin(
+      this.config.get<string>('S3_ENDPOINT') ?? undefined,
+    );
+    if (epO) allowedOrigins.add(epO);
+    const pubO = tryParseOrigin(
+      this.config.get<string>('S3_PUBLIC_BASE_URL') ?? undefined,
+    );
+    if (pubO) allowedOrigins.add(pubO);
+    const proxyO = tryParseOrigin(
+      this.config.get<string>('PUBLIC_FILES_BASE_URL') ?? undefined,
+    );
+    if (proxyO) allowedOrigins.add(proxyO);
+
+    if (!allowedOrigins.has(objectUrl.origin)) {
+      return null;
+    }
+
+    const prefix = `/${bucket}/`;
+    if (!pathname.startsWith(prefix)) {
+      return null;
+    }
+    const key = pathname.slice(prefix.length);
+    return key || null;
+  }
+
+  /**
    * Удалить объект в нашем bucket, если publicUrl совпадает с S3_ENDPOINT
    * или с S3_PUBLIC_BASE_URL (path-style: /bucket/key).
    * Ошибки не пробрасываются — чтобы сбой хранилища не ломал бизнес-операцию.
@@ -382,38 +488,12 @@ export class StorageService implements OnModuleInit {
   ): Promise<void> {
     if (!publicUrl?.trim()) return;
 
-    const endpointRaw = this.config.get<string>('S3_ENDPOINT')?.trim();
     const bucket = this.config.get<string>('S3_BUCKET')?.trim();
     const accessKeyId = this.config.get<string>('S3_ACCESS_KEY')?.trim();
     const secretAccessKey = this.config.get<string>('S3_SECRET_KEY')?.trim();
-    if (!endpointRaw || !bucket || !accessKeyId || !secretAccessKey) return;
+    if (!bucket || !accessKeyId || !secretAccessKey) return;
 
-    let objectUrl: URL;
-    try {
-      objectUrl = new URL(publicUrl.trim());
-    } catch {
-      return;
-    }
-
-    const allowedOrigins = new Set<string>();
-    const epO = tryParseOrigin(endpointRaw);
-    if (epO) allowedOrigins.add(epO);
-    const pubO = tryParseOrigin(
-      this.config.get<string>('S3_PUBLIC_BASE_URL') ?? undefined,
-    );
-    if (pubO) allowedOrigins.add(pubO);
-
-    if (!allowedOrigins.has(objectUrl.origin)) {
-      return;
-    }
-
-    const prefix = `/${bucket}/`;
-    const { pathname } = objectUrl;
-    if (!pathname.startsWith(prefix)) {
-      return;
-    }
-
-    const key = decodeURIComponent(pathname.slice(prefix.length));
+    const key = this.extractObjectKeyFromPublicUrl(publicUrl);
     if (!key) return;
 
     try {

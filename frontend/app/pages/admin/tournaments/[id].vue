@@ -194,6 +194,71 @@ function initGroupColumns(res: TournamentDetails) {
   groupColumns.value = cols
 }
 
+function expectedGroupCountForTournament(t: TournamentDetails): number {
+  const f = t.format
+  if (f === 'GROUPS_2') return 2
+  if (f === 'GROUPS_3') return 3
+  if (f === 'GROUPS_4') return 4
+  if (isGroupsPlusPlayoffFamily(f)) return t.groupCount ?? 2
+  return t.groupCount ?? 1
+}
+
+function expectedGroupSizeForTournament(t: TournamentDetails): number | null {
+  const total = t.tournamentTeams?.length ?? 0
+  const gc = expectedGroupCountForTournament(t)
+  if (!gc || gc < 1 || total === 0) return null
+  if (total % gc !== 0) return null
+  return total / gc
+}
+
+function isGroupColumnsBalanced(cols: GroupColumn[], perGroup: number | null): boolean {
+  if (!perGroup || !cols.length) return false
+  const total = cols.reduce((sum, col) => sum + col.teams.length, 0)
+  if (total === 0) return false
+  return cols.every((col) => col.teams.length === perGroup)
+}
+
+function groupLayoutNeedsPersist(
+  t: TournamentDetails,
+  cols: GroupColumn[],
+): boolean {
+  const tts = t.tournamentTeams ?? []
+  if (!tts.length || !cols.length) return false
+  const byTeam = new Map(tts.map((tt) => [tt.teamId, tt.group?.id ?? null]))
+  for (const col of cols) {
+    for (const tt of col.teams) {
+      if (byTeam.get(tt.teamId) !== col.id) return true
+    }
+  }
+  return false
+}
+
+async function persistDefaultGroupLayoutIfNeeded(res: TournamentDetails) {
+  if (!token.value || !showGroupBucketsFor(res)) return
+  const matchesTotal =
+    res.summary?.matchesTotal ??
+    (res.matchNumberById ? Object.keys(res.matchNumberById).length : 0) ??
+    res.matches?.length ??
+    0
+  if (matchesTotal > 0 || res.status !== 'DRAFT') return
+  if (!groupLayoutNeedsPersist(res, groupColumns.value)) return
+  const perGroup = expectedGroupSizeForTournament(res)
+  if (!isGroupColumnsBalanced(groupColumns.value, perGroup)) return
+  try {
+    await syncGroupLayoutFromColumns()
+    const params = buildTournamentDetailQueryParams(0)
+    const qs = params.toString()
+    const url = apiUrl(`/tournaments/${tournamentId.value}?${qs}`)
+    const refreshed = await authFetch<TournamentDetails>(url, {
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    tournament.value = withResolvedMatchesTotal(refreshed)
+    initGroupColumns(refreshed)
+  } catch {
+    // Оставляем предпросмотр и баннер «Применить распределение».
+  }
+}
+
 const calendarForm = reactive({
   startDate: null as Date | null,
   endDate: null as Date | null,
@@ -571,6 +636,7 @@ const fetchTournament = async () => {
 
     if (showGroupBucketsFor(res)) {
       initGroupColumns(res)
+      await persistDefaultGroupLayoutIfNeeded(res)
     } else {
       groupColumns.value = []
     }
@@ -1164,14 +1230,15 @@ const calendarReadinessItems = computed((): { id: string; ok: boolean; label: st
 
     let distributionOk = false
     if (divisible && eg !== null && gc >= 1) {
+      const tts = tourn.tournamentTeams ?? []
       const groupsSorted = (tourn.groups ?? [])
         .slice()
         .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       const slice = groupsSorted.slice(0, gc)
-      if (slice.length >= gc && tc === gc * eg) {
+      if (slice.length >= gc && tts.length === gc * eg) {
         const counts = new Map<string, number>()
         let allHaveGroup = true
-        for (const tt of tourn.tournamentTeams ?? []) {
+        for (const tt of tts) {
           const gid = tt.group?.id
           if (!gid) {
             allHaveGroup = false
@@ -1181,16 +1248,24 @@ const calendarReadinessItems = computed((): { id: string; ok: boolean; label: st
         }
         if (allHaveGroup) {
           distributionOk = slice.every((g) => (counts.get(g.id) ?? 0) === eg)
+        } else if (isGroupColumnsBalanced(groupColumns.value, eg)) {
+          const cols = groupColumns.value.slice(0, gc)
+          const assigned = new Set(cols.flatMap((c) => c.teams.map((tt) => tt.teamId)))
+          distributionOk =
+            assigned.size === tts.length &&
+            cols.every((c) => c.teams.length === eg)
         }
       }
     }
 
     items.push({
       id: 'groups_balanced',
-      ok: distributionOk,
-      label: t('admin.tournament_page.readiness_groups_balanced', {
-        perGroup: eg ?? '—',
-      }),
+      ok: distributionOk && !groupLayoutUnsaved.value,
+      label: groupLayoutUnsaved.value
+        ? t('admin.tournament_page.readiness_groups_unsaved')
+        : t('admin.tournament_page.readiness_groups_balanced', {
+            perGroup: eg ?? '—',
+          }),
     })
   }
 
@@ -1249,7 +1324,9 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
     new Date(tRow.startsAt).getTime() <= new Date(tRow.endsAt).getTime()
   const groupsRequired = showGroupBucketsFor(tRow)
   const unassignedTeams = groupsRequired
-    ? (tRow.tournamentTeams ?? []).filter((tt) => !tt.group?.id).length
+    ? groupLayoutUnsaved.value
+      ? (tRow.tournamentTeams ?? []).filter((tt) => !tt.group?.id).length
+      : 0
     : 0
   const teamsStepRostersOk =
     tRow.rosterMinPlayers == null && tRow.rosterMaxPlayers == null
@@ -1265,14 +1342,14 @@ const launchWizardSteps = computed<LaunchWizardStep[]>(() => {
       teams < minTeams
         ? `Одобрите заявки: нужно минимум ${minTeams} команд (сейчас ${teams}). Откройте вкладку «Заявки».`
         : groupsRequired && unassignedTeams > 0
-          ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
+          ? t('admin.tournament_page.teams_step_groups_unsaved')
           : 'Команды добавлены через заявки.'
   } else {
     teamsStepHint =
       teams < minTeams
         ? `Добавьте минимум ${minTeams} команд (сейчас ${teams}).`
         : groupsRequired && unassignedTeams > 0
-          ? `Распределите команды по группам: без группы осталось ${unassignedTeams}.`
+          ? t('admin.tournament_page.teams_step_groups_unsaved')
           : 'Проверьте состав команд.'
   }
   if (tRow.rosterMinPlayers != null && tRow.rosterMinPlayers > 0) {
@@ -1696,23 +1773,18 @@ const updateTeamRating = async (teamId: string, rating: number) => {
   }
 }
 
-const expectedGroupCount = computed(() => {
-  const f = tournament.value?.format
-  const t = tournament.value
-  if (f === 'GROUPS_2') return 2
-  if (f === 'GROUPS_3') return 3
-  if (f === 'GROUPS_4') return 4
-  if (f === 'GROUPS_PLUS_PLAYOFF') return t?.groupCount ?? 2
-  return t?.groupCount ?? 1
-})
+const expectedGroupCount = computed(() =>
+  tournament.value ? expectedGroupCountForTournament(tournament.value) : 1,
+)
 
-const expectedGroupSize = computed(() => {
-  const total = tournament.value?.tournamentTeams?.length ?? 0
-  const gc = expectedGroupCount.value
-  if (!gc || gc < 1) return null
-  if (total === 0) return null
-  if (total % gc !== 0) return null
-  return total / gc
+const expectedGroupSize = computed(() =>
+  tournament.value ? expectedGroupSizeForTournament(tournament.value) : null,
+)
+
+const groupLayoutUnsaved = computed(() => {
+  const t = tournament.value
+  if (!t || !showGroupBuckets.value) return false
+  return groupLayoutNeedsPersist(t, groupColumns.value)
 })
 
 const playoffQualifiersPerGroup = computed(() => tournament.value?.playoffQualifiersPerGroup ?? 2)
@@ -1749,6 +1821,27 @@ const syncGroupLayoutFromColumns = async () => {
     })
   } finally {
     groupingSaving.value = false
+  }
+}
+
+const saveGroupLayout = async () => {
+  if (!canEditGroups.value || !groupLayoutUnsaved.value) return
+  try {
+    await syncGroupLayoutFromColumns()
+    await fetchTournament()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.groups_layout_saved_summary'),
+      detail: t('admin.tournament_page.groups_layout_saved_detail'),
+      life: 4000,
+    })
+  } catch (e: any) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.groups_error_summary'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 6000,
+    })
   }
 }
 
@@ -4300,12 +4393,36 @@ onMounted(async () => {
                   {{ t('admin.tournament_page.groups_title') }}
                 </div>
                 <div class="mt-1 text-xs text-muted-color space-y-1">
+                  <p>
+                    {{ t('admin.tournament_page.groups_created_hint') }}
+                  </p>
                   <p v-if="isManualFormat">
                     {{ t('admin.tournament_page.groups_manual_hint') }}
                   </p>
                   <p v-else>
                     {{ t('admin.tournament_page.groups_drag_hint') }}
                   </p>
+                </div>
+                <div
+                  v-if="groupLayoutUnsaved && canEditGroups"
+                  class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2.5 dark:border-amber-900/50 dark:bg-amber-950/30"
+                >
+                  <p class="text-xs leading-relaxed text-amber-950 dark:text-amber-100/90">
+                    {{ t('admin.tournament_page.groups_unsaved_banner') }}
+                  </p>
+                  <Button
+                    size="small"
+                    :label="t('admin.tournament_page.groups_apply_layout')"
+                    :loading="groupingSaving"
+                    :disabled="groupingSaving"
+                    @click="saveGroupLayout"
+                  />
+                </div>
+                <div
+                  v-else-if="!groupColumns.length && (tournament?.tournamentTeams?.length ?? 0) > 0"
+                  class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-3 py-2.5 text-xs leading-relaxed text-muted-color dark:border-surface-700 dark:bg-surface-900/60"
+                >
+                  {{ t('admin.tournament_page.groups_pending_creation') }}
                 </div>
                 <div
                   v-if="expectedGroupSize"

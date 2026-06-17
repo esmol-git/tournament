@@ -32,8 +32,8 @@ const { data: editions, pending, error } = await useAsyncData(
 
 <template>
   <div v-if="ready" class="mx-auto max-w-4xl px-4 py-8">
-    <h1 class="text-2xl font-bold text-surface-900 dark:text-surface-0">Зачёты</h1>
-    <p class="mt-2 text-sm text-muted-color">Программы соревнований организации</p>
+    <h1 class="text-2xl font-bold text-surface-900 dark:text-surface-0">Серии</h1>
+    <p class="mt-2 text-sm text-muted-color">Серии турниров организации</p>
 
     <div v-if="pending" class="py-12 text-center text-muted-color">Загрузка…</div>
     <p v-else-if="error" class="py-8 text-red-500">Не удалось загрузить список</p>
@@ -57,6 +57,6 @@ const { data: editions, pending, error } = await useAsyncData(
         </p>
       </li>
     </ul>
-    <p v-else class="mt-8 text-muted-color">Пока нет опубликованных зачётов.</p>
+    <p v-else class="mt-8 text-muted-color">Пока нет опубликованных серий.</p>
   </div>
 </template>

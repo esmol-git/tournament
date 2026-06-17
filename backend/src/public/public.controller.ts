@@ -57,13 +57,13 @@ export class PublicController {
   }
 
   @Get('editions')
-  @ApiOperation({ summary: 'Публичные зачёты (программы соревнований)' })
+  @ApiOperation({ summary: 'Публичные серии (программы соревнований)' })
   async listEditions(@Param('tenantSlug') tenantSlug: string) {
     return this.editions.listPublicByTenantSlug(tenantSlug);
   }
 
   @Get('editions/:editionSlug')
-  @ApiOperation({ summary: 'Публичная карточка зачёта с турнирами' })
+  @ApiOperation({ summary: 'Публичная карточка серии с турнирами' })
   async getEdition(
     @Param('tenantSlug') tenantSlug: string,
     @Param('editionSlug') editionSlug: string,

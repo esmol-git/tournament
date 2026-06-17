@@ -95,7 +95,7 @@ watch(
     </Message>
 
     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <FloatLabel variant="on" class="block min-w-0 md:col-span-2">
+      <FloatLabel variant="on" class="block w-full min-w-0 md:col-span-2">
         <Select
           input-id="t_ctx_editionId"
           v-model="form.editionId"
@@ -111,8 +111,8 @@ watch(
       </FloatLabel>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-      <FloatLabel variant="on" class="block min-w-0">
+    <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <FloatLabel variant="on" class="block w-full min-w-0">
         <Select
           input-id="t_ctx_seasonId"
           v-model="form.seasonId"
@@ -125,7 +125,7 @@ watch(
         />
         <label for="t_ctx_seasonId">{{ t('admin.tournament_form.field_season') }}</label>
       </FloatLabel>
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel variant="on" class="block w-full min-w-0">
         <Select
           input-id="t_ctx_competitionId"
           v-model="form.competitionId"
@@ -138,7 +138,7 @@ watch(
         />
         <label for="t_ctx_competitionId">{{ t('admin.tournament_form.field_competition') }}</label>
       </FloatLabel>
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel variant="on" class="block w-full min-w-0">
         <Select
           input-id="t_ctx_ageGroupId"
           v-model="form.ageGroupId"
@@ -154,7 +154,7 @@ watch(
     </div>
 
     <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel variant="on" class="block w-full min-w-0">
         <Select
           input-id="t_ctx_eligibilityProfile"
           v-model="form.eligibilityProfile"
@@ -165,7 +165,7 @@ watch(
         />
         <label for="t_ctx_eligibilityProfile">{{ t('admin.tournament_form.label_eligibility_profile') }}</label>
       </FloatLabel>
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel variant="on" class="block w-full min-w-0">
         <Select
           input-id="t_ctx_gameFormat"
           v-model="form.gameFormat"

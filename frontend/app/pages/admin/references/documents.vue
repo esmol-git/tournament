@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import useVuelidate from '@vuelidate/core'
 import { helpers, required } from '@vuelidate/validators'
 import { useAuth } from '~/composables/useAuth'
@@ -10,6 +10,7 @@ import type { TournamentRow, TournamentListResponse } from '~/types/admin/tourna
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import { referenceCodeFromName } from '~/utils/referenceCode'
 
 definePageMeta({
   layout: 'admin',
@@ -48,6 +49,22 @@ const form = reactive({
   active: true,
   note: '',
 })
+const codeTouched = ref(false)
+
+watch(
+  () => form.title,
+  (title) => {
+    if (isEdit.value) return
+    if (codeTouched.value) return
+    if (form.code.trim()) return
+    form.code = referenceCodeFromName(title)
+  },
+)
+
+const generateCode = () => {
+  form.code = referenceCodeFromName(form.title)
+  codeTouched.value = true
+}
 const submitAttempted = ref(false)
 const HTTP_URL_RE = /^https?:\/\/\S+$/i
 const rules = computed(() => ({
@@ -90,7 +107,7 @@ const fetchTournaments = async () => {
       apiUrl(`/tenants/${tenantId.value}/tournaments`),
       {
         headers: { Authorization: `Bearer ${token.value}` },
-        params: { page: 1, pageSize: 300 },
+        params: { page: 1, pageSize: 100 },
       },
     )
     tournaments.value = (res.items ?? []).slice()
@@ -119,6 +136,7 @@ const openCreate = () => {
   editing.value = null
   form.title = ''
   form.code = ''
+  codeTouched.value = false
   form.tournamentId = ''
   form.url = ''
   form.sortOrder = 0
@@ -133,6 +151,7 @@ const openEdit = (row: ReferenceDocumentRow) => {
   editing.value = row
   form.title = row.title
   form.code = row.code ?? ''
+  codeTouched.value = true
   form.tournamentId = row.tournamentId ?? ''
   form.url = row.url ?? ''
   form.sortOrder = row.sortOrder
@@ -485,7 +504,10 @@ onMounted(() => {
         </div>
         <div>
           <label class="text-sm block mb-1">Код</label>
-          <InputText v-model="form.code" class="w-full" />
+          <div class="flex gap-2">
+            <InputText v-model="form.code" class="w-full" @input="codeTouched = true" />
+            <Button type="button" label="Сгенерировать" severity="secondary" outlined @click="generateCode" />
+          </div>
         </div>
         <div>
           <label class="text-sm block mb-1">Привязка к турниру</label>

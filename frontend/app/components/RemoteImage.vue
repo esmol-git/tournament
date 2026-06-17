@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, useAttrs, watch } from 'vue'
+import { resolveStorageUrl } from '~/utils/storageUrl'
 
 defineOptions({ inheritAttrs: false })
 
@@ -28,19 +29,36 @@ const props = withDefaults(
 )
 
 const attrs = useAttrs()
+const runtimeConfig = useRuntimeConfig()
 
 const loadFailed = ref(false)
+/** Поколение загрузки: отсекает @error от снятого с DOM <img> при смене src / remount. */
+const loadGeneration = ref(0)
 
-const trimmedSrc = computed(() => String(props.src ?? '').trim())
+const trimmedSrc = computed(() =>
+  resolveStorageUrl(
+    props.src,
+    String(runtimeConfig.public.apiBase ?? ''),
+  ),
+)
 
 watch(trimmedSrc, () => {
   loadFailed.value = false
+  loadGeneration.value += 1
 })
 
 const showImage = computed(() => Boolean(trimmedSrc.value) && !loadFailed.value)
 
+function onImageLoad() {
+  loadFailed.value = false
+}
+
 function onImageError() {
-  loadFailed.value = true
+  const generation = loadGeneration.value
+  queueMicrotask(() => {
+    if (generation !== loadGeneration.value || !trimmedSrc.value) return
+    loadFailed.value = true
+  })
 }
 
 const piClass = computed(() => {
@@ -66,11 +84,15 @@ const objectFitClass = computed(() =>
   <div class="inline-flex shrink-0 overflow-hidden" v-bind="attrs">
     <img
       v-if="showImage"
+      :key="trimmedSrc"
       :src="trimmedSrc"
       :alt="alt"
       :class="['h-full w-full min-h-0 min-w-0 [border-radius:inherit]', objectFitClass]"
       :loading="lazy ? 'lazy' : 'eager'"
+      decoding="async"
+      referrerpolicy="no-referrer"
       :draggable="draggable === undefined ? undefined : draggable"
+      @load="onImageLoad"
       @error="onImageError"
     />
     <div
