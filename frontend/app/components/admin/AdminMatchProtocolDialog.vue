@@ -53,6 +53,7 @@ const {
   eventKindOptions,
   postponeReasonOptions,
   cancelReasonOptions,
+  technicalReasonOptions,
   getEventKindKey,
   applyEventKindKey,
 } = useMatchProtocolReferences()
@@ -231,6 +232,9 @@ const protocolForm = reactive({
   status: 'SCHEDULED',
   schedulePostponeReasonId: '' as string,
   scheduleCancelReasonId: '' as string,
+  scheduleTechnicalReasonId: '' as string,
+  isTechnicalResult: false,
+  technicalResultSide: null as 'HOME' | 'AWAY' | null,
   events: [] as {
     type: string
     minute: number | null
@@ -393,6 +397,15 @@ watch(
     }
     protocolForm.schedulePostponeReasonId = ''
     protocolForm.scheduleCancelReasonId = ''
+    protocolForm.scheduleTechnicalReasonId = ''
+    protocolForm.isTechnicalResult = m.isTechnicalResult === true
+    protocolForm.technicalResultSide =
+      m.technicalResultSide === 'HOME' || m.technicalResultSide === 'AWAY'
+        ? m.technicalResultSide
+        : null
+    if (protocolForm.isTechnicalResult && m.scheduleChangeReasonId) {
+      protocolForm.scheduleTechnicalReasonId = m.scheduleChangeReasonId
+    }
     protocolForm.startTime = m.startTime ? new Date(m.startTime) : null
     const sp = splitStartTimeToDateAndTime(protocolForm.startTime)
     protocolDate.value = sp.date
@@ -470,10 +483,19 @@ const protocolBecomingCanceled = computed(() => {
     m.status !== 'CANCELED'
   )
 })
+const technicalWinScoreLabel = computed(() => {
+  const gf = props.tournament?.technicalWinGoalsFor ?? 3
+  const ga = props.tournament?.technicalWinGoalsAgainst ?? 0
+  return `${gf}:${ga}`
+})
 const protocolFormErrors = computed(() => ({
   scheduleCancelReasonId:
     protocolBecomingCanceled.value && !protocolForm.scheduleCancelReasonId
       ? 'Выберите причину отмены.'
+      : '',
+  scheduleTechnicalReasonId:
+    protocolForm.isTechnicalResult && !protocolForm.scheduleTechnicalReasonId
+      ? 'Выберите причину технического результата.'
       : '',
 }))
 
@@ -515,11 +537,36 @@ const playoffTieNeedsPenalties = computed(
 const canSaveProtocol = computed(
   () =>
     !protocolFormErrors.value.scheduleCancelReasonId &&
+    !protocolFormErrors.value.scheduleTechnicalReasonId &&
     !hasProtocolEventErrors.value &&
     !goalEventsScore.value.hasUnknownGoalSide &&
     !scoreVsGoalEventsMismatch.value &&
     !playoffTieNeedsPenalties.value,
 )
+
+function applyTechnicalWin(side: 'HOME' | 'AWAY') {
+  if (protocolLocked.value) return
+  const gf = props.tournament?.technicalWinGoalsFor ?? 3
+  const ga = props.tournament?.technicalWinGoalsAgainst ?? 0
+  protocolForm.isTechnicalResult = true
+  protocolForm.technicalResultSide = side
+  protocolForm.homeScore = side === 'HOME' ? gf : ga
+  protocolForm.awayScore = side === 'HOME' ? ga : gf
+  protocolForm.events = []
+  protocolForm.status = 'FINISHED'
+  protocolForm.extraTimeHomeScore = null
+  protocolForm.extraTimeAwayScore = null
+  protocolForm.penaltiesHomeScore = null
+  protocolForm.penaltiesAwayScore = null
+  showExtraTimeFields.value = false
+  showPenaltyFields.value = false
+}
+
+function clearTechnicalResult() {
+  protocolForm.isTechnicalResult = false
+  protocolForm.technicalResultSide = null
+  protocolForm.scheduleTechnicalReasonId = ''
+}
 
 const addEvent = () => {
   const last = protocolForm.events[protocolForm.events.length - 1]
@@ -818,6 +865,16 @@ const saveProtocol = async () => {
       if (protocolForm.scheduleCancelReasonId) {
         protocolBody.scheduleChangeReasonId = protocolForm.scheduleCancelReasonId
       }
+    } else if (protocolForm.isTechnicalResult) {
+      if (!protocolForm.scheduleTechnicalReasonId) {
+        throw new Error('Выберите причину технического результата')
+      }
+      protocolBody.isTechnicalResult = true
+      protocolBody.technicalResultSide = protocolForm.technicalResultSide
+      protocolBody.scheduleChangeReasonId = protocolForm.scheduleTechnicalReasonId
+      protocolBody.events = []
+    } else if (props.match?.isTechnicalResult) {
+      protocolBody.isTechnicalResult = false
     }
 
     if (isPlayoffMatch.value) {
@@ -905,6 +962,8 @@ const protocolPostponeId = `${protocolA11yId}-postpone`
 const protocolStatusId = `${protocolA11yId}-status`
 const protocolCancelReasonId = `${protocolA11yId}-cancel-reason`
 const protocolCancelReasonErrId = `${protocolA11yId}-cancel-reason-err`
+const protocolTechnicalReasonId = `${protocolA11yId}-technical-reason`
+const protocolTechnicalReasonErrId = `${protocolA11yId}-technical-reason-err`
 
 const protocolEtInputsPt = computed(() =>
   isPlayoffMatch.value && showExtraTimeFields.value
@@ -1191,6 +1250,73 @@ const protocolHomeScoreInputPt = computed(() =>
             placeholder="Не выбрано"
             class="w-full"
           />
+        </div>
+      </div>
+
+      <div
+        v-if="!protocolLocked && !standalone"
+        class="rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/80 dark:bg-surface-800/40 p-3 space-y-3"
+      >
+        <p class="text-xs font-medium text-surface-700 dark:text-surface-200">
+          Технический результат (неявка)
+        </p>
+        <p class="text-[11px] leading-snug text-muted-color">
+          Счёт по регламенту турнира: {{ technicalWinScoreLabel }}. События протокола будут очищены.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="small"
+            :outlined="!(protocolForm.isTechnicalResult && protocolForm.technicalResultSide === 'HOME')"
+            :severity="protocolForm.isTechnicalResult && protocolForm.technicalResultSide === 'HOME' ? 'warn' : 'secondary'"
+            :label="`Техпобеда: ${homeTeamLabel}`"
+            @click="applyTechnicalWin('HOME')"
+          />
+          <Button
+            type="button"
+            size="small"
+            :outlined="!(protocolForm.isTechnicalResult && protocolForm.technicalResultSide === 'AWAY')"
+            :severity="protocolForm.isTechnicalResult && protocolForm.technicalResultSide === 'AWAY' ? 'warn' : 'secondary'"
+            :label="`Техпобеда: ${awayTeamLabel}`"
+            @click="applyTechnicalWin('AWAY')"
+          />
+          <Button
+            v-if="protocolForm.isTechnicalResult"
+            type="button"
+            size="small"
+            text
+            severity="secondary"
+            label="Сбросить"
+            @click="clearTechnicalResult"
+          />
+        </div>
+        <div v-if="protocolForm.isTechnicalResult">
+          <label class="text-sm block mb-1" :for="protocolTechnicalReasonId">Причина</label>
+          <Select
+            :input-id="protocolTechnicalReasonId"
+            v-model="protocolForm.scheduleTechnicalReasonId"
+            :options="technicalReasonOptions"
+            option-label="label"
+            option-value="value"
+            show-clear
+            placeholder="Выберите из справочника"
+            class="w-full"
+            :invalid="protocolSubmitAttempted && !!protocolFormErrors.scheduleTechnicalReasonId"
+          />
+          <p
+            v-if="protocolSubmitAttempted && protocolFormErrors.scheduleTechnicalReasonId"
+            :id="protocolTechnicalReasonErrId"
+            role="alert"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ protocolFormErrors.scheduleTechnicalReasonId }}
+          </p>
+          <p
+            v-if="!technicalReasonOptions.length"
+            class="mt-1 text-[11px] text-muted-color"
+          >
+            Добавьте причины со scope «Технический результат» в справочнике «Причины переноса и отмены».
+          </p>
         </div>
       </div>
 

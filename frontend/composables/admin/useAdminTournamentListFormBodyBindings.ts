@@ -50,6 +50,9 @@ export function useAdminTournamentListFormBodyBindings(deps: {
   competitionsLoading: Ref<boolean>
   ageGroupSelectOptions: ComputedRef<AdminTournamentListFormBodyBindings['ageGroupSelectOptions']>
   ageGroupsLoading: Ref<boolean>
+  editionSelectOptions: ComputedRef<AdminTournamentListFormBodyBindings['editionSelectOptions']>
+  editionsLoading: Ref<boolean>
+  editionsList: ComputedRef<AdminTournamentListFormBodyBindings['editionsList']>
   stadiumMultiOptions: ComputedRef<AdminTournamentListFormBodyBindings['stadiumMultiOptions']>
   stadiumsLoading: Ref<boolean>
   refereeMultiOptions: ComputedRef<AdminTournamentListFormBodyBindings['refereeMultiOptions']>
@@ -108,6 +111,9 @@ export function useAdminTournamentListFormBodyBindings(deps: {
       competitionsLoading: d.competitionsLoading.value,
       ageGroupSelectOptions: d.ageGroupSelectOptions.value,
       ageGroupsLoading: d.ageGroupsLoading.value,
+      editionSelectOptions: d.editionSelectOptions.value,
+      editionsLoading: d.editionsLoading.value,
+      editionsList: d.editionsList.value,
       stadiumMultiOptions: d.stadiumMultiOptions.value,
       stadiumsLoading: d.stadiumsLoading.value,
       refereeMultiOptions: d.refereeMultiOptions.value,

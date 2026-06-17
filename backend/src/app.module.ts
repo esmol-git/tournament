@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ExecutionContext } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -31,6 +32,7 @@ import { AuditModule } from './audit/audit.module';
 import { PlansModule } from './plans/plans.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { LeadsModule } from './leads/leads.module';
+import { CompetitionEditionsModule } from './competition-editions/competition-editions.module';
 
 function truthyEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
@@ -58,6 +60,7 @@ function skipThrottlingUnderJest(): boolean {
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     JwtModule.register({}),
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
@@ -136,6 +139,7 @@ function skipThrottlingUnderJest(): boolean {
     PlatformModule,
     PublicModule,
     LeadsModule,
+    CompetitionEditionsModule,
     AuditModule,
     PlansModule,
   ],

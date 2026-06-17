@@ -25,6 +25,8 @@ type RosterRow = {
   status: string
   sanctionNote?: string | null
   sanctionedAt?: string | null
+  suspendedMatchesRemaining?: number
+  yellowCardsAccumulated?: number
   player: RosterCandidate['player']
 }
 
@@ -143,9 +145,22 @@ const countLabel = computed(() => {
 const rosterStatus = computed(() => rosterItems.value[0]?.status ?? 'DRAFT')
 
 const rosterStatusByPlayer = computed(() => {
-  const map = new Map<string, { status: string; sanctionNote?: string | null }>()
+  const map = new Map<
+    string,
+    {
+      status: string
+      sanctionNote?: string | null
+      suspendedMatchesRemaining?: number
+      yellowCardsAccumulated?: number
+    }
+  >()
   for (const row of rosterItems.value) {
-    map.set(row.playerId, { status: row.status, sanctionNote: row.sanctionNote })
+    map.set(row.playerId, {
+      status: row.status,
+      sanctionNote: row.sanctionNote,
+      suspendedMatchesRemaining: row.suspendedMatchesRemaining,
+      yellowCardsAccumulated: row.yellowCardsAccumulated,
+    })
   }
   return map
 })
@@ -819,6 +834,29 @@ onMounted(() => {
                 class="mt-0.5 block text-xs text-red-500"
               >
                 {{ rosterStatusByPlayer.get(data.playerId)?.sanctionNote }}
+              </span>
+              <span
+                v-if="(rosterStatusByPlayer.get(data.playerId)?.suspendedMatchesRemaining ?? 0) > 0"
+                class="mt-0.5 block text-xs text-amber-600 dark:text-amber-400"
+              >
+                {{
+                  t('admin.tournament_roster.card_suspension_badge', {
+                    count: rosterStatusByPlayer.get(data.playerId)?.suspendedMatchesRemaining ?? 0,
+                  })
+                }}
+              </span>
+              <span
+                v-if="
+                  props.tournament.cardAutoBanEnabled &&
+                  (rosterStatusByPlayer.get(data.playerId)?.yellowCardsAccumulated ?? 0) > 0
+                "
+                class="mt-0.5 block text-[11px] text-muted-color"
+              >
+                {{
+                  t('admin.tournament_roster.yellow_accumulated', {
+                    count: rosterStatusByPlayer.get(data.playerId)?.yellowCardsAccumulated ?? 0,
+                  })
+                }}
               </span>
             </template>
           </Column>

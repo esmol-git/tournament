@@ -53,6 +53,12 @@ export interface TournamentDetails {
   rosterMinPlayers?: number | null
   rosterMaxPlayers?: number | null
   rosterDeadlineAt?: string | null
+  cardAutoBanEnabled?: boolean
+  redCardBanMatches?: number
+  yellowAccumulationThreshold?: number
+  yellowAccumulationBanMatches?: number
+  technicalWinGoalsFor?: number
+  technicalWinGoalsAgainst?: number
   registrationEnabled?: boolean
   registrationOpensAt?: string | null
   registrationClosesAt?: string | null
@@ -159,12 +165,24 @@ export interface TournamentDetails {
     stadiumId?: string | null
     /** Показывать на публичном сайте и в публичном ICS (по умолчанию true). */
     publishedOnPublic?: boolean
+    isTechnicalResult?: boolean
+    technicalResultSide?: 'HOME' | 'AWAY' | null
     stadium?: {
       id: string
       name: string
       city?: string | null
       address?: string | null
     } | null
+    matchReferees?: Array<{
+      id: string
+      role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2'
+      refereeId: string
+      referee: {
+        id: string
+        firstName: string
+        lastName: string
+      }
+    }>
     events?: {
       id: string
       type: string

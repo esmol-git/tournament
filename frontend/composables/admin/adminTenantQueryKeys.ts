@@ -9,6 +9,7 @@ export const adminTenantQueryKeys = {
   seasons: (tenantId: string) => ['admin', 'tenant', tenantId, 'seasons'] as const,
   competitions: (tenantId: string) => ['admin', 'tenant', tenantId, 'competitions'] as const,
   ageGroups: (tenantId: string) => ['admin', 'tenant', tenantId, 'age-groups'] as const,
+  editions: (tenantId: string) => ['admin', 'tenant', tenantId, 'editions'] as const,
   stadiumsReferees: (tenantId: string) => ['admin', 'tenant', tenantId, 'stadiums-referees'] as const,
   protocolEventTypes: (tenantId: string) => ['admin', 'tenant', tenantId, 'protocol-event-types'] as const,
   matchScheduleReasons: (tenantId: string) =>

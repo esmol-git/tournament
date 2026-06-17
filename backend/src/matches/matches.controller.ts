@@ -128,6 +128,7 @@ export class MatchesController {
         scheduleChangeReasonId: dto.scheduleChangeReasonId,
         scheduleChangeNote: dto.scheduleChangeNote,
         stadiumId: dto.stadiumId,
+        referees: dto.referees,
       },
     );
   }
@@ -256,6 +257,7 @@ export class MatchesController {
         scheduleChangeNote: dto.scheduleChangeNote,
         stadiumId: dto.stadiumId,
         publishedOnPublic: dto.publishedOnPublic,
+        referees: dto.referees,
       },
     );
   }

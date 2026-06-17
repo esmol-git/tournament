@@ -6,6 +6,7 @@ import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { useTenantId } from '~/composables/useTenantId'
 import type { TeamCategoryRow } from '~/types/admin/team-category'
+import type { AgeGroupRow } from '~/types/admin/age-group'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
@@ -34,11 +35,18 @@ const { items, loading, error, isEmpty, run, retry } = useAdminAsyncListState<Te
 const saving = ref(false)
 const showForm = ref(false)
 const editing = ref<TeamCategoryRow | null>(null)
+const ageGroups = ref<AgeGroupRow[]>([])
 const isEdit = computed(() => !!editing.value)
+
+const ageGroupOptions = computed(() => [
+  { label: '— не задана —', value: null as string | null },
+  ...ageGroups.value.map((ag) => ({ label: ag.name, value: ag.id })),
+])
 
 const form = reactive({
   name: '',
   slug: '',
+  ageGroupId: null as string | null,
   minBirthYear: null as number | null,
   maxBirthYear: null as number | null,
   requireBirthDate: false,
@@ -58,10 +66,13 @@ const fetchItems = async () => {
     return
   }
   await run(async () => {
-    items.value = await authFetch<TeamCategoryRow[]>(
-      apiUrl(`/tenants/${tenantId.value}/team-categories`),
-      { headers: { Authorization: `Bearer ${token.value}` } },
-    )
+    const headers = { Authorization: `Bearer ${token.value}` }
+    const [categories, groups] = await Promise.all([
+      authFetch<TeamCategoryRow[]>(apiUrl(`/tenants/${tenantId.value}/team-categories`), { headers }),
+      authFetch<AgeGroupRow[]>(apiUrl(`/tenants/${tenantId.value}/age-groups`), { headers }),
+    ])
+    items.value = categories
+    ageGroups.value = groups
   })
 }
 
@@ -70,6 +81,7 @@ const openCreate = () => {
   editing.value = null
   form.name = ''
   form.slug = ''
+  form.ageGroupId = null
   form.minBirthYear = null
   form.maxBirthYear = null
   form.requireBirthDate = false
@@ -83,6 +95,7 @@ const openEdit = (row: TeamCategoryRow) => {
   editing.value = row
   form.name = row.name
   form.slug = row.slug ?? ''
+  form.ageGroupId = row.ageGroupId ?? row.ageGroup?.id ?? null
   form.minBirthYear = row.minBirthYear
   form.maxBirthYear = row.maxBirthYear
   form.requireBirthDate = row.requireBirthDate
@@ -101,6 +114,7 @@ const save = async () => {
     const body = {
       name: form.name.trim(),
       slug: form.slug.trim() || null,
+      ageGroupId: form.ageGroupId,
       minBirthYear: form.minBirthYear,
       maxBirthYear: form.maxBirthYear,
       requireBirthDate: form.requireBirthDate,
@@ -247,6 +261,12 @@ onMounted(() => {
       <DataTable :value="items" data-key="id" striped-rows>
         <Column field="name" header="Название" />
         <Column field="slug" header="Slug" />
+        <Column header="Возр. группа">
+          <template #body="{ data }">
+            <span v-if="data.ageGroup?.name">{{ data.ageGroup.name }}</span>
+            <span v-else class="text-muted-color">—</span>
+          </template>
+        </Column>
         <Column field="minBirthYear" header="Мин. год" />
         <Column field="maxBirthYear" header="Макс. год" />
         <Column header="Дата рождения" style="width: 9rem">
@@ -282,6 +302,20 @@ onMounted(() => {
         <div>
           <label class="text-sm block mb-1">Slug</label>
           <InputText v-model="form.slug" class="w-full" />
+        </div>
+        <div>
+          <label class="text-sm block mb-1">Возрастная группа (опционально)</label>
+          <Select
+            v-model="form.ageGroupId"
+            :options="ageGroupOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full"
+            show-clear
+          />
+          <p class="mt-1 text-xs text-muted-color">
+            Годы рождения из группы дополняют ограничения категории при проверке состава.
+          </p>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>

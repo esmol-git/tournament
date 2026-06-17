@@ -13,7 +13,8 @@ import { JwtPayload } from '../auth/jwt.strategy';
 import { assertTournamentStaffCanManage } from '../auth/tournament-staff-access.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertPlayerFitsTeamCategory } from '../teams/team-category-player.assert';
-import { assertPlayerFitsAgeGroup } from '../teams/age-group-player.assert';
+import { assertPlayerFitsTournamentEligibility } from '../teams/eligibility-policy.util';
+import { getEligibilityWarningsForTeamTournament } from '../teams/eligibility-warnings.util';
 import { SetTournamentRosterDto } from './dto/set-tournament-roster.dto';
 import { ImportTournamentRosterCsvDto } from './dto/import-tournament-roster-csv.dto';
 import { ImportTournamentRosterXlsxDto } from './dto/import-tournament-roster-xlsx.dto';
@@ -52,6 +53,9 @@ export class TournamentRostersService {
         tenantId: true,
         status: true,
         ageGroupId: true,
+        eligibilityPolicyId: true,
+        regulationMode: true,
+        editionId: true,
         rosterMinPlayers: true,
         rosterMaxPlayers: true,
         rosterDeadlineAt: true,
@@ -82,16 +86,23 @@ export class TournamentRostersService {
     return team;
   }
 
-  private async assertPlayersFitTournamentAgeGroup(
-    tournament: { tenantId: string; ageGroupId: string | null },
+  private async assertPlayersFitTournamentEligibility(
+    tournament: {
+      id: string;
+      tenantId: string;
+      ageGroupId: string | null;
+      eligibilityPolicyId: string | null;
+      regulationMode: import('@prisma/client').TournamentRegulationMode;
+      editionId: string | null;
+    },
     playerIds: string[],
   ) {
-    if (!tournament.ageGroupId || !playerIds.length) return;
+    if (!playerIds.length) return;
     for (const playerId of playerIds) {
-      await assertPlayerFitsAgeGroup(
+      await assertPlayerFitsTournamentEligibility(
         this.prisma,
         tournament.tenantId,
-        tournament.ageGroupId,
+        tournament,
         playerId,
       );
     }
@@ -152,6 +163,8 @@ export class TournamentRostersService {
     status: TournamentRosterPlayerStatus
     sanctionNote: string | null
     sanctionedAt: Date | null
+    suspendedMatchesRemaining: number
+    yellowCardsAccumulated: number
     player: {
       id: string
       firstName: string
@@ -168,6 +181,8 @@ export class TournamentRostersService {
       status: row.status,
       sanctionNote: row.sanctionNote,
       sanctionedAt: row.sanctionedAt,
+      suspendedMatchesRemaining: row.suspendedMatchesRemaining,
+      yellowCardsAccumulated: row.yellowCardsAccumulated,
       player: row.player,
     };
   }
@@ -210,6 +225,13 @@ export class TournamentRostersService {
       include: ROSTER_PLAYER_INCLUDE,
     });
 
+    const eligibilityWarnings = await getEligibilityWarningsForTeamTournament(
+      this.prisma,
+      tournament.tenantId,
+      tournamentId,
+      teamId,
+    );
+
     return {
       items: rows.map((r) => this.mapRow(r)),
       limits: {
@@ -218,7 +240,32 @@ export class TournamentRostersService {
         deadlineAt: tournament.rosterDeadlineAt,
         eligibilityProfile: tournament.eligibilityProfile,
       },
+      eligibilityWarnings,
     };
+  }
+
+  async getEligibilityWarnings(
+    tournamentId: string,
+    teamId: string,
+    user: JwtPayload,
+  ) {
+    const tournament = await this.loadTournamentContext(tournamentId);
+    if (
+      user.tenantId !== tournament.tenantId &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException('Нет доступа к ресурсу другой организации');
+    }
+    await assertTournamentStaffCanManage(this.prisma, tournamentId, user);
+    await this.assertTeamInTournament(tournamentId, teamId, tournament.tenantId);
+
+    const warnings = await getEligibilityWarningsForTeamTournament(
+      this.prisma,
+      tournament.tenantId,
+      tournamentId,
+      teamId,
+    );
+    return { warnings };
   }
 
   async setForTeam(
@@ -316,7 +363,7 @@ export class TournamentRostersService {
           );
         }
       }
-      await this.assertPlayersFitTournamentAgeGroup(tournament, playerIds);
+      await this.assertPlayersFitTournamentEligibility(tournament, playerIds);
     }
 
     const previousRows = await this.prisma.tournamentTeamPlayer.findMany({
@@ -473,12 +520,12 @@ export class TournamentRostersService {
               : 'Не подходит по правилам категории';
         }
       }
-      if (eligible && tournament.ageGroupId) {
+      if (eligible) {
         try {
-          await assertPlayerFitsAgeGroup(
+          await assertPlayerFitsTournamentEligibility(
             this.prisma,
             tournament.tenantId,
-            tournament.ageGroupId,
+            tournament,
             tp.playerId,
           );
         } catch (e: unknown) {
@@ -486,7 +533,7 @@ export class TournamentRostersService {
           reason =
             e instanceof BadRequestException
               ? String(e.message)
-              : 'Не подходит по возрастной группе турнира';
+              : 'Не подходит по регламенту турнира';
         }
       }
       items.push({
@@ -682,24 +729,22 @@ export class TournamentRostersService {
         }
       }
 
-      if (tournament.ageGroupId) {
-        try {
-          await assertPlayerFitsAgeGroup(
-            this.prisma,
-            tournament.tenantId,
-            tournament.ageGroupId,
-            playerId,
-          );
-        } catch (e: unknown) {
-          errors.push({
-            row: row.rowNumber,
-            message:
-              e instanceof BadRequestException
-                ? String(e.message)
-                : 'Не подходит по возрастной группе турнира',
-          });
-          continue;
-        }
+      try {
+        await assertPlayerFitsTournamentEligibility(
+          this.prisma,
+          tournament.tenantId,
+          tournament,
+          playerId,
+        );
+      } catch (e: unknown) {
+        errors.push({
+          row: row.rowNumber,
+          message:
+            e instanceof BadRequestException
+              ? String(e.message)
+              : 'Не подходит по регламенту турнира',
+        });
+        continue;
       }
 
       usedPlayerIds.add(playerId);

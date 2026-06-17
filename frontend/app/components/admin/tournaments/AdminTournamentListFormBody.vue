@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AdminTournamentListFormBodyBindings } from '~/types/admin/tournament-list-form-body'
 import AdminTenantTournamentLimits from '~/app/components/admin/tournaments/AdminTenantTournamentLimits.vue'
+import AdminTournamentListFormContextSection from '~/app/components/admin/tournaments/AdminTournamentListFormContextSection.vue'
 import AdminTournamentListFormMainSection from '~/app/components/admin/tournaments/AdminTournamentListFormMainSection.vue'
 import AdminTournamentListFormDescriptionSection from '~/app/components/admin/tournaments/AdminTournamentListFormDescriptionSection.vue'
 import AdminTournamentListFormFormatCalendarSection from '~/app/components/admin/tournaments/AdminTournamentListFormFormatCalendarSection.vue'
@@ -16,15 +17,32 @@ const calendarPicker = defineModel<string>('calendarPicker', { required: true })
 
 const props = defineProps<{
   bindings: AdminTournamentListFormBodyBindings
-  isStepVisible?: (stepId: 'about' | 'format' | 'enrollment' | 'review') => boolean
+  isStepVisible?: (stepId: 'context' | 'about' | 'format' | 'enrollment' | 'review') => boolean
 }>()
 
-const show = (stepId: 'about' | 'format' | 'enrollment' | 'review') =>
+const show = (stepId: 'context' | 'about' | 'format' | 'enrollment' | 'review') =>
   !props.isStepVisible || props.isStepVisible(stepId)
 </script>
 
 <template>
   <div class="flex flex-col gap-4">
+    <AdminTournamentListFormContextSection
+      v-if="show('context')"
+      :form="bindings.form"
+      :is-edit="bindings.isEdit"
+      :season-select-options="bindings.seasonSelectOptions"
+      :seasons-loading="bindings.seasonsLoading"
+      :competition-select-options="bindings.competitionSelectOptions"
+      :competitions-loading="bindings.competitionsLoading"
+      :age-group-select-options="bindings.ageGroupSelectOptions"
+      :age-groups-loading="bindings.ageGroupsLoading"
+      :edition-select-options="bindings.editionSelectOptions"
+      :editions-loading="bindings.editionsLoading"
+      :editions-list="bindings.editionsList"
+      :can-access-reference-basic="bindings.canAccessReferenceBasic"
+      :can-access-reference-standard="bindings.canAccessReferenceStandard"
+    />
+
     <AdminTenantTournamentLimits
       v-if="!bindings.isEdit && show('about')"
       variant="inline"
@@ -81,12 +99,16 @@ const show = (stepId: 'about' | 'format' | 'enrollment' | 'review') =>
       />
       <AdminTournamentListFormVenueRefereesSection
         :form="bindings.form"
+        :hide-reference-fields="!!props.isStepVisible"
         :season-select-options="bindings.seasonSelectOptions"
         :seasons-loading="bindings.seasonsLoading"
         :competition-select-options="bindings.competitionSelectOptions"
         :competitions-loading="bindings.competitionsLoading"
         :age-group-select-options="bindings.ageGroupSelectOptions"
         :age-groups-loading="bindings.ageGroupsLoading"
+        :edition-select-options="bindings.editionSelectOptions"
+        :editions-loading="bindings.editionsLoading"
+        :editions-list="bindings.editionsList"
         :stadium-multi-options="bindings.stadiumMultiOptions"
         :stadiums-loading="bindings.stadiumsLoading"
         :referee-multi-options="bindings.refereeMultiOptions"
@@ -101,6 +123,7 @@ const show = (stepId: 'about' | 'format' | 'enrollment' | 'review') =>
       <AdminTournamentListFormEnrollmentSection
         :form="bindings.form"
         :is-edit="bindings.isEdit"
+        :hide-context-fields="!!props.isStepVisible"
       />
       <AdminTournamentListFormParticipantsSection
         :form="bindings.form"

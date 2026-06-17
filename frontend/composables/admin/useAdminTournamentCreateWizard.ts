@@ -2,7 +2,7 @@ import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
 import type { ComputedRef, Ref } from 'vue'
 import { computed, ref } from 'vue'
 
-export const CREATE_WIZARD_STEP_IDS = ['about', 'format', 'enrollment', 'review'] as const
+export const CREATE_WIZARD_STEP_IDS = ['context', 'about', 'format', 'enrollment', 'review'] as const
 export type CreateWizardStepId = (typeof CREATE_WIZARD_STEP_IDS)[number]
 
 export function useAdminTournamentCreateWizard(options: {
@@ -14,6 +14,7 @@ export function useAdminTournamentCreateWizard(options: {
   const step = ref(0)
 
   const stepLabels = computed(() => [
+    t('admin.tournament_wizard.step_context'),
     t('admin.tournament_wizard.step_about'),
     t('admin.tournament_wizard.step_format'),
     t('admin.tournament_wizard.step_enrollment'),
@@ -33,6 +34,7 @@ export function useAdminTournamentCreateWizard(options: {
 
   function stepBlockingError(stepId: CreateWizardStepId): string {
     const err = options.tournamentFormErrors.value
+    if (stepId === 'context') return ''
     if (stepId === 'about') return err.nameError
     if (stepId === 'format') return err.formatError
     if (stepId === 'enrollment') return err.teamsError

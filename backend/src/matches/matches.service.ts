@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import {
   MatchEventType,
+  MatchRefereeRole,
   MatchScheduleReasonScope,
   MatchStatus,
   MatchStage,
@@ -28,6 +29,7 @@ import {
 } from '../common/api-exceptions';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertProtocolPlayersAllowed } from '../tournament-rosters/tournament-protocol-roster.util';
+import { recomputeTournamentCardSuspensions } from '../tournament-rosters/tournament-card-suspensions.util';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { ListTenantMatchesQueryDto } from './dto/list-tenant-matches-query.dto';
 import { ListStandaloneMatchesQueryDto } from './dto/list-standalone-matches-query.dto';
@@ -68,6 +70,22 @@ const MATCH_EVENTS_API = {
   },
 } satisfies Prisma.Match$eventsArgs;
 
+const MATCH_REFEREES_API = {
+  orderBy: { role: 'asc' as const },
+  select: {
+    id: true,
+    role: true,
+    refereeId: true,
+    referee: {
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+      },
+    },
+  },
+} satisfies Prisma.Match$matchRefereesArgs;
+
 const MATCH_DETAIL_INCLUDE = {
   homeTeam: { select: { id: true, name: true } },
   awayTeam: { select: { id: true, name: true } },
@@ -78,6 +96,7 @@ const MATCH_DETAIL_INCLUDE = {
     select: { id: true, name: true, code: true, scope: true },
   },
   events: MATCH_EVENTS_API,
+  matchReferees: MATCH_REFEREES_API,
 } satisfies Prisma.MatchInclude;
 
 /** В списках админки фильтр «Завершён» включает legacy `PLAYED` (на фронте не показывается отдельно). */
@@ -113,10 +132,14 @@ export class MatchesService {
 
   private async sendTelegramIfEnabled(params: {
     tenantId: string;
-    kind: 'rescheduled' | 'protocol_published';
+    kind: 'rescheduled' | 'protocol_published' | 'starting_soon';
     lines: string[];
     matchId?: string;
     tournamentId?: string | null;
+    /** Явный ключ дедупликации (для starting_soon — matchId + startTime). */
+    dedupeKey?: string;
+    /** Без окна 5 минут: не слать повторно при том же dedupeKey. */
+    dedupePermanent?: boolean;
   }) {
     const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
     if (!botToken) return;
@@ -126,6 +149,7 @@ export class MatchesService {
         telegramNotifyChatId: true,
         telegramNotifyOnMatchRescheduled: true,
         telegramNotifyOnProtocolPublished: true,
+        telegramNotifyOnMatchStartingSoon: true,
       },
     });
     if (!tenant?.telegramNotifyChatId?.trim()) return;
@@ -133,15 +157,16 @@ export class MatchesService {
       (params.kind === 'rescheduled' &&
         !tenant.telegramNotifyOnMatchRescheduled) ||
       (params.kind === 'protocol_published' &&
-        !tenant.telegramNotifyOnProtocolPublished)
+        !tenant.telegramNotifyOnProtocolPublished) ||
+      (params.kind === 'starting_soon' &&
+        !tenant.telegramNotifyOnMatchStartingSoon)
     ) {
       return;
     }
     const payloadObj = { lines: params.lines };
-    const dedupeKey = createHash('sha1')
-      .update(JSON.stringify(payloadObj))
-      .digest('hex');
-    const dedupeSince = new Date(Date.now() - 5 * 60 * 1000);
+    const dedupeKey =
+      params.dedupeKey ??
+      createHash('sha1').update(JSON.stringify(payloadObj)).digest('hex');
     const duplicated = await this.prisma.telegramNotificationDelivery.findFirst(
       {
         where: {
@@ -150,7 +175,9 @@ export class MatchesService {
           kind: params.kind,
           chatId: tenant.telegramNotifyChatId.trim(),
           dedupeKey,
-          createdAt: { gte: dedupeSince },
+          ...(params.dedupePermanent
+            ? {}
+            : { createdAt: { gte: new Date(Date.now() - 5 * 60 * 1000) } }),
           status: { in: ['QUEUED', 'SENT'] },
         },
         select: { id: true },
@@ -504,6 +531,126 @@ export class MatchesService {
     });
   }
 
+  private formatMatchRefereeRoleSuffix(role: MatchRefereeRole): string {
+    if (role === MatchRefereeRole.MAIN) return ' (гл.)';
+    if (role === MatchRefereeRole.ASSISTANT_1) return ' (пом. 1)';
+    if (role === MatchRefereeRole.ASSISTANT_2) return ' (пом. 2)';
+    return '';
+  }
+
+  /**
+   * Cron: Telegram «матч скоро» для организаций с включённым флагом.
+   * Окно: startTime ≈ now + MATCH_STARTING_SOON_MINUTES (±1 мин).
+   */
+  async dispatchMatchStartingSoonNotifications(): Promise<number> {
+    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN')?.trim();
+    if (!botToken) return 0;
+
+    const leadRaw = Number(this.config.get('MATCH_STARTING_SOON_MINUTES') ?? 60);
+    const leadMinutes =
+      Number.isFinite(leadRaw) && leadRaw > 0 ? Math.round(leadRaw) : 60;
+    const toleranceMinutes = 1;
+    const now = Date.now();
+    const windowStart = new Date(
+      now + (leadMinutes - toleranceMinutes) * 60_000,
+    );
+    const windowEnd = new Date(now + (leadMinutes + toleranceMinutes) * 60_000);
+
+    const matches = await this.prisma.match.findMany({
+      where: {
+        status: MatchStatus.SCHEDULED,
+        startTime: { gte: windowStart, lte: windowEnd },
+        tenant: {
+          telegramNotifyOnMatchStartingSoon: true,
+          telegramNotifyChatId: { not: null },
+        },
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        tournamentId: true,
+        startTime: true,
+        homeTeam: { select: { name: true } },
+        awayTeam: { select: { name: true } },
+        stadium: { select: { name: true } },
+        tournament: { select: { name: true } },
+        tenant: { select: { telegramNotifyChatId: true } },
+        matchReferees: {
+          orderBy: { role: 'asc' },
+          select: {
+            role: true,
+            referee: { select: { firstName: true, lastName: true } },
+          },
+        },
+      },
+    });
+
+    let sent = 0;
+    for (const row of matches) {
+      if (!row.tenant.telegramNotifyChatId?.trim()) continue;
+
+      const dedupeKey = createHash('sha1')
+        .update(`starting_soon:${row.id}:${row.startTime.toISOString()}`)
+        .digest('hex');
+      const duplicated =
+        await this.prisma.telegramNotificationDelivery.findFirst({
+          where: {
+            tenantId: row.tenantId,
+            channel: 'TELEGRAM',
+            kind: 'starting_soon',
+            dedupeKey,
+            status: { in: ['QUEUED', 'SENT'] },
+          },
+          select: { id: true },
+        });
+      if (duplicated) continue;
+
+      const lines = [
+        `Матч начнётся через ~${leadMinutes} мин.`,
+        '',
+        `${row.homeTeam.name} - ${row.awayTeam.name}`,
+        `Турнир: ${row.tournament?.name ?? '—'}`,
+        `Начало: ${this.formatLocalDateTime(row.startTime)}`,
+        row.stadium?.name
+          ? `Площадка: ${row.stadium.name}`
+          : 'Площадка: не указана',
+      ];
+      if (row.matchReferees.length) {
+        lines.push(
+          `Судьи: ${row.matchReferees
+            .map(
+              (r) =>
+                `${r.referee.lastName} ${r.referee.firstName}${this.formatMatchRefereeRoleSuffix(r.role)}`,
+            )
+            .join(', ')}`,
+        );
+      }
+
+      await this.sendTelegramIfEnabled({
+        tenantId: row.tenantId,
+        kind: 'starting_soon',
+        matchId: row.id,
+        tournamentId: row.tournamentId,
+        lines,
+        dedupeKey,
+        dedupePermanent: true,
+      });
+      const delivered =
+        await this.prisma.telegramNotificationDelivery.findFirst({
+          where: {
+            tenantId: row.tenantId,
+            channel: 'TELEGRAM',
+            kind: 'starting_soon',
+            dedupeKey,
+            status: 'SENT',
+          },
+          select: { id: true },
+        });
+      if (delivered) sent += 1;
+    }
+    return sent;
+  }
+
   /** Проверка площадки матча: тенант и (если задан белый список у турнира) вхождение в него. */
   private async assertMatchStadiumAllowed(
     client: Pick<PrismaService, 'stadium' | 'tournamentStadium' | 'tournament'>,
@@ -546,6 +693,104 @@ export class MatchesService {
         'Укажите стадион из площадок турнира или очистите поле',
       );
     }
+  }
+
+  /** Синхронизация назначений судей на матч. */
+  private async syncMatchReferees(
+    client: Pick<
+      PrismaService,
+      'referee' | 'tournamentReferee' | 'matchReferee'
+    >,
+    tenantId: string,
+    matchId: string,
+    tournamentId: string | null,
+    assignments: Array<{ refereeId: string; role: MatchRefereeRole }>,
+  ) {
+    const normalized = assignments
+      .map((a) => ({
+        refereeId: String(a.refereeId ?? '').trim(),
+        role: a.role,
+      }))
+      .filter((a) => a.refereeId);
+
+    const roles = new Set<MatchRefereeRole>();
+    for (const a of normalized) {
+      if (roles.has(a.role)) {
+        throw new BadRequestException(
+          'На матч можно назначить не более одного судьи в каждой роли',
+        );
+      }
+      roles.add(a.role);
+    }
+
+    const refereeIds = normalized.map((a) => a.refereeId);
+    if (new Set(refereeIds).size !== refereeIds.length) {
+      throw new BadRequestException(
+        'Один судья не может быть назначен на матч дважды',
+      );
+    }
+
+    if (refereeIds.length) {
+      const refs = await client.referee.findMany({
+        where: { tenantId, id: { in: refereeIds } },
+        select: { id: true },
+      });
+      if (refs.length !== refereeIds.length) {
+        throw new BadRequestException('Судья не найден');
+      }
+    }
+
+    if (tournamentId && refereeIds.length) {
+      const pool = await client.tournamentReferee.findMany({
+        where: { tournamentId },
+        select: { refereeId: true },
+      });
+      if (pool.length > 0) {
+        const allowed = new Set(pool.map((p) => p.refereeId));
+        for (const id of refereeIds) {
+          if (!allowed.has(id)) {
+            throw new BadRequestException(
+              'Судья должен быть в списке судей турнира',
+            );
+          }
+        }
+      }
+    }
+
+    await client.matchReferee.deleteMany({ where: { matchId } });
+    if (normalized.length) {
+      await client.matchReferee.createMany({
+        data: normalized.map((a) => ({
+          tenantId,
+          matchId,
+          refereeId: a.refereeId,
+          role: a.role,
+        })),
+      });
+    }
+  }
+
+  private async returnUpdatedMatch(
+    matchId: string,
+    tenantId: string,
+    tournamentId: string | null,
+    data: { referees?: Array<{ refereeId: string; role: MatchRefereeRole }> },
+  ) {
+    if (data.referees !== undefined) {
+      await this.syncMatchReferees(
+        this.prisma,
+        tenantId,
+        matchId,
+        tournamentId,
+        data.referees,
+      );
+    }
+    return this.withScheduleWarnings(
+      await this.prisma.match.findUniqueOrThrow({
+        where: { id: matchId },
+        include: MATCH_DETAIL_INCLUDE,
+      }),
+    );
   }
 
   private async syncTournamentLifecycleAfterMatches(tournamentId: string) {
@@ -644,7 +889,7 @@ export class MatchesService {
   private async validateScheduleReason(
     tenantId: string,
     reasonId: string,
-    kind: 'POSTPONE' | 'CANCEL',
+    kind: 'POSTPONE' | 'CANCEL' | 'TECHNICAL',
   ) {
     const row = await this.prisma.matchScheduleReason.findFirst({
       where: { id: reasonId, tenantId, active: true },
@@ -656,11 +901,65 @@ export class MatchesService {
       row.scope === MatchScheduleReasonScope.BOTH ||
       (kind === 'POSTPONE' &&
         row.scope === MatchScheduleReasonScope.POSTPONE) ||
-      (kind === 'CANCEL' && row.scope === MatchScheduleReasonScope.CANCEL);
+      (kind === 'CANCEL' && row.scope === MatchScheduleReasonScope.CANCEL) ||
+      (kind === 'TECHNICAL' &&
+        row.scope === MatchScheduleReasonScope.TECHNICAL);
     if (!ok) {
       throw new BadRequestException(
         'Эта причина не подходит для данного действия',
       );
+    }
+  }
+
+  private async prepareTechnicalProtocolDto(
+    tournamentId: string | null,
+    tenantId: string,
+    dto: UpdateProtocolDto,
+  ) {
+    if (!dto.isTechnicalResult) return;
+
+    if (
+      dto.technicalResultSide !== MatchTeamSide.HOME &&
+      dto.technicalResultSide !== MatchTeamSide.AWAY
+    ) {
+      throw new BadRequestException('Укажите сторону технической победы');
+    }
+    const reasonId = dto.scheduleChangeReasonId?.trim();
+    if (!reasonId) {
+      throw new BadRequestException(
+        'Укажите причину технического результата из справочника',
+      );
+    }
+    await this.validateScheduleReason(tenantId, reasonId, 'TECHNICAL');
+
+    let goalsFor = 3;
+    let goalsAgainst = 0;
+    if (tournamentId) {
+      const tournament = await this.prisma.tournament.findUnique({
+        where: { id: tournamentId },
+        select: {
+          technicalWinGoalsFor: true,
+          technicalWinGoalsAgainst: true,
+        },
+      });
+      goalsFor = Math.max(0, tournament?.technicalWinGoalsFor ?? 3);
+      goalsAgainst = Math.max(0, tournament?.technicalWinGoalsAgainst ?? 0);
+    }
+
+    if (dto.technicalResultSide === MatchTeamSide.HOME) {
+      dto.homeScore = goalsFor;
+      dto.awayScore = goalsAgainst;
+    } else {
+      dto.homeScore = goalsAgainst;
+      dto.awayScore = goalsFor;
+    }
+    dto.events = [];
+    if (
+      !dto.status ||
+      dto.status === MatchStatus.SCHEDULED ||
+      dto.status === MatchStatus.LIVE
+    ) {
+      dto.status = MatchStatus.FINISHED;
     }
   }
 
@@ -1234,6 +1533,7 @@ export class MatchesService {
 
     await this.recomputeTable(tournamentId);
     await this.syncTournamentLifecycleAfterMatches(tournamentId);
+    await recomputeTournamentCardSuspensions(this.prisma, tournamentId);
     return { success: true };
   }
 
@@ -1251,6 +1551,7 @@ export class MatchesService {
       scheduleChangeNote?: string;
       stadiumId?: string | null;
       publishedOnPublic?: boolean;
+      referees?: Array<{ refereeId: string; role: MatchRefereeRole }>;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -1299,22 +1600,28 @@ export class MatchesService {
     });
     if (!match) throw new NotFoundException('Match not found');
 
-    const visibilityOnly =
-      data.publishedOnPublic !== undefined &&
-      data.startTime === undefined &&
-      data.homeTeamId === undefined &&
-      data.awayTeamId === undefined &&
-      data.roundNumber === undefined &&
-      data.groupId === undefined &&
-      data.scheduleChangeReasonId === undefined &&
-      data.scheduleChangeNote === undefined &&
-      data.stadiumId === undefined;
-    if (visibilityOnly) {
-      const updated = await this.prisma.match.update({
-        where: { id: matchId },
-        data: { publishedOnPublic: data.publishedOnPublic },
-      });
-      return this.withScheduleWarnings(updated);
+    const scheduleOrTeamsPatch =
+      data.startTime !== undefined ||
+      data.homeTeamId !== undefined ||
+      data.awayTeamId !== undefined ||
+      data.roundNumber !== undefined ||
+      data.groupId !== undefined ||
+      data.scheduleChangeReasonId !== undefined ||
+      data.scheduleChangeNote !== undefined ||
+      data.stadiumId !== undefined;
+
+    const metadataOnly =
+      !scheduleOrTeamsPatch &&
+      (data.publishedOnPublic !== undefined || data.referees !== undefined);
+
+    if (metadataOnly) {
+      if (data.publishedOnPublic !== undefined) {
+        await this.prisma.match.update({
+          where: { id: matchId },
+          data: { publishedOnPublic: data.publishedOnPublic },
+        });
+      }
+      return this.returnUpdatedMatch(matchId, match.tenantId, tournamentId, data);
     }
 
     this.assertMatchMutable(match.status);
@@ -1424,14 +1731,15 @@ export class MatchesService {
           patch.roundNumber = data.roundNumber;
         if (data.groupId !== undefined) patch.groupId = data.groupId;
         Object.assign(patch, schedulePatch, stadiumPatch, visPatch);
-        if (Object.keys(patch).length === 0) {
+        if (Object.keys(patch).length === 0 && data.referees === undefined) {
           return this.withScheduleWarnings(
             await this.prisma.match.findUniqueOrThrow({
               where: { id: matchId },
+              include: MATCH_DETAIL_INCLUDE,
             }),
           );
         }
-        const updated = await this.prisma.match.update({
+        await this.prisma.match.update({
           where: { id: matchId },
           data: patch,
         });
@@ -1443,19 +1751,28 @@ export class MatchesService {
         }
         await this.recomputeTable(tournamentId);
         await this.syncTournamentLifecycleAfterMatches(tournamentId);
-        return this.withScheduleWarnings(updated);
+        return this.returnUpdatedMatch(
+          matchId,
+          match.tenantId,
+          tournamentId,
+          data,
+        );
       }
       if (
         data.startTime === undefined &&
         Object.keys(schedulePatch).length === 0 &&
         Object.keys(stadiumPatch).length === 0 &&
-        Object.keys(visPatch).length === 0
+        Object.keys(visPatch).length === 0 &&
+        data.referees === undefined
       ) {
         return this.withScheduleWarnings(
-          await this.prisma.match.findUniqueOrThrow({ where: { id: matchId } }),
+          await this.prisma.match.findUniqueOrThrow({
+            where: { id: matchId },
+            include: MATCH_DETAIL_INCLUDE,
+          }),
         );
       }
-      const updated = await this.prisma.match.update({
+      await this.prisma.match.update({
         where: { id: matchId },
         data: {
           ...(data.startTime !== undefined
@@ -1472,7 +1789,12 @@ export class MatchesService {
           previousStartTime: match.startTime,
         }).catch(() => undefined);
       }
-      return this.withScheduleWarnings(updated);
+      return this.returnUpdatedMatch(
+        matchId,
+        match.tenantId,
+        tournamentId,
+        data,
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -1507,8 +1829,11 @@ export class MatchesService {
         previousStartTime: match.startTime,
       }).catch(() => undefined);
     }
-    return this.withScheduleWarnings(
-      await this.prisma.match.findUniqueOrThrow({ where: { id: matchId } }),
+    return this.returnUpdatedMatch(
+      matchId,
+      match.tenantId,
+      tournamentId,
+      data,
     );
   }
 
@@ -1956,6 +2281,12 @@ export class MatchesService {
 
     this.assertProtocolConcurrency(match.updatedAt, dto);
 
+    await this.prepareTechnicalProtocolDto(
+      tournamentId,
+      match.tenantId,
+      dto,
+    );
+
     if (
       match.stage === MatchStage.PLAYOFF &&
       dto.homeScore === dto.awayScore &&
@@ -1973,6 +2304,7 @@ export class MatchesService {
     if (match.homeTeamId && match.awayTeamId && dto.events?.length) {
       await assertProtocolPlayersAllowed(this.prisma, {
         tournamentId,
+        matchId,
         homeTeamId: match.homeTeamId,
         awayTeamId: match.awayTeamId,
         events: dto.events,
@@ -1983,6 +2315,8 @@ export class MatchesService {
       tenantId: match.tenantId,
       previousStatus: match.status,
     });
+
+    await recomputeTournamentCardSuspensions(this.prisma, tournamentId);
 
     await this.recomputeTable(tournamentId);
 
@@ -2085,10 +2419,24 @@ export class MatchesService {
         status: nextStatus,
       };
 
+      if (dto.isTechnicalResult !== undefined) {
+        data.isTechnicalResult = dto.isTechnicalResult;
+        data.technicalResultSide = dto.isTechnicalResult
+          ? (dto.technicalResultSide ?? null)
+          : null;
+      }
+
       if (becameCanceled) {
         if (dto.scheduleChangeReasonId !== undefined) {
           data.scheduleChangeReasonId = dto.scheduleChangeReasonId || null;
         }
+        if (dto.scheduleChangeNote !== undefined) {
+          data.scheduleChangeNote = dto.scheduleChangeNote?.trim()
+            ? dto.scheduleChangeNote.trim()
+            : null;
+        }
+      } else if (dto.isTechnicalResult === true) {
+        data.scheduleChangeReasonId = dto.scheduleChangeReasonId || null;
         if (dto.scheduleChangeNote !== undefined) {
           data.scheduleChangeNote = dto.scheduleChangeNote?.trim()
             ? dto.scheduleChangeNote.trim()
@@ -2148,6 +2496,7 @@ export class MatchesService {
       this.assertMatchMutable(match.status);
     }
     this.assertProtocolConcurrency(match.updatedAt, dto);
+    await this.prepareTechnicalProtocolDto(null, tenantId, dto);
     this.validateScoreVsGoalEvents(dto);
     this.validateSubstitutionPlayerTimeline(dto);
 
@@ -2286,6 +2635,7 @@ export class MatchesService {
           select: { id: true, name: true, code: true, scope: true },
         },
         events: MATCH_EVENTS_API,
+        matchReferees: MATCH_REFEREES_API,
       },
     });
   }
@@ -2387,6 +2737,7 @@ export class MatchesService {
         select: { id: true, name: true, code: true, scope: true },
       },
       events: MATCH_EVENTS_API,
+      matchReferees: MATCH_REFEREES_API,
     } satisfies Prisma.MatchInclude;
 
     // For strict UI consistency, optionally filter undetermined playoff matches on the backend.
@@ -2491,6 +2842,7 @@ export class MatchesService {
       scheduleChangeReasonId?: string;
       scheduleChangeNote?: string;
       stadiumId?: string | null;
+      referees?: Array<{ refereeId: string; role: MatchRefereeRole }>;
     },
   ) {
     if (!PROTOCOL_ROLES.includes(actorRole)) {
@@ -2505,9 +2857,23 @@ export class MatchesService {
         awayTeamId: true,
         status: true,
         startTime: true,
+        tenantId: true,
       },
     });
     if (!match) throw new NotFoundException('Match not found');
+
+    const scheduleOrTeamsPatch =
+      data.startTime !== undefined ||
+      data.homeTeamId !== undefined ||
+      data.awayTeamId !== undefined ||
+      data.scheduleChangeReasonId !== undefined ||
+      data.scheduleChangeNote !== undefined ||
+      data.stadiumId !== undefined;
+
+    if (!scheduleOrTeamsPatch && data.referees !== undefined) {
+      return this.returnUpdatedMatch(matchId, match.tenantId, null, data);
+    }
+
     this.assertMatchMutable(match.status);
 
     const startTimeChanged =
@@ -2590,7 +2956,8 @@ export class MatchesService {
       if (
         data.startTime === undefined &&
         Object.keys(schedulePatch).length === 0 &&
-        Object.keys(stadiumPatch).length === 0
+        Object.keys(stadiumPatch).length === 0 &&
+        data.referees === undefined
       ) {
         return this.withScheduleWarnings(
           await this.prisma.match.findUniqueOrThrow({
@@ -2599,19 +2966,17 @@ export class MatchesService {
           }),
         );
       }
-      return this.withScheduleWarnings(
-        await this.prisma.match.update({
-          where: { id: matchId },
-          data: {
-            ...(data.startTime !== undefined
-              ? { startTime: data.startTime }
-              : {}),
-            ...schedulePatch,
-            ...stadiumPatch,
-          },
-          include: MATCH_DETAIL_INCLUDE,
-        }),
-      );
+      await this.prisma.match.update({
+        where: { id: matchId },
+        data: {
+          ...(data.startTime !== undefined
+            ? { startTime: data.startTime }
+            : {}),
+          ...schedulePatch,
+          ...stadiumPatch,
+        },
+      });
+      return this.returnUpdatedMatch(matchId, match.tenantId, null, data);
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -2633,12 +2998,7 @@ export class MatchesService {
       });
     });
 
-    return this.withScheduleWarnings(
-      await this.prisma.match.findUniqueOrThrow({
-        where: { id: matchId },
-        include: MATCH_DETAIL_INCLUDE,
-      }),
-    );
+    return this.returnUpdatedMatch(matchId, match.tenantId, null, data);
   }
 
   async deleteStandaloneMatch(

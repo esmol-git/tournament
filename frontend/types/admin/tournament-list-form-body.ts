@@ -53,6 +53,9 @@ export type AdminTournamentListFormBodyBindings = {
   competitionsLoading: boolean
   ageGroupSelectOptions: AdminTournamentListLabelValue[]
   ageGroupsLoading: boolean
+  editionSelectOptions: AdminTournamentListLabelValue[]
+  editionsLoading: boolean
+  editionsList: Array<{ id: string; season: { id: string }; competition: { id: string } }>
   stadiumMultiOptions: AdminTournamentListLabelValue[]
   stadiumsLoading: boolean
   refereeMultiOptions: AdminTournamentListLabelValue[]

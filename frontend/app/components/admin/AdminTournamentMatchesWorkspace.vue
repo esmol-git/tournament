@@ -141,6 +141,9 @@ const editMatchForm = reactive({
   stadiumId: '' as string,
   matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
   scheduleChangeReasonId: '' as string,
+  mainRefereeId: '' as string,
+  assistant1RefereeId: '' as string,
+  assistant2RefereeId: '' as string,
 })
 
 const tenantStadiumsList = ref<StadiumRow[]>([])
@@ -218,6 +221,55 @@ const matchStadiumSelectOptions = computed(() => {
         }))
   return [{ label: 'Не указано', value: '' }, ...base]
 })
+
+const matchRefereeSelectOptions = computed(() => {
+  const links = effectiveTournament.value?.tournamentReferees ?? []
+  return [
+    { label: 'Не назначен', value: '' },
+    ...links.map((l) => ({
+      label: `${l.referee.lastName} ${l.referee.firstName}`,
+      value: l.refereeId,
+    })),
+  ]
+})
+
+const hasTournamentRefereePool = computed(
+  () => (effectiveTournament.value?.tournamentReferees?.length ?? 0) > 0,
+)
+
+function formatMatchRefereesShort(m: MatchRow): string {
+  const items = m.matchReferees ?? []
+  if (!items.length) return ''
+  const main = items.find((r) => r.role === 'MAIN')
+  if (main) {
+    const initial = main.referee.firstName?.trim().charAt(0)
+    return initial
+      ? `${main.referee.lastName} ${initial}.`
+      : main.referee.lastName
+  }
+  return items.map((r) => r.referee.lastName).join(', ')
+}
+
+function buildMatchRefereeAssignments(form: typeof editMatchForm) {
+  const rows: Array<{ refereeId: string; role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2' }> = []
+  if (form.mainRefereeId.trim()) {
+    rows.push({ refereeId: form.mainRefereeId.trim(), role: 'MAIN' })
+  }
+  if (form.assistant1RefereeId.trim()) {
+    rows.push({ refereeId: form.assistant1RefereeId.trim(), role: 'ASSISTANT_1' })
+  }
+  if (form.assistant2RefereeId.trim()) {
+    rows.push({ refereeId: form.assistant2RefereeId.trim(), role: 'ASSISTANT_2' })
+  }
+  return rows
+}
+
+function populateEditMatchReferees(m: MatchRow) {
+  const byRole = new Map((m.matchReferees ?? []).map((r) => [r.role, r.refereeId]))
+  editMatchForm.mainRefereeId = byRole.get('MAIN') ?? ''
+  editMatchForm.assistant1RefereeId = byRole.get('ASSISTANT_1') ?? ''
+  editMatchForm.assistant2RefereeId = byRole.get('ASSISTANT_2') ?? ''
+}
 
 async function ensureMatchStadiumOptionsLoaded() {
   const links = effectiveTournament.value?.tournamentStadiums ?? []
@@ -675,6 +727,7 @@ const openEditMatchDialog = async (m: MatchRow) => {
   editMatchForm.groupId = m.groupId ?? ''
   editMatchForm.stadiumId = m.stadiumId ?? ''
   editMatchForm.matchStage = m.stage === 'PLAYOFF' ? 'PLAYOFF' : 'GROUP'
+  populateEditMatchReferees(m)
   editMatchSubmitAttempted.value = false
   editSmartSuggestionsRemote.value = null
   editSmartSuggestionSelectedId.value = ''
@@ -708,6 +761,17 @@ const editMatchErrors = computed(() => ({
     !editMatchForm.groupId
       ? 'Для группового этапа выберите группу.'
       : '',
+  distinctReferees:
+    (() => {
+      const ids = [
+        editMatchForm.mainRefereeId,
+        editMatchForm.assistant1RefereeId,
+        editMatchForm.assistant2RefereeId,
+      ].filter((id) => id.trim())
+      return ids.length !== new Set(ids).size
+        ? 'Один судья не может быть назначен дважды.'
+        : ''
+    })(),
 }))
 const canSubmitEditMatch = computed(
   () =>
@@ -715,7 +779,8 @@ const canSubmitEditMatch = computed(
     !editMatchErrors.value.homeTeamId &&
     !editMatchErrors.value.awayTeamId &&
     !editMatchErrors.value.distinctTeams &&
-    !editMatchErrors.value.groupId,
+    !editMatchErrors.value.groupId &&
+    !editMatchErrors.value.distinctReferees,
 )
 
 const submitEditMatch = async () => {
@@ -739,6 +804,7 @@ const submitEditMatch = async () => {
       body.groupId = editMatchForm.groupId || null
     }
     body.stadiumId = editMatchForm.stadiumId.trim() ? editMatchForm.stadiumId.trim() : null
+    body.referees = buildMatchRefereeAssignments(editMatchForm)
     const updated = await authFetch<{ scheduleWarnings?: string[] }>(
       apiUrl(`/tournaments/${props.tournamentId}/matches/${editMatchForm.matchId}`),
       {
@@ -1360,6 +1426,12 @@ defineExpose({
             <span v-else class="text-muted-color">—</span>
           </template>
         </Column>
+        <Column header="Судьи" style="min-width: 7rem">
+          <template #body="{ data }">
+            <span v-if="formatMatchRefereesShort(data)">{{ formatMatchRefereesShort(data) }}</span>
+            <span v-else class="text-muted-color">—</span>
+          </template>
+        </Column>
         <Column v-if="isManualFormat" header="Тур" style="width: 4rem">
           <template #body="{ data }">
             {{ typeof data.roundNumber === 'number' ? data.roundNumber : '—' }}
@@ -1372,8 +1444,9 @@ defineExpose({
         </Column>
         <Column header="Счёт" style="width: 5rem">
           <template #body="{ data }">
-            <span v-if="data.homeScore !== null && data.awayScore !== null">
-              {{ formatMatchScoreDisplay(data) }}
+            <span v-if="data.homeScore !== null && data.awayScore !== null" class="inline-flex items-center gap-1">
+              <span>{{ formatMatchScoreDisplay(data) }}</span>
+              <Tag v-if="data.isTechnicalResult" severity="warn" value="Тех." class="!text-[10px] !px-1" />
             </span>
             <span v-else class="text-muted-color">—</span>
           </template>
@@ -1800,6 +1873,59 @@ defineExpose({
             show-clear
             :disabled="editMatchSaving"
           />
+        </div>
+        <div class="space-y-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/50 dark:bg-surface-800/30 p-3">
+          <p class="text-xs font-medium text-surface-700 dark:text-surface-200">Судьи</p>
+          <p v-if="!hasTournamentRefereePool" class="text-[11px] text-muted-color">
+            Добавьте судей в разделе «Инфраструктура» турнира, чтобы назначать их на матчи.
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="text-sm block mb-1">Главный</label>
+              <Select
+                v-model="editMatchForm.mainRefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+                placeholder="Не назначен"
+                :disabled="editMatchSaving || !hasTournamentRefereePool"
+              />
+            </div>
+            <div>
+              <label class="text-sm block mb-1">Помощник 1</label>
+              <Select
+                v-model="editMatchForm.assistant1RefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+                placeholder="Не назначен"
+                :disabled="editMatchSaving || !hasTournamentRefereePool"
+              />
+            </div>
+            <div>
+              <label class="text-sm block mb-1">Помощник 2</label>
+              <Select
+                v-model="editMatchForm.assistant2RefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+                placeholder="Не назначен"
+                :disabled="editMatchSaving || !hasTournamentRefereePool"
+              />
+            </div>
+          </div>
+          <p
+            v-if="editMatchSubmitAttempted && editMatchErrors.distinctReferees"
+            class="mt-0 text-[11px] leading-3 text-red-500"
+          >
+            {{ editMatchErrors.distinctReferees }}
+          </p>
         </div>
         <div class="space-y-2 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-50/50 dark:bg-surface-800/30 p-3">
           <p class="text-xs text-muted-color">

@@ -34,11 +34,18 @@ export type TournamentFormModel = {
   rosterMinPlayers: number | null
   rosterMaxPlayers: number | null
   rosterDeadlineAt: Date | null
+  cardAutoBanEnabled: boolean
+  redCardBanMatches: number
+  yellowAccumulationThreshold: number
+  yellowAccumulationBanMatches: number
+  technicalWinGoalsFor: number
+  technicalWinGoalsAgainst: number
   /** Площадки турнира по порядку; первый совпадает с основным стадионом в API. */
   stadiumIds: string[]
   seasonId: string
   competitionId: string
   ageGroupId: string
+  editionId: string
   refereeIds: string[]
   /** Пользователи с ролью MODERATOR в тенанте, назначенные модераторами турнира. */
   moderatorIds: string[]
@@ -74,10 +81,17 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     rosterMinPlayers: null,
     rosterMaxPlayers: null,
     rosterDeadlineAt: null,
+    cardAutoBanEnabled: false,
+    redCardBanMatches: 1,
+    yellowAccumulationThreshold: 2,
+    yellowAccumulationBanMatches: 1,
+    technicalWinGoalsFor: 3,
+    technicalWinGoalsAgainst: 0,
     stadiumIds: [],
     seasonId: '',
     competitionId: '',
     ageGroupId: '',
+    editionId: '',
     refereeIds: [],
     moderatorIds: [],
   }
@@ -141,6 +155,7 @@ export function patchFormFromTournament(
   form.seasonId = (res as TournamentDetails).seasonId ?? ''
   form.competitionId = (res as TournamentDetails).competitionId ?? ''
   form.ageGroupId = (res as TournamentDetails).ageGroupId ?? ''
+  form.editionId = (res as TournamentDetails).editionId ?? ''
   form.refereeIds = Array.isArray((res as TournamentDetails).tournamentReferees)
     ? (res as TournamentDetails).tournamentReferees!.map((x) => x.refereeId)
     : []
@@ -168,6 +183,30 @@ export function patchFormFromTournament(
   form.rosterDeadlineAt = details.rosterDeadlineAt
     ? new Date(details.rosterDeadlineAt)
     : null
+  form.cardAutoBanEnabled = details.cardAutoBanEnabled === true
+  form.redCardBanMatches =
+    typeof details.redCardBanMatches === 'number' && details.redCardBanMatches > 0
+      ? details.redCardBanMatches
+      : 1
+  form.yellowAccumulationThreshold =
+    typeof details.yellowAccumulationThreshold === 'number' &&
+    details.yellowAccumulationThreshold > 0
+      ? details.yellowAccumulationThreshold
+      : 2
+  form.yellowAccumulationBanMatches =
+    typeof details.yellowAccumulationBanMatches === 'number' &&
+    details.yellowAccumulationBanMatches > 0
+      ? details.yellowAccumulationBanMatches
+      : 1
+  form.technicalWinGoalsFor =
+    typeof details.technicalWinGoalsFor === 'number' && details.technicalWinGoalsFor >= 0
+      ? details.technicalWinGoalsFor
+      : 3
+  form.technicalWinGoalsAgainst =
+    typeof details.technicalWinGoalsAgainst === 'number' &&
+    details.technicalWinGoalsAgainst >= 0
+      ? details.technicalWinGoalsAgainst
+      : 0
 
   const ids = Array.isArray(anyRes.tournamentTeams)
     ? anyRes.tournamentTeams.map((x: any) => x.teamId).filter(Boolean)

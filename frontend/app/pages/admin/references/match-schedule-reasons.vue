@@ -19,6 +19,7 @@ const SCOPE_OPTIONS = [
   { value: 'BOTH', label: 'Перенос и отмена' },
   { value: 'POSTPONE', label: 'Только перенос' },
   { value: 'CANCEL', label: 'Только отмена' },
+  { value: 'TECHNICAL', label: 'Технический результат' },
 ] as const
 
 const SKELETON_ROW_COUNT = 6

@@ -733,7 +733,8 @@ Bulk-действия:
 
 **Файлы/зоны:**
 - `docs/admin-product-improvements-roadmap.md`
-- `frontend/app/pages/admin/docs.vue` (если нужно дублирование в UI-доках)
+- `docs/admin-docs-maintenance.md` — как поддерживать `/admin/docs` в актуальном состоянии
+- `frontend/app/pages/admin/docs.vue` — пользовательская документация в админке
 
 **Проверка:**
 - Все пункты DoD закрыты или отмечены с понятным остатком.

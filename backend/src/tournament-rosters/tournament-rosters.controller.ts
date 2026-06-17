@@ -64,6 +64,15 @@ export class TournamentRostersController {
     return this.service.listEligibleCandidates(tournamentId, teamId, req.user);
   }
 
+  @Get('tournaments/:id/teams/:teamId/eligibility-warnings')
+  eligibilityWarnings(
+    @Param('id') tournamentId: string,
+    @Param('teamId') teamId: string,
+    @Req() req: Request & { user: JwtPayload },
+  ) {
+    return this.service.getEligibilityWarnings(tournamentId, teamId, req.user);
+  }
+
   @Put('tournaments/:id/teams/:teamId/roster')
   set(
     @Param('id') tournamentId: string,

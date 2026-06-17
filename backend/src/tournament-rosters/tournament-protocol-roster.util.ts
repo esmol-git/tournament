@@ -3,6 +3,8 @@ import {
   Prisma,
   TournamentRosterPlayerStatus,
 } from '@prisma/client';
+import type { PrismaService } from '../prisma/prisma.service';
+import { getPlayersSuspendedForMatch } from './tournament-card-suspensions.util';
 
 const PROTOCOL_PLAYER_INCLUDE = {
   player: {
@@ -92,16 +94,16 @@ export async function listProtocolPlayersForTeam(
   };
 }
 
-type PrismaServiceLike = {
-  tournament: Prisma.TournamentDelegate
-  tournamentTeamPlayer: Prisma.TournamentTeamPlayerDelegate
-  teamPlayer: Prisma.TeamPlayerDelegate
-};
+type PrismaServiceLike = Pick<
+  PrismaService,
+  'tournament' | 'tournamentTeamPlayer' | 'teamPlayer' | 'match'
+>;
 
 export async function assertProtocolPlayersAllowed(
   prisma: PrismaServiceLike,
   params: {
     tournamentId: string
+    matchId?: string
     homeTeamId: string
     awayTeamId: string
     events: Array<{
@@ -126,16 +128,34 @@ export async function assertProtocolPlayersAllowed(
       teamId: { in: [params.homeTeamId, params.awayTeamId] },
       status: TournamentRosterPlayerStatus.DISQUALIFIED,
     },
-    select: { playerId: true },
+    select: { playerId: true, teamId: true },
   });
-  const disqualifiedIds = new Set(disqualified.map((r) => r.playerId));
+  const disqualifiedIds = new Set(
+    disqualified.map((r) => `${r.teamId}:${r.playerId}`),
+  );
+
+  const cardSuspended =
+    params.matchId != null
+      ? await getPlayersSuspendedForMatch(
+          prisma,
+          params.tournamentId,
+          params.matchId,
+        )
+      : new Set<string>();
 
   const check = (playerId: string, side: 'HOME' | 'AWAY') => {
     const id = playerId.trim();
     if (!id) return;
-    if (disqualifiedIds.has(id)) {
+    const teamId = side === 'HOME' ? params.homeTeamId : params.awayTeamId;
+    const rosterKey = `${teamId}:${id}`;
+    if (disqualifiedIds.has(rosterKey)) {
       throw new BadRequestException(
         'Игрок дисквалифицирован на этом турнире и не может участвовать в протоколе',
+      );
+    }
+    if (cardSuspended.has(rosterKey)) {
+      throw new BadRequestException(
+        'Игрок отбывает дисквалификацию по карточкам и не может участвовать в матче',
       );
     }
     const roster = side === 'HOME' ? home : away;

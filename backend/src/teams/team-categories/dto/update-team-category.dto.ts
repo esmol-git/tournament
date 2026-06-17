@@ -23,6 +23,10 @@ export class UpdateTeamCategoryDto {
   slug?: string | null;
 
   @IsOptional()
+  @IsString()
+  ageGroupId?: string | null;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1900)

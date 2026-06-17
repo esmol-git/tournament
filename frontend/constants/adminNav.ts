@@ -136,6 +136,13 @@ export const ADMIN_NAV_ENTRIES: AdminNavEntry[] = [
     icon: 'pi pi-trophy',
   },
   {
+    to: '/admin/editions',
+    labelKey: 'admin.nav.editions',
+    icon: 'pi pi-sitemap',
+    requiredFeature: 'reference_directory_standard',
+    requiredTenantRoles: ADMIN_NAV_DIRECTORY_STAFF_ROLES,
+  },
+  {
     to: '/admin/docs',
     labelKey: 'admin.nav.documentation',
     icon: 'pi pi-info-circle',

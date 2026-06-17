@@ -17,6 +17,7 @@ import { TournamentsService } from '../tournaments/tournaments.service';
 import { CreateTournamentRegistrationDto } from './dto/create-tournament-registration.dto';
 import { ReviewTournamentRegistrationDto } from './dto/review-tournament-registration.dto';
 import { deliverTenantTelegramNotification } from '../notifications/tenant-telegram-delivery.util';
+import { getEligibilityWarningsForTeamTournament } from '../teams/eligibility-warnings.util';
 
 const REGISTRATION_INCLUDE = {
   team: { select: { id: true, name: true, slug: true, logoUrl: true } },
@@ -281,12 +282,18 @@ export class TournamentRegistrationsService {
     });
 
     const mapped = this.mapRow(row);
+    const eligibilityWarnings = await getEligibilityWarningsForTeamTournament(
+      this.prisma,
+      tournament.tenantId,
+      tournamentId,
+      teamId,
+    );
     if (row.status === TournamentRegistrationStatus.SUBMITTED) {
       void this.notifyRegistrationSubmitted(mapped, tournament).catch(
         () => undefined,
       );
     }
-    return mapped;
+    return { ...mapped, eligibilityWarnings };
   }
 
   async submit(registrationId: string, tournamentId: string, user: JwtPayload) {
@@ -398,7 +405,13 @@ export class TournamentRegistrationsService {
         },
         include: REGISTRATION_INCLUDE,
       });
-      return this.mapRow(updated);
+      const eligibilityWarnings = await getEligibilityWarningsForTeamTournament(
+        this.prisma,
+        reg.tournament.tenantId,
+        tournamentId,
+        reg.teamId,
+      );
+      return { ...this.mapRow(updated), eligibilityWarnings };
     }
 
     const updated = await this.prisma.tournamentRegistration.update({

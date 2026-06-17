@@ -104,6 +104,8 @@ export interface TournamentDetails {
   competitionId?: string | null
   competition?: { id: string; name: string; code?: string | null } | null
   ageGroupId?: string | null
+  editionId?: string | null
+  edition?: { id: string; name: string; slug: string } | null
   ageGroup?: {
     id: string
     name: string

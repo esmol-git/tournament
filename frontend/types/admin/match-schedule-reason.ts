@@ -1,4 +1,4 @@
-export type MatchScheduleReasonScope = 'POSTPONE' | 'CANCEL' | 'BOTH'
+export type MatchScheduleReasonScope = 'POSTPONE' | 'CANCEL' | 'BOTH' | 'TECHNICAL'
 
 export interface MatchScheduleReasonRow {
   id: string

@@ -47,6 +47,8 @@ const tournamentsCompleted = ref(0)
 const tournamentsDraft = ref(0)
 const teamsTotal = ref(0)
 const playersTotal = ref(0)
+const ageGroupsTotal = ref(0)
+const teamCategoriesTotal = ref(0)
 const liveMatchesTotal = ref(0)
 const scheduledMatchesTotal = ref(0)
 const upcomingMatches = ref<TenantTournamentMatchRow[]>([])
@@ -78,6 +80,39 @@ const todayLabel = computed(() =>
     month: 'long',
     year: 'numeric',
   }),
+)
+
+const onboardingSteps = computed(() => [
+  {
+    id: 'age_groups',
+    title: t('admin.dashboard.onboarding.step_age_groups'),
+    ok: ageGroupsTotal.value > 0,
+    path: '/admin/references/age-groups',
+  },
+  {
+    id: 'team_categories',
+    title: t('admin.dashboard.onboarding.step_team_categories'),
+    ok: teamCategoriesTotal.value > 0,
+    path: '/admin/references/team-categories',
+  },
+  {
+    id: 'teams',
+    title: t('admin.dashboard.onboarding.step_teams'),
+    ok: teamsTotal.value > 0,
+    path: '/admin/teams',
+  },
+  {
+    id: 'tournaments',
+    title: t('admin.dashboard.onboarding.step_tournaments'),
+    ok: tournamentsTotal.value > 0,
+    path: '/admin/tournaments',
+  },
+])
+
+const showOnboardingChecklist = computed(
+  () =>
+    isOrganizationAdminDashboard.value &&
+    onboardingSteps.value.some((step) => !step.ok),
 )
 
 type ListWithTotal = { total: number }
@@ -126,7 +161,7 @@ async function loadDashboard() {
       scheduledMatchesTotal.value = 0
       upcomingMatches.value = []
     } else {
-      const [teams, players, live, upcomingRes] = await Promise.all([
+      const [teams, players, live, upcomingRes, ageGroups, teamCategories] = await Promise.all([
         fetchCount(`${base}/teams`, { page: 1, pageSize: 1 }),
         fetchCount(`${base}/players`, { page: 1, pageSize: 1 }),
         fetchCount(`${base}/matches`, { page: 1, pageSize: 1, status: 'LIVE' }),
@@ -138,12 +173,20 @@ async function loadDashboard() {
             status: 'SCHEDULED',
           },
         }),
+        authFetch<unknown[]>(apiUrl(`${base}/age-groups`), {
+          headers: { Authorization: `Bearer ${token.value}` },
+        }).catch(() => []),
+        authFetch<unknown[]>(apiUrl(`${base}/team-categories`), {
+          headers: { Authorization: `Bearer ${token.value}` },
+        }).catch(() => []),
       ])
       teamsTotal.value = teams
       playersTotal.value = players
       liveMatchesTotal.value = live
       scheduledMatchesTotal.value = upcomingRes.total ?? 0
       upcomingMatches.value = upcomingRes.items ?? []
+      ageGroupsTotal.value = Array.isArray(ageGroups) ? ageGroups.length : 0
+      teamCategoriesTotal.value = Array.isArray(teamCategories) ? teamCategories.length : 0
     }
   } catch (e: unknown) {
     loadError.value = getApiErrorMessage(e, t('admin.dashboard.load_error'))
@@ -357,7 +400,43 @@ const entitiesBarOptions = computed(() => {
         </div>
       </template>
       <template v-if="isOrganizationAdminDashboard">
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
+        <div
+          v-if="showOnboardingChecklist"
+          class="rounded-2xl border border-primary/25 bg-primary/5 p-4 dark:border-primary/30 dark:bg-primary/10 sm:p-5"
+        >
+          <h2 class="text-base font-semibold text-surface-900 dark:text-surface-0">
+            {{ t('admin.dashboard.onboarding.title') }}
+          </h2>
+          <p class="mt-1 text-sm text-muted-color">{{ t('admin.dashboard.onboarding.lead') }}</p>
+          <ul class="mt-4 space-y-2">
+            <li
+              v-for="step in onboardingSteps"
+              :key="step.id"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-200 bg-surface-0 px-3 py-2 dark:border-surface-700 dark:bg-surface-900"
+            >
+              <span
+                class="text-sm"
+                :class="step.ok ? 'text-green-700 dark:text-green-300' : 'text-surface-900 dark:text-surface-0'"
+              >
+                <i
+                  :class="step.ok ? 'pi pi-check-circle mr-1' : 'pi pi-circle mr-1 text-muted-color'"
+                  aria-hidden="true"
+                />
+                {{ step.title }}
+              </span>
+              <Button
+                v-if="!step.ok"
+                :label="t('admin.dashboard.onboarding.go')"
+                icon="pi pi-arrow-right"
+                text
+                size="small"
+                @click="router.push(step.path)"
+              />
+            </li>
+          </ul>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         <div
           class="group relative min-w-0 overflow-hidden rounded-2xl border border-surface-200 bg-gradient-to-br from-surface-0 to-primary-50/30 p-4 shadow-sm transition hover:border-primary/30 dark:border-surface-700 dark:from-surface-900 dark:to-primary-950/20 sm:p-5"
         >

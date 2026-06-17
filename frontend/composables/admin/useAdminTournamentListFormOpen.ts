@@ -27,6 +27,7 @@ export function useAdminTournamentListFormOpen(options: {
   submitAttempted: Ref<boolean>
   editingId: Ref<string | null>
   initialTeamIds: Ref<string[]>
+  initialEditionId: Ref<string>
   createTemplateId: Ref<string>
   v$: Ref<TournamentListFormVuelidate>
   showForm: Ref<boolean>
@@ -37,6 +38,7 @@ export function useAdminTournamentListFormOpen(options: {
   fetchSeasonsList: () => void | Promise<void>
   competitionsList: ReadonlyListRef
   fetchCompetitionsList: () => void | Promise<void>
+  fetchEditionsList: () => void | Promise<void>
   ageGroupsList: ReadonlyListRef
   fetchAgeGroupsList: () => void | Promise<void>
   fetchTournamentTemplates: () => void | Promise<void>
@@ -57,6 +59,7 @@ export function useAdminTournamentListFormOpen(options: {
     submitAttempted,
     editingId,
     initialTeamIds,
+    initialEditionId,
     createTemplateId,
     v$,
     showForm,
@@ -67,6 +70,7 @@ export function useAdminTournamentListFormOpen(options: {
     fetchSeasonsList,
     competitionsList,
     fetchCompetitionsList,
+    fetchEditionsList,
     ageGroupsList,
     fetchAgeGroupsList,
     fetchTournamentTemplates,
@@ -103,6 +107,7 @@ export function useAdminTournamentListFormOpen(options: {
     submitAttempted.value = false
     editingId.value = null
     initialTeamIds.value = []
+    initialEditionId.value = ''
     createTemplateId.value = ''
     Object.assign(form, buildDefaultTournamentForm())
     manualPlayoffEnabled.value = false
@@ -117,6 +122,7 @@ export function useAdminTournamentListFormOpen(options: {
     if (!seasonsList.value.length) await fetchSeasonsList()
     if (!competitionsList.value.length) await fetchCompetitionsList()
     if (!ageGroupsList.value.length) await fetchAgeGroupsList()
+    await fetchEditionsList()
     await fetchTournamentTemplates()
     await fetchTeamsLite()
     await fetchStadiumsReferees()
@@ -135,6 +141,7 @@ export function useAdminTournamentListFormOpen(options: {
 
       const mapped = patchFormFromTournament(form, res)
       initialTeamIds.value = mapped.initialTeamIds
+      initialEditionId.value = form.editionId
       manualPlayoffEnabled.value = mapped.manualPlayoffEnabled
 
       v$.value.$reset()

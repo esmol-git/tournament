@@ -32,6 +32,7 @@ import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
 import { ReorderRoundDto } from './dto/reorder-round.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
+import { recomputeTournamentCardSuspensions } from '../tournament-rosters/tournament-card-suspensions.util';
 import { MatchesFilterQueryDto } from './dto/matches-filter-query.dto';
 import { CreateTournamentNewsDto } from './dto/create-tournament-news.dto';
 import { UpdateTournamentNewsDto } from './dto/update-tournament-news.dto';
@@ -254,6 +255,24 @@ export class TournamentsService {
     }
   }
 
+  private assertCardBanLimits(dto: {
+    redCardBanMatches?: number;
+    yellowAccumulationThreshold?: number;
+    yellowAccumulationBanMatches?: number;
+  }) {
+    const fields: Array<[string, number | undefined]> = [
+      ['redCardBanMatches', dto.redCardBanMatches],
+      ['yellowAccumulationThreshold', dto.yellowAccumulationThreshold],
+      ['yellowAccumulationBanMatches', dto.yellowAccumulationBanMatches],
+    ];
+    for (const [name, value] of fields) {
+      if (value === undefined) continue;
+      if (!Number.isFinite(value) || value < 1 || value > 10) {
+        throw new BadRequestException(`Invalid ${name}`);
+      }
+    }
+  }
+
   private parseOptionalDate(
     value: string | null | undefined,
     field: string,
@@ -273,6 +292,7 @@ export class TournamentsService {
     const eligibilityProfile =
       dto.eligibilityProfile ?? TournamentEligibilityProfile.STANDARD;
     this.assertRosterLimits(dto.rosterMinPlayers, dto.rosterMaxPlayers);
+    this.assertCardBanLimits(dto);
 
     let registrationEnabled = dto.registrationEnabled ?? false;
     if (enrollmentMode === TournamentEnrollmentMode.APPLICATIONS) {
@@ -320,6 +340,13 @@ export class TournamentsService {
       rosterDeadlineAt:
         rosterDeadlineAt === undefined ? undefined : rosterDeadlineAt,
       maxTeams: dto.maxTeams ?? undefined,
+      cardAutoBanEnabled: dto.cardAutoBanEnabled ?? undefined,
+      redCardBanMatches: dto.redCardBanMatches ?? undefined,
+      yellowAccumulationThreshold: dto.yellowAccumulationThreshold ?? undefined,
+      yellowAccumulationBanMatches:
+        dto.yellowAccumulationBanMatches ?? undefined,
+      technicalWinGoalsFor: dto.technicalWinGoalsFor ?? undefined,
+      technicalWinGoalsAgainst: dto.technicalWinGoalsAgainst ?? undefined,
     };
   }
 
@@ -3271,6 +3298,21 @@ export class TournamentsService {
             },
           },
         },
+        matchReferees: {
+          orderBy: { role: 'asc' },
+          select: {
+            id: true,
+            role: true,
+            refereeId: true,
+            referee: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -3466,6 +3508,7 @@ export class TournamentsService {
     if (dto.rosterMinPlayers !== undefined || dto.rosterMaxPlayers !== undefined) {
       this.assertRosterLimits(dto.rosterMinPlayers, dto.rosterMaxPlayers);
     }
+    this.assertCardBanLimits(dto);
 
     let registrationEnabledForUpdate: boolean | undefined;
     if (dto.enrollmentMode === TournamentEnrollmentMode.APPLICATIONS) {
@@ -3760,6 +3803,26 @@ export class TournamentsService {
           ...(registrationClosesAt !== undefined
             ? { registrationClosesAt }
             : {}),
+          ...(dto.cardAutoBanEnabled !== undefined
+            ? { cardAutoBanEnabled: dto.cardAutoBanEnabled }
+            : {}),
+          ...(dto.redCardBanMatches !== undefined
+            ? { redCardBanMatches: dto.redCardBanMatches }
+            : {}),
+          ...(dto.yellowAccumulationThreshold !== undefined
+            ? { yellowAccumulationThreshold: dto.yellowAccumulationThreshold }
+            : {}),
+          ...(dto.yellowAccumulationBanMatches !== undefined
+            ? {
+                yellowAccumulationBanMatches: dto.yellowAccumulationBanMatches,
+              }
+            : {}),
+          ...(dto.technicalWinGoalsFor !== undefined
+            ? { technicalWinGoalsFor: dto.technicalWinGoalsFor }
+            : {}),
+          ...(dto.technicalWinGoalsAgainst !== undefined
+            ? { technicalWinGoalsAgainst: dto.technicalWinGoalsAgainst }
+            : {}),
           pointsWin: dto.pointsWin,
           pointsDraw: dto.pointsDraw,
           pointsLoss: dto.pointsLoss,
@@ -3894,6 +3957,15 @@ export class TournamentsService {
 
     if (removeOldLogoFromS3 && previousLogoUrl) {
       await this.storage.tryDeletePublicUrl(previousLogoUrl);
+    }
+
+    if (
+      dto.cardAutoBanEnabled !== undefined ||
+      dto.redCardBanMatches !== undefined ||
+      dto.yellowAccumulationThreshold !== undefined ||
+      dto.yellowAccumulationBanMatches !== undefined
+    ) {
+      await recomputeTournamentCardSuspensions(this.prisma, id);
     }
 
     return updated;

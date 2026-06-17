@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, unref } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { AgeGroupRow } from '~/types/admin/age-group'
+import type { CompetitionEditionListRow } from '~/types/admin/competition-edition'
 import type { CompetitionRow } from '~/types/admin/competition'
 import type { RefereeRow } from '~/types/admin/referee'
 import type { SeasonRow } from '~/types/admin/season'
@@ -103,6 +104,22 @@ export function useTournamentReferences(deps: Deps) {
     },
   })
 
+  const editionsQuery = useQuery({
+    queryKey: computed(() => adminTenantQueryKeys.editions(tenantId.value)),
+    enabled: standardEnabled,
+    staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+    queryFn: async (): Promise<CompetitionEditionListRow[]> => {
+      try {
+        return await deps.authFetch<CompetitionEditionListRow[]>(
+          deps.apiUrl(`/tenants/${deps.tenantId.value}/editions`),
+          authHeader(),
+        )
+      } catch {
+        return []
+      }
+    },
+  })
+
   const stadiumsRefereesQuery = useQuery({
     queryKey: computed(() => adminTenantQueryKeys.stadiumsReferees(tenantId.value)),
     enabled: standardEnabled,
@@ -135,6 +152,9 @@ export function useTournamentReferences(deps: Deps) {
 
   const ageGroupsList = computed(() => ageGroupsQuery.data.value ?? [])
   const ageGroupsLoading = computed(() => ageGroupsQuery.isFetching.value)
+
+  const editionsList = computed(() => editionsQuery.data.value ?? [])
+  const editionsLoading = computed(() => editionsQuery.isFetching.value)
 
   const stadiumsList = computed(() => stadiumsRefereesQuery.data.value?.stadiums ?? [])
   const refereesList = computed(() => stadiumsRefereesQuery.data.value?.referees ?? [])
@@ -193,6 +213,17 @@ export function useTournamentReferences(deps: Deps) {
           a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, locale.value),
       )
       .map((c) => ({ label: c.name, value: c.id })),
+  ])
+
+  const editionSelectOptions = computed(() => [
+    { label: t('admin.tournament_form.edition_none'), value: '' },
+    ...editionsList.value
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, locale.value))
+      .map((e) => ({
+        label: e.status === 'ARCHIVED' ? `${e.name} (${t('admin.editions.status_archived')})` : e.name,
+        value: e.id,
+      })),
   ])
 
   const ageGroupSelectOptions = computed(() => [
@@ -284,6 +315,24 @@ export function useTournamentReferences(deps: Deps) {
     })
   }
 
+  async function fetchEditionsList() {
+    if (!deps.token.value || !allowRefStandard(deps)) return
+    await queryClient.fetchQuery({
+      queryKey: adminTenantQueryKeys.editions(deps.tenantId.value),
+      staleTime: ADMIN_TENANT_QUERY_STALE_MS,
+      queryFn: async () => {
+        try {
+          return await deps.authFetch<CompetitionEditionListRow[]>(
+            deps.apiUrl(`/tenants/${deps.tenantId.value}/editions`),
+            authHeader(),
+          )
+        } catch {
+          return []
+        }
+      },
+    })
+  }
+
   async function fetchAgeGroupsList() {
     if (!deps.token.value || !allowRefBasic(deps)) return
     await queryClient.fetchQuery({
@@ -335,6 +384,8 @@ export function useTournamentReferences(deps: Deps) {
     competitionsLoading,
     ageGroupsList,
     ageGroupsLoading,
+    editionsList,
+    editionsLoading,
     stadiumsList,
     stadiumsLoading,
     refereesList,
@@ -343,6 +394,7 @@ export function useTournamentReferences(deps: Deps) {
     seasonFilterOptions,
     competitionSelectOptions,
     competitionFilterOptions,
+    editionSelectOptions,
     ageGroupSelectOptions,
     ageGroupFilterOptions,
     stadiumSelectOptions,
@@ -350,6 +402,7 @@ export function useTournamentReferences(deps: Deps) {
     refereeMultiOptions,
     fetchSeasonsList,
     fetchCompetitionsList,
+    fetchEditionsList,
     fetchAgeGroupsList,
     fetchStadiumsReferees,
   }

@@ -20,7 +20,12 @@ export async function assertPlayerFitsTeamCategory(
 ): Promise<void> {
   const category = await db.teamCategory.findFirst({
     where: { id: teamCategoryId, tenantId },
-    include: { rules: true },
+    include: {
+      rules: true,
+      ageGroup: {
+        select: { minBirthYear: true, maxBirthYear: true },
+      },
+    },
   });
   if (!category) {
     throw new BadRequestException(
@@ -40,6 +45,12 @@ export async function assertPlayerFitsTeamCategory(
   const maxYears: number[] = [];
   if (category.minBirthYear != null) minYears.push(category.minBirthYear);
   if (category.maxBirthYear != null) maxYears.push(category.maxBirthYear);
+  if (category.ageGroup?.minBirthYear != null) {
+    minYears.push(category.ageGroup.minBirthYear);
+  }
+  if (category.ageGroup?.maxBirthYear != null) {
+    maxYears.push(category.ageGroup.maxBirthYear);
+  }
 
   const requireBirth =
     category.requireBirthDate || category.rules.some((r) => r.requireBirthDate);

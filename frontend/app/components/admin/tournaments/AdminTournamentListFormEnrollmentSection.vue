@@ -7,6 +7,7 @@ import { TOURNAMENT_GAME_FORMAT_VALUES } from '~/utils/tournamentGameFormat'
 const props = defineProps<{
   form: TournamentFormModel
   isEdit: boolean
+  hideContextFields?: boolean
 }>()
 
 const { t } = useI18n()
@@ -86,7 +87,7 @@ watch(
         <label for="t_enrollmentMode">{{ t('admin.tournament_form.label_enrollment_mode') }}</label>
       </FloatLabel>
 
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel v-if="!hideContextFields" variant="on" class="block min-w-0">
         <Select
           input-id="t_eligibilityProfile"
           v-model="form.eligibilityProfile"
@@ -98,7 +99,7 @@ watch(
         <label for="t_eligibilityProfile">{{ t('admin.tournament_form.label_eligibility_profile') }}</label>
       </FloatLabel>
 
-      <FloatLabel variant="on" class="block min-w-0">
+      <FloatLabel v-if="!hideContextFields" variant="on" class="block min-w-0">
         <Select
           input-id="t_gameFormat"
           v-model="form.gameFormat"
@@ -111,7 +112,7 @@ watch(
         <label for="t_gameFormat">{{ t('admin.tournament_form.label_game_format') }}</label>
       </FloatLabel>
 
-      <div v-if="isCustomGameFormat" class="flex flex-col gap-1 md:col-span-2">
+      <div v-if="!hideContextFields && isCustomGameFormat" class="flex flex-col gap-1 md:col-span-2">
         <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_game_format_note') }}</label>
         <InputText
           v-model="form.gameFormatNote"
@@ -151,6 +152,47 @@ watch(
       <div class="flex flex-col gap-1 md:col-span-2">
         <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_roster_deadline') }}</label>
         <DatePicker v-model="form.rosterDeadlineAt" show-time hour-format="24" class="w-full" />
+      </div>
+
+      <div class="md:col-span-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3 space-y-3">
+        <label class="flex items-center justify-between gap-3">
+          <span class="text-sm">{{ t('admin.tournament_form.label_card_auto_ban') }}</span>
+          <ToggleSwitch v-model="form.cardAutoBanEnabled" />
+        </label>
+        <p class="text-[11px] leading-snug text-muted-color">
+          {{ t('admin.tournament_form.card_auto_ban_hint') }}
+        </p>
+        <div v-if="form.cardAutoBanEnabled" class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_red_card_ban') }}</label>
+            <InputNumber v-model="form.redCardBanMatches" :min="1" :max="10" class="w-full" show-buttons />
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_yellow_threshold') }}</label>
+            <InputNumber v-model="form.yellowAccumulationThreshold" :min="1" :max="10" class="w-full" show-buttons />
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_yellow_ban') }}</label>
+            <InputNumber v-model="form.yellowAccumulationBanMatches" :min="1" :max="10" class="w-full" show-buttons />
+          </div>
+        </div>
+      </div>
+
+      <div class="md:col-span-2 rounded-lg border border-surface-200 dark:border-surface-700 p-3 space-y-3">
+        <p class="text-sm font-medium">{{ t('admin.tournament_form.technical_result_section') }}</p>
+        <p class="text-[11px] leading-snug text-muted-color">
+          {{ t('admin.tournament_form.technical_result_hint') }}
+        </p>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_technical_win_goals') }}</label>
+            <InputNumber v-model="form.technicalWinGoalsFor" :min="0" :max="99" class="w-full" show-buttons />
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-xs text-muted-color">{{ t('admin.tournament_form.label_technical_lose_goals') }}</label>
+            <InputNumber v-model="form.technicalWinGoalsAgainst" :min="0" :max="99" class="w-full" show-buttons />
+          </div>
+        </div>
       </div>
     </div>
   </section>

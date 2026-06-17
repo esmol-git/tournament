@@ -135,6 +135,12 @@ export function useMatchProtocolReferences() {
       .map((r) => ({ label: r.name, value: r.id })),
   )
 
+  const technicalReasonOptions = computed(() =>
+    scheduleReasons.value
+      .filter((r) => r.active && r.scope === 'TECHNICAL')
+      .map((r) => ({ label: r.name, value: r.id })),
+  )
+
   function getEventKindKey(e: { type: string; protocolEventTypeId?: string | null }) {
     if (e.protocolEventTypeId) return `pet:${e.protocolEventTypeId}`
     return `builtin:${e.type}`
@@ -164,6 +170,7 @@ export function useMatchProtocolReferences() {
     eventKindOptions,
     postponeReasonOptions,
     cancelReasonOptions,
+    technicalReasonOptions,
     getEventKindKey,
     applyEventKindKey,
   }

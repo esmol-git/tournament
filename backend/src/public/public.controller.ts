@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TournamentsService } from '../tournaments/tournaments.service';
+import { CompetitionEditionsService } from '../competition-editions/competition-editions.service';
 import { ListTenantTournamentsQueryDto } from '../tournaments/dto/list-tenant-tournaments-query.dto';
 import { MatchesFilterQueryDto } from '../tournaments/dto/matches-filter-query.dto';
 import { ListTournamentNewsQueryDto } from '../tournaments/dto/list-tournament-news-query.dto';
@@ -21,7 +22,10 @@ import { PublicHttpCacheInterceptor } from './public-http-cache.interceptor';
 @UseInterceptors(PublicHttpCacheInterceptor)
 @Controller('public/tenants/:tenantSlug')
 export class PublicController {
-  constructor(private readonly tournaments: TournamentsService) {}
+  constructor(
+    private readonly tournaments: TournamentsService,
+    private readonly editions: CompetitionEditionsService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Краткая информация о тенанте (для шапки сайта)' })
@@ -50,6 +54,21 @@ export class PublicController {
   })
   async participantsPlayers(@Param('tenantSlug') tenantSlug: string) {
     return this.tournaments.listPublicOrganizationPlayersCached(tenantSlug);
+  }
+
+  @Get('editions')
+  @ApiOperation({ summary: 'Публичные зачёты (программы соревнований)' })
+  async listEditions(@Param('tenantSlug') tenantSlug: string) {
+    return this.editions.listPublicByTenantSlug(tenantSlug);
+  }
+
+  @Get('editions/:editionSlug')
+  @ApiOperation({ summary: 'Публичная карточка зачёта с турнирами' })
+  async getEdition(
+    @Param('tenantSlug') tenantSlug: string,
+    @Param('editionSlug') editionSlug: string,
+  ) {
+    return this.editions.getPublicBySlug(tenantSlug, editionSlug);
   }
 
   @Get('tournaments')

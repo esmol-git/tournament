@@ -24,6 +24,10 @@ export class CreateTeamCategoryDto {
   slug?: string;
 
   @IsOptional()
+  @IsString()
+  ageGroupId?: string | null;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1900)

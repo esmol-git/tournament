@@ -1133,7 +1133,7 @@ watch(
               <ToggleSwitch v-model="telegramSettings.telegramNotifyOnProtocolPublished" />
             </label>
             <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">
-              <span class="text-sm">Скорый старт матча (резерв под v1.1)</span>
+              <span class="text-sm">Матч скоро начнётся (за ~1 ч до старта, Telegram)</span>
               <ToggleSwitch v-model="telegramSettings.telegramNotifyOnMatchStartingSoon" />
             </label>
             <label class="flex items-center justify-between gap-3 rounded-lg border border-surface-200 p-3 dark:border-surface-700 md:col-span-2">

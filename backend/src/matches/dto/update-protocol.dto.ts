@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import { MatchEventType, MatchStatus, MatchTeamSide } from '@prisma/client';
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -86,6 +87,23 @@ export class UpdateProtocolDto {
   @IsOptional()
   @IsString()
   scheduleChangeNote?: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Технический результат (неявка и т.п.) — счёт по регламенту турнира',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isTechnicalResult?: boolean;
+
+  @ApiProperty({
+    required: false,
+    enum: MatchTeamSide,
+    description: 'Сторона технической победы',
+  })
+  @IsOptional()
+  @IsEnum(MatchTeamSide)
+  technicalResultSide?: MatchTeamSide;
 
   /**
    * ISO 8601: `Match.updatedAt` на момент открытия формы протокола.

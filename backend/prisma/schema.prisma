@@ -129,6 +129,8 @@ model Tenant {
   managementMembers   ManagementMember[]
   competitions        Competition[]
   seasons             Season[]
+  competitionEditions CompetitionEdition[]
+  eligibilityPolicies EligibilityPolicy[]
   ageGroups           AgeGroup[]
   regions             Region[]
   awards              Award[]
@@ -142,6 +144,7 @@ model Tenant {
   telegramNotificationDeliveries TelegramNotificationDelivery[]
   tournamentRegistrations   TournamentRegistration[]
   tournamentTeamPlayers     TournamentTeamPlayer[]
+  matchReferees             MatchReferee[]
 
   @@index([subscriptionEndsAt])
 }
@@ -151,7 +154,7 @@ model TelegramNotificationDelivery {
   tenantId      String
   /// TELEGRAM (резерв под другие каналы в будущем).
   channel       String   @default("TELEGRAM")
-  /// rescheduled | protocol_published | test
+  /// rescheduled | protocol_published | starting_soon | test
   kind          String
   chatId        String
   /// QUEUED | SENT | FAILED
@@ -271,6 +274,7 @@ enum MatchScheduleReasonScope {
   POSTPONE
   CANCEL
   BOTH
+  TECHNICAL
 }
 
 /// Возрастная группа / дивизион (U12, взрослые и т.д.) — справочник тенанта.
@@ -295,9 +299,34 @@ model AgeGroup {
   teams       Team[]
   tournaments Tournament[]
   tournamentTemplates TournamentTemplate[]
+  eligibilityPolicies EligibilityPolicy[]
+  teamCategories TeamCategory[]
 
   @@index([tenantId, sortOrder])
   @@index([tenantId, name])
+}
+
+/// Единый регламент допуска игроков (возраст, пол, дата рождения).
+model EligibilityPolicy {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  requireBirthDate Boolean @default(false)
+  minBirthYear Int?
+  maxBirthYear Int?
+  allowedGenders PlayerGender[] @default([])
+  ageGroupId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ageGroup AgeGroup? @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
+  editions CompetitionEdition[]
+  tournaments Tournament[]
+  teamCategories TeamCategory[]
+
+  @@index([tenantId, name])
+  @@index([tenantId, ageGroupId])
 }
 
 /// Регион / территория для команд и площадок — справочник тенанта.
@@ -353,6 +382,7 @@ model Competition {
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tournaments Tournament[]
   tournamentTemplates TournamentTemplate[]
+  competitionEditions CompetitionEdition[]
 
   @@index([tenantId, sortOrder])
   @@index([tenantId, name])
@@ -373,9 +403,56 @@ model Season {
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tournaments Tournament[]
   tournamentTemplates TournamentTemplate[]
+  competitionEditions CompetitionEdition[]
 
   @@index([tenantId, sortOrder])
   @@index([tenantId, name])
+}
+
+/// Зачёт — программа соревнований (сезон + тип + регламент), объединяет один или несколько турниров.
+model CompetitionEdition {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  slug        String
+  description String?
+
+  seasonId       String
+  competitionId  String
+  audience       CompetitionAudience @default(OPEN)
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  /// Область учёта карточек: только турнир или все турниры зачёта.
+  sanctionScope SanctionScope @default(EDITION)
+
+  cardAutoBanEnabled Boolean @default(false)
+  redCardBanMatches Int @default(1)
+  yellowAccumulationThreshold Int @default(2)
+  yellowAccumulationBanMatches Int @default(1)
+  technicalWinGoalsFor Int @default(3)
+  technicalWinGoalsAgainst Int @default(0)
+
+  /// Регламент допуска на уровне зачёта (наследуется турнирами).
+  eligibilityPolicyId String?
+
+  published Boolean @default(false)
+  status    EditionStatus @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  season      Season      @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  competition Competition @relation(fields: [competitionId], references: [id], onDelete: Restrict)
+  eligibilityPolicy EligibilityPolicy? @relation(fields: [eligibilityPolicyId], references: [id], onDelete: SetNull)
+  tournaments Tournament[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, seasonId])
+  @@index([tenantId, competitionId])
+  @@index([tenantId, status])
 }
 
 /// Документ (регламент, положение): ссылка и примечание; файл — по URL или позже через загрузку.
@@ -526,6 +603,7 @@ model Referee {
   refereePosition     RefereePosition?    @relation(fields: [refereePositionId], references: [id], onDelete: SetNull)
   tournamentReferees  TournamentReferee[]
   tournamentTemplateReferees TournamentTemplateReferee[]
+  matchReferees       MatchReferee[]
 
   @@index([tenantId, lastName, firstName])
   @@index([tenantId, refereeCategoryId])
@@ -726,6 +804,18 @@ model Tournament {
   rosterMaxPlayers Int?
   /// Дедлайн фиксации состава (опционально).
   rosterDeadlineAt DateTime?
+  /// Автодисквалификация по карточкам (пропуск N матчей команды).
+  cardAutoBanEnabled Boolean @default(false)
+  /// Сколько матчей пропустить за прямую красную карточку.
+  redCardBanMatches Int @default(1)
+  /// Сколько жёлтых накапливается до автобана.
+  yellowAccumulationThreshold Int @default(2)
+  /// Сколько матчей пропустить за накопленные жёлтые.
+  yellowAccumulationBanMatches Int @default(1)
+  /// Голы победителя при техническом результате (неявка и т.п.).
+  technicalWinGoalsFor Int @default(3)
+  /// Голы проигравшего при техническом результате (обычно 0).
+  technicalWinGoalsAgainst Int @default(0)
   pointsWin   Int      @default(3)
   pointsDraw  Int      @default(1)
   pointsLoss  Int      @default(0)
@@ -740,6 +830,12 @@ model Tournament {
   competitionId  String?
   /** Возрастная группа турнира из справочника (опционально). */
   ageGroupId     String?
+  /** Зачёт (программа соревнований); опционально. */
+  editionId      String?
+  /// Наследовать регламент и метаданные зачёта или задавать свои.
+  regulationMode TournamentRegulationMode @default(INHERIT)
+  /// Собственный регламент допуска (при regulationMode = OVERRIDE или автономный турнир).
+  eligibilityPolicyId String?
   stadiumId   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -750,6 +846,8 @@ model Tournament {
   season      Season?     @relation(fields: [seasonId], references: [id], onDelete: SetNull)
   competition Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
   ageGroup    AgeGroup?   @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
+  edition     CompetitionEdition? @relation(fields: [editionId], references: [id], onDelete: SetNull)
+  eligibilityPolicy EligibilityPolicy? @relation(fields: [eligibilityPolicyId], references: [id], onDelete: SetNull)
   stadium     Stadium?    @relation(fields: [stadiumId], references: [id], onDelete: SetNull)
   teams       Team[]              // legacy связь (пока не выпиливаем)
   tournamentTeams TournamentTeam[]
@@ -771,6 +869,7 @@ model Tournament {
   @@index([tenantId, launchChecklistCompletedAt])
   @@index([tenantId, seasonId])
   @@index([tenantId, competitionId])
+  @@index([tenantId, editionId])
   @@index([tenantId, ageGroupId])
   @@index([tenantId, stadiumId])
 }
@@ -912,10 +1011,15 @@ model TeamCategory {
   requireBirthDate Boolean @default(false)
   /// Allowed player genders for this category; empty array means "any".
   allowedGenders PlayerGender[] @default([])
+  /// Опциональная привязка к возрастной группе (годы рождения дополняют правила категории).
+  ageGroupId String?
+  eligibilityPolicyId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ageGroup AgeGroup? @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
+  eligibilityPolicy EligibilityPolicy? @relation(fields: [eligibilityPolicyId], references: [id], onDelete: SetNull)
   teams  Team[]
   rules TeamCategoryRule[]
 
@@ -1018,6 +1122,10 @@ model Match {
   stadiumId    String?
   /** Показывать матч на публичном сайте и в публичном ICS (скачивание из админки — полный список). */
   publishedOnPublic Boolean @default(true)
+  /** Матч завершён техническим результатом (неявка, регламент). */
+  isTechnicalResult Boolean @default(false)
+  /** Сторона, получившая техническую победу. */
+  technicalResultSide MatchTeamSide?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -1029,6 +1137,7 @@ model Match {
   scheduleChangeReason MatchScheduleReason? @relation(fields: [scheduleChangeReasonId], references: [id], onDelete: SetNull)
   stadium      Stadium?     @relation(fields: [stadiumId], references: [id], onDelete: SetNull)
   events       MatchEvent[]
+  matchReferees MatchReferee[]
 
   @@index([tournamentId, startTime])
   @@index([tournamentId, status, startTime])
@@ -1036,6 +1145,32 @@ model Match {
   @@index([tenantId, tournamentId])
   @@index([scheduleChangeReasonId])
   @@index([tenantId, stadiumId])
+}
+
+/// Роль судьи на конкретном матче.
+enum MatchRefereeRole {
+  MAIN
+  ASSISTANT_1
+  ASSISTANT_2
+}
+
+/// Назначение судьи на матч (главный, помощники).
+model MatchReferee {
+  id        String           @id @default(cuid())
+  tenantId  String
+  matchId   String
+  refereeId String
+  role      MatchRefereeRole
+  createdAt DateTime         @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  match   Match   @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  referee Referee @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, role])
+  @@unique([matchId, refereeId])
+  @@index([tenantId, matchId])
+  @@index([refereeId])
 }
 
 model MatchEvent {
@@ -1157,6 +1292,29 @@ enum TournamentEligibilityProfile {
   STANDARD
 }
 
+enum CompetitionAudience {
+  YOUTH
+  ADULT_AMATEUR
+  ADULT_COMPETITIVE
+  OPEN
+}
+
+enum SanctionScope {
+  TOURNAMENT
+  EDITION
+}
+
+enum EditionStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum TournamentRegulationMode {
+  INHERIT
+  OVERRIDE
+}
+
 enum TournamentGameFormat {
   THREE_V_THREE_NO_GK
   FOUR_PLUS_ONE
@@ -1196,6 +1354,10 @@ model TournamentTeamPlayer {
   sanctionNote String?
   sanctionedAt DateTime?
   sanctionedByUserId String?
+  /// Оставшиеся матчи дисквалификации по карточкам (кэш пересчёта).
+  suspendedMatchesRemaining Int @default(0)
+  /// Накопленные жёлтые в текущем цикле (кэш пересчёта).
+  yellowCardsAccumulated Int @default(0)
   createdAt    DateTime                   @default(now())
   updatedAt    DateTime                   @updatedAt
 

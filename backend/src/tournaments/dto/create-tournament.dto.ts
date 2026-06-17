@@ -305,6 +305,51 @@ export class CreateTournamentDto {
   @IsDateString()
   rosterDeadlineAt?: string | null;
 
+  @ApiProperty({ required: false, description: 'Автодисквалификация по карточкам' })
+  @IsOptional()
+  @IsBoolean()
+  cardAutoBanEnabled?: boolean;
+
+  @ApiProperty({ required: false, description: 'Матчей пропуска за красную карточку' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  redCardBanMatches?: number;
+
+  @ApiProperty({ required: false, description: 'Жёлтых до автобана' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  yellowAccumulationThreshold?: number;
+
+  @ApiProperty({ required: false, description: 'Матчей пропуска за накопленные жёлтые' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  yellowAccumulationBanMatches?: number;
+
+  @ApiProperty({ required: false, description: 'Голы победителя при техническом результате' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  technicalWinGoalsFor?: number;
+
+  @ApiProperty({ required: false, description: 'Голы проигравшего при техническом результате' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  technicalWinGoalsAgainst?: number;
+
   @ApiProperty({ required: false, description: 'Включить приём заявок (для APPLICATIONS включается автоматически)' })
   @IsOptional()
   @IsBoolean()

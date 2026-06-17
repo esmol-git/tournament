@@ -1,18 +1,24 @@
 <script setup lang="ts">
 /* eslint-disable vue/no-mutating-props -- родитель передаёт общий reactive(form); поля синхронизируются по ссылке */
 import type { TournamentFormModel } from '~/composables/admin/useTournamentForm'
+import { watch } from 'vue'
 import { adminTooltip } from '~/utils/adminTooltip'
 
 type LabelValue = { label: string; value: string }
 
-defineProps<{
+const props = defineProps<{
   form: TournamentFormModel
+  isEdit: boolean
+  hideReferenceFields?: boolean
   seasonSelectOptions: LabelValue[]
   seasonsLoading: boolean
   competitionSelectOptions: LabelValue[]
   competitionsLoading: boolean
   ageGroupSelectOptions: LabelValue[]
   ageGroupsLoading: boolean
+  editionSelectOptions: LabelValue[]
+  editionsLoading: boolean
+  editionsList: Array<{ id: string; season: { id: string }; competition: { id: string } }>
   stadiumMultiOptions: LabelValue[]
   stadiumsLoading: boolean
   refereeMultiOptions: LabelValue[]
@@ -22,6 +28,17 @@ defineProps<{
 }>()
 
 const { t } = useI18n()
+
+watch(
+  () => props.form.editionId,
+  (editionId) => {
+    if (!editionId) return
+    const edition = props.editionsList.find((e) => e.id === editionId)
+    if (!edition) return
+    props.form.seasonId = edition.season.id
+    props.form.competitionId = edition.competition.id
+  },
+)
 </script>
 
 <template>
@@ -58,7 +75,7 @@ const { t } = useI18n()
     >
       {{ t('admin.tournament_page.reference_fields_plan_standard_locked') }}
     </Message>
-    <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <div v-if="!hideReferenceFields" class="grid grid-cols-1 gap-4 md:grid-cols-3">
       <FloatLabel variant="on" class="block min-w-0">
         <Select
           inputId="t_seasonId"
@@ -97,6 +114,20 @@ const { t } = useI18n()
           :disabled="!canAccessReferenceBasic"
         />
         <label for="t_ageGroupId">{{ t('admin.tournament_form.field_age_group') }}</label>
+      </FloatLabel>
+      <FloatLabel variant="on" class="block min-w-0 md:col-span-3">
+        <Select
+          inputId="t_editionId"
+          v-model="form.editionId"
+          :options="editionSelectOptions"
+          option-label="label"
+          option-value="value"
+          class="w-full"
+          show-clear
+          :loading="editionsLoading"
+          :disabled="!canAccessReferenceStandard"
+        />
+        <label for="t_editionId">{{ t('admin.tournament_form.field_edition') }}</label>
       </FloatLabel>
     </div>
     <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">

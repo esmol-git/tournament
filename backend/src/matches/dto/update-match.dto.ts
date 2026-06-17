@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsDateString,
   IsInt,
@@ -8,7 +9,9 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { MatchRefereeAssignmentDto } from './match-referee-assignment.dto';
 
 export class UpdateMatchDto {
   @ApiPropertyOptional({ example: '2026-03-21T12:00:00.000Z' })
@@ -65,4 +68,15 @@ export class UpdateMatchDto {
   @IsOptional()
   @IsBoolean()
   publishedOnPublic?: boolean;
+
+  @ApiPropertyOptional({
+    type: [MatchRefereeAssignmentDto],
+    description:
+      'Назначения судей на матч; пустой массив — снять всех. Роли: MAIN, ASSISTANT_1, ASSISTANT_2.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MatchRefereeAssignmentDto)
+  referees?: MatchRefereeAssignmentDto[];
 }

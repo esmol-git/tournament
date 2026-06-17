@@ -153,6 +153,7 @@ const savingForm = ref(false)
 const editingId = ref<string | null>(null)
 const isEdit = computed(() => !!editingId.value)
 const initialTeamIds = ref<string[]>([])
+const initialEditionId = ref('')
 const manualPlayoffEnabled = ref(false)
 
 const statusOptions = computed(() => [
@@ -180,6 +181,8 @@ const {
   competitionsLoading,
   ageGroupsList,
   ageGroupsLoading,
+  editionsList,
+  editionsLoading,
   stadiumsLoading,
   refereesLoading,
   seasonSelectOptions,
@@ -188,10 +191,12 @@ const {
   competitionFilterOptions,
   ageGroupSelectOptions,
   ageGroupFilterOptions,
+  editionSelectOptions,
   stadiumMultiOptions,
   refereeMultiOptions,
   fetchSeasonsList,
   fetchCompetitionsList,
+  fetchEditionsList,
   fetchAgeGroupsList,
   fetchStadiumsReferees,
 } = useTournamentReferences({
@@ -325,6 +330,7 @@ const { openCreate, openEdit } = useAdminTournamentListFormOpen({
   submitAttempted,
   editingId,
   initialTeamIds,
+  initialEditionId,
   createTemplateId,
   v$: v$ as Ref<TournamentListFormVuelidate>,
   showForm,
@@ -335,6 +341,7 @@ const { openCreate, openEdit } = useAdminTournamentListFormOpen({
   fetchSeasonsList,
   competitionsList,
   fetchCompetitionsList,
+  fetchEditionsList,
   ageGroupsList,
   fetchAgeGroupsList,
   fetchTournamentTemplates,
@@ -357,6 +364,7 @@ const {
   apiUrl,
   form,
   initialTeamIds,
+  initialEditionId,
   editingId,
   isEdit,
   manualPlayoffEnabled,
@@ -449,6 +457,9 @@ const tournamentListFormBodyBindings = useAdminTournamentListFormBodyBindings({
   competitionsLoading,
   ageGroupSelectOptions,
   ageGroupsLoading,
+  editionSelectOptions,
+  editionsLoading,
+  editionsList,
   stadiumMultiOptions,
   stadiumsLoading,
   refereeMultiOptions,
@@ -476,6 +487,7 @@ onMounted(() => {
     bootstrapListFromCurrentRoute()
     void fetchSeasonsList()
     void fetchCompetitionsList()
+    void fetchEditionsList()
     void fetchAgeGroupsList()
 
     if (typeof window !== 'undefined') {

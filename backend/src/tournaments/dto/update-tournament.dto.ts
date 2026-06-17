@@ -373,4 +373,49 @@ export class UpdateTournamentDto {
   @Min(2)
   @Max(512)
   maxTeams?: number | null;
+
+  @ApiPropertyOptional({ description: 'Автодисквалификация по карточкам' })
+  @IsOptional()
+  @IsBoolean()
+  cardAutoBanEnabled?: boolean;
+
+  @ApiPropertyOptional({ description: 'Матчей пропуска за красную карточку' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  redCardBanMatches?: number;
+
+  @ApiPropertyOptional({ description: 'Жёлтых до автобана' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  yellowAccumulationThreshold?: number;
+
+  @ApiPropertyOptional({ description: 'Матчей пропуска за накопленные жёлтые' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  yellowAccumulationBanMatches?: number;
+
+  @ApiPropertyOptional({ description: 'Голы победителя при техническом результате' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  technicalWinGoalsFor?: number;
+
+  @ApiPropertyOptional({ description: 'Голы проигравшего при техническом результате' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  technicalWinGoalsAgainst?: number;
 }

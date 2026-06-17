@@ -39,6 +39,7 @@ export function useAdminTournamentListFormSave(options: {
   apiUrl: (path: string) => string
   form: TournamentFormModel
   initialTeamIds: Ref<string[]>
+  initialEditionId: Ref<string>
   editingId: Ref<string | null>
   isEdit: ComputedRef<boolean>
   manualPlayoffEnabled: Ref<boolean>
@@ -63,6 +64,7 @@ export function useAdminTournamentListFormSave(options: {
     apiUrl,
     form,
     initialTeamIds,
+    initialEditionId,
     editingId,
     isEdit,
     manualPlayoffEnabled,
@@ -77,6 +79,36 @@ export function useAdminTournamentListFormSave(options: {
     showForm,
     fetchTournaments,
   } = options
+
+  async function syncEditionLink(tournamentId: string) {
+    if (!token.value || !canAccessReferenceStandard.value) return
+
+    const next = form.editionId.trim()
+    const prev = initialEditionId.value.trim()
+    if (next === prev) return
+
+    const headers = { Authorization: `Bearer ${token.value}` }
+
+    if (prev && prev !== next) {
+      await authFetch(
+        apiUrl(`/tenants/${tenantId.value}/editions/${prev}/tournaments/${tournamentId}`),
+        { method: 'DELETE', headers },
+      )
+    }
+
+    if (next) {
+      await authFetch(
+        apiUrl(`/tenants/${tenantId.value}/editions/${next}/tournaments/${tournamentId}`),
+        {
+          method: 'POST',
+          headers,
+          body: { regulationMode: 'INHERIT' },
+        },
+      )
+    }
+
+    initialEditionId.value = next
+  }
 
   const tournamentFormErrors = computed(() => {
     const name = form.name.trim()
@@ -267,6 +299,12 @@ export function useAdminTournamentListFormSave(options: {
         rosterMinPlayers: form.rosterMinPlayers,
         rosterMaxPlayers: form.rosterMaxPlayers,
         rosterDeadlineAt: form.rosterDeadlineAt?.toISOString() ?? null,
+        cardAutoBanEnabled: form.cardAutoBanEnabled,
+        redCardBanMatches: form.redCardBanMatches,
+        yellowAccumulationThreshold: form.yellowAccumulationThreshold,
+        yellowAccumulationBanMatches: form.yellowAccumulationBanMatches,
+        technicalWinGoalsFor: form.technicalWinGoalsFor,
+        technicalWinGoalsAgainst: form.technicalWinGoalsAgainst,
       }
 
       const calendarColorNormalized = String(form.calendarColor ?? '')
@@ -319,6 +357,7 @@ export function useAdminTournamentListFormSave(options: {
       }
 
       await syncTournamentTeams(id)
+      await syncEditionLink(id)
       showForm.value = false
       await fetchTournaments()
       void invalidateAdminTenantTournamentsAll(queryClient, tenantId.value)
