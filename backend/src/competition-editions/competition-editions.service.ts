@@ -7,6 +7,7 @@ import {
   EditionStatus,
   Prisma,
   TournamentRegulationMode,
+  TournamentStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCompetitionEditionDto } from './dto/create-competition-edition.dto';
