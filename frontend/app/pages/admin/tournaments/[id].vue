@@ -10,6 +10,7 @@ import type {
 } from '~/types/tournament-admin'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { buildPlayoffSlotLabels } from '~/utils/playoffSlotResolver'
+import { minRefereesRequiredForParallelSlots } from '~/utils/matchOfficialsProfile'
 import { MIN_SKELETON_DISPLAY_MS, sleepRemainingAfter } from '~/utils/minimumLoadingDelay'
 import { toYmdLocal } from '~/utils/dateYmd'
 import {
@@ -118,13 +119,20 @@ const infrastructureForm = ref({
   refereeIds: [] as string[],
   stadiumIds: [] as string[],
   venueMode: 'MULTI_VENUE' as 'SINGLE_VENUE' | 'MULTI_VENUE' | 'HOME_STADIUM',
+  matchOfficialsProfile: 'CREW_OF_3' as 'MAIN_ONLY' | 'CREW_OF_3' | 'CREW_OF_3_WITH_VAR',
 })
 const infrastructureOptions = ref({
   seasons: [] as Array<{ id: string; name: string; active?: boolean | null }>,
   competitions: [] as Array<{ id: string; name: string; active?: boolean | null }>,
   ageGroups: [] as Array<{ id: string; name: string; shortLabel?: string | null; active?: boolean | null }>,
   referees: [] as Array<{ id: string; firstName: string; lastName: string }>,
-  stadiums: [] as Array<{ id: string; name: string; city?: string | null; address?: string | null }>,
+  stadiums: [] as Array<{
+    id: string
+    name: string
+    city?: string | null
+    address?: string | null
+    pitchCount?: number | null
+  }>,
 })
 
 const { teams: allTeams, teamsLoading, teamsQueryError, refetch: refetchTeamsCatalog } =
@@ -634,6 +642,9 @@ const fetchTournament = async () => {
       refereeIds: (res.tournamentReferees ?? []).map((x) => x.refereeId),
       stadiumIds: (res.tournamentStadiums ?? []).map((x) => x.stadiumId),
       venueMode: (res.venueMode as typeof infrastructureForm.value.venueMode) ?? 'MULTI_VENUE',
+      matchOfficialsProfile:
+        (res.matchOfficialsProfile as typeof infrastructureForm.value.matchOfficialsProfile) ??
+        'CREW_OF_3',
     }
 
     if (showGroupBucketsFor(res)) {
@@ -1511,6 +1522,7 @@ async function saveInfrastructure() {
         refereeIds: infrastructureForm.value.refereeIds,
         stadiumIds: infrastructureForm.value.stadiumIds,
         venueMode: infrastructureForm.value.venueMode,
+        matchOfficialsProfile: infrastructureForm.value.matchOfficialsProfile,
       },
     })
     await fetchTournament()
@@ -2101,6 +2113,15 @@ const venueModeOptions = computed(() => [
   { label: t('admin.tournament_page.venue_mode_home'), value: 'HOME_STADIUM' },
 ])
 
+const matchOfficialsProfileOptions = computed(() => [
+  { label: t('admin.match_officials.profile_main_only'), value: 'MAIN_ONLY' },
+  { label: t('admin.match_officials.profile_crew_of_3'), value: 'CREW_OF_3' },
+  {
+    label: t('admin.match_officials.profile_crew_with_var'),
+    value: 'CREW_OF_3_WITH_VAR',
+  },
+])
+
 const fetchTable = async () => {
   if (!token.value) return
   const tourn = tournament.value
@@ -2520,6 +2541,29 @@ const generateCalendar = async () => {
   }
   calendarSubmitAttempted.value = true
   if (!canGenerateCalendar.value) {
+    return
+  }
+  const simultaneousForCheck = Math.max(
+    1,
+    Number(calendarForm.simultaneousMatches ?? tournament.value?.simultaneousMatches ?? 1),
+  )
+  const refereePoolCount = tournament.value?.tournamentReferees?.length ?? 0
+  const officialsProfile = tournament.value?.matchOfficialsProfile ?? 'CREW_OF_3'
+  const minReferees = minRefereesRequiredForParallelSlots(
+    officialsProfile,
+    simultaneousForCheck,
+  )
+  if (refereePoolCount > 0 && refereePoolCount < minReferees) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.tournament_page.calendar_referees_insufficient_summary'),
+      detail: t('admin.tournament_page.calendar_referees_insufficient_detail', {
+        have: refereePoolCount,
+        need: minReferees,
+        parallel: simultaneousForCheck,
+      }),
+      life: 7000,
+    })
     return
   }
   calendarSaving.value = true
@@ -4819,6 +4863,22 @@ onMounted(async () => {
                 <span>{{ option.lastName }} {{ option.firstName }}</span>
               </template>
             </MultiSelect>
+            <div class="mt-4">
+              <label class="mb-1.5 block text-sm font-medium text-surface-900 dark:text-surface-0">
+                {{ t('admin.match_officials.profile_label') }}
+              </label>
+              <Select
+                v-model="infrastructureForm.matchOfficialsProfile"
+                :options="matchOfficialsProfileOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :disabled="infrastructureReferenceFieldsLocked"
+              />
+              <p class="mt-1.5 text-xs leading-relaxed text-muted-color">
+                {{ t('admin.match_officials.profile_hint') }}
+              </p>
+            </div>
           </div>
 
           <div class="rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-0 dark:bg-surface-900 p-4 sm:p-5 lg:col-span-6 h-full">
@@ -4846,7 +4906,17 @@ onMounted(async () => {
                 <div class="min-w-0">
                   <div class="truncate">{{ option.name }}</div>
                   <div class="text-xs text-muted-color truncate">
-                    {{ [option.city, option.address].filter(Boolean).join(', ') || '—' }}
+                    {{
+                      [
+                        option.city,
+                        option.address,
+                        option.pitchCount && option.pitchCount > 1
+                          ? t('admin.tournament_page.stadium_pitches', { n: option.pitchCount })
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || '—'
+                    }}
                   </div>
                 </div>
               </template>

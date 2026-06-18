@@ -806,6 +806,8 @@ model Tournament {
   dayStartTimeOverrides Json?                   // { "0": "10:00", "6": "12:00" }
   /// Режим назначения площадок при генерации календаря.
   venueMode   TournamentVenueMode @default(MULTI_VENUE)
+  /// Состав судейской бригады на матч (для автоназначения при генерации календаря).
+  matchOfficialsProfile TournamentMatchOfficialsProfile @default(CREW_OF_3)
   minTeams    Int      @default(2)
   /// Максимум команд (заявки + ручное добавление). null — только системный лимит.
   maxTeams    Int?
@@ -1147,6 +1149,8 @@ model Match {
   scheduleChangeNote       String?
   /** Площадка матча; при непустом списке площадок турнира должна входить в него. */
   stadiumId    String?
+  /** Номер поля на площадке (1..pitchCount), если на стадионе несколько полей. */
+  pitchNumber  Int?
   /** Показывать матч на публичном сайте и в публичном ICS (скачивание из админки — полный список). */
   publishedOnPublic Boolean @default(true)
   /** Матч завершён техническим результатом (неявка, регламент). */
@@ -1179,6 +1183,7 @@ enum MatchRefereeRole {
   MAIN
   ASSISTANT_1
   ASSISTANT_2
+  VAR
 }
 
 /// Назначение судьи на матч (главный, помощники).
@@ -1451,6 +1456,13 @@ enum TournamentVenueMode {
   SINGLE_VENUE
   MULTI_VENUE
   HOME_STADIUM
+}
+
+/// Состав судейской бригады, назначаемой на каждый матч турнира.
+enum TournamentMatchOfficialsProfile {
+  MAIN_ONLY
+  CREW_OF_3
+  CREW_OF_3_WITH_VAR
 }
 
 enum TournamentStatus {

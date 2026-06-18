@@ -833,6 +833,7 @@ export class MatchesService {
       homeTeamId: string;
       awayTeamId: string;
       stadiumId: string | null;
+      pitchNumber?: number | null;
       tournamentId: string | null;
     };
     const durationMinutes = await this.resolveMatchDurationMinutes(
@@ -847,6 +848,7 @@ export class MatchesService {
         awayTeamId: m.awayTeamId,
         excludeMatchId: m.id,
         stadiumId: m.stadiumId,
+        pitchNumber: m.pitchNumber,
         durationMinutes,
       },
     );
@@ -1859,8 +1861,11 @@ export class MatchesService {
       dto.stadiumId !== undefined ||
       dto.scheduleChangeReasonId !== undefined ||
       dto.scheduleChangeNote !== undefined;
+    const hasRefereeBulkPatch = dto.referees !== undefined;
     const hasAnyPatch =
-      hasScheduleBulkPatch || dto.publishedOnPublic !== undefined;
+      hasScheduleBulkPatch ||
+      hasRefereeBulkPatch ||
+      dto.publishedOnPublic !== undefined;
     if (!hasAnyPatch) {
       throw new BadRequestException('Не указаны поля для массового изменения');
     }
@@ -1882,7 +1887,9 @@ export class MatchesService {
     }
 
     const visibilityOnly =
-      dto.publishedOnPublic !== undefined && !hasScheduleBulkPatch;
+      dto.publishedOnPublic !== undefined &&
+      !hasScheduleBulkPatch &&
+      !hasRefereeBulkPatch;
     if (visibilityOnly) {
       const res = await this.prisma.match.updateMany({
         where: { tournamentId, id: { in: uniqueIds } },
@@ -1895,14 +1902,38 @@ export class MatchesService {
       };
     }
 
-    const locked = rows.filter((m) => MUTATION_LOCKED_STATUSES.has(m.status));
-    if (locked.length) {
-      throw new BadRequestException(
-        `Нельзя изменить ${locked.length} матч(ей): есть завершенные/сыгранные/отмененные`,
-      );
+    const refereeOnly =
+      hasRefereeBulkPatch && !hasScheduleBulkPatch && dto.publishedOnPublic === undefined;
+
+    if (!refereeOnly) {
+      const locked = rows.filter((m) => MUTATION_LOCKED_STATUSES.has(m.status));
+      if (locked.length) {
+        throw new BadRequestException(
+          `Нельзя изменить ${locked.length} матч(ей): есть завершенные/сыгранные/отмененные`,
+        );
+      }
     }
 
-    if (dto.scheduleChangeReasonId?.trim()) {
+    if (hasRefereeBulkPatch && dto.referees) {
+      const roles = new Set<string>();
+      const refereeIds = new Set<string>();
+      for (const a of dto.referees) {
+        if (roles.has(a.role)) {
+          throw new BadRequestException(
+            'На матч можно назначить не более одного судьи в каждой роли',
+          );
+        }
+        roles.add(a.role);
+        if (refereeIds.has(a.refereeId)) {
+          throw new BadRequestException(
+            'Один судья не может быть назначен на матч дважды',
+          );
+        }
+        refereeIds.add(a.refereeId);
+      }
+    }
+
+    if (hasScheduleBulkPatch && dto.scheduleChangeReasonId?.trim()) {
       await this.validateScheduleReason(
         tournament.tenantId,
         dto.scheduleChangeReasonId.trim(),
@@ -1926,29 +1957,47 @@ export class MatchesService {
 
     const shift = Number(dto.shiftMinutes ?? 0);
     const updatedIds: string[] = [];
+    const refereeAssignments = dto.referees?.map((a) => ({
+      refereeId: a.refereeId,
+      role: a.role,
+    }));
+
     await this.prisma.$transaction(async (tx) => {
       for (const row of rows) {
         const patch: Prisma.MatchUncheckedUpdateInput = {};
-        if (dto.shiftMinutes !== undefined && shift !== 0) {
+        if (hasScheduleBulkPatch && dto.shiftMinutes !== undefined && shift !== 0) {
           patch.startTime = new Date(row.startTime.getTime() + shift * 60_000);
         }
-        if (dto.scheduleChangeReasonId !== undefined) {
+        if (hasScheduleBulkPatch && dto.scheduleChangeReasonId !== undefined) {
           patch.scheduleChangeReasonId = dto.scheduleChangeReasonId || null;
         }
-        if (dto.scheduleChangeNote !== undefined) {
+        if (hasScheduleBulkPatch && dto.scheduleChangeNote !== undefined) {
           patch.scheduleChangeNote = dto.scheduleChangeNote?.trim()
             ? dto.scheduleChangeNote.trim()
             : null;
         }
-        if (dto.stadiumId !== undefined) {
+        if (hasScheduleBulkPatch && dto.stadiumId !== undefined) {
           patch.stadiumId = normalizedStadiumId;
         }
         if (dto.publishedOnPublic !== undefined) {
           patch.publishedOnPublic = dto.publishedOnPublic;
         }
-        if (Object.keys(patch).length === 0) continue;
-        await tx.match.update({ where: { id: row.id }, data: patch });
-        updatedIds.push(row.id);
+        if (Object.keys(patch).length > 0) {
+          await tx.match.update({ where: { id: row.id }, data: patch });
+          updatedIds.push(row.id);
+        } else if (hasRefereeBulkPatch) {
+          updatedIds.push(row.id);
+        }
+
+        if (hasRefereeBulkPatch && refereeAssignments) {
+          await this.syncMatchReferees(
+            tx,
+            tournament.tenantId,
+            row.id,
+            tournamentId,
+            refereeAssignments,
+          );
+        }
       }
     });
 

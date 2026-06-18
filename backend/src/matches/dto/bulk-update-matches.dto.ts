@@ -10,7 +10,9 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { MatchRefereeAssignmentDto } from './match-referee-assignment.dto';
 
 export class BulkUpdateMatchesDto {
   @ApiProperty({
@@ -63,4 +65,15 @@ export class BulkUpdateMatchesDto {
   @IsOptional()
   @IsBoolean()
   publishedOnPublic?: boolean;
+
+  @ApiPropertyOptional({
+    type: [MatchRefereeAssignmentDto],
+    description:
+      'Назначить одну и ту же бригаду на все выбранные матчи (заменяет текущих судей)',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MatchRefereeAssignmentDto)
+  referees?: MatchRefereeAssignmentDto[];
 }

@@ -23,6 +23,7 @@ import {
   TournamentEligibilityProfile,
   TournamentGameFormat,
   TournamentVenueMode,
+  TournamentMatchOfficialsProfile,
 } from '@prisma/client';
 
 class TournamentAdminDto {
@@ -208,6 +209,15 @@ export class UpdateTournamentDto {
   @IsOptional()
   @IsEnum(TournamentVenueMode)
   venueMode?: TournamentVenueMode;
+
+  @ApiPropertyOptional({
+    enum: TournamentMatchOfficialsProfile,
+    description:
+      'Состав судейской бригады на матч (автоназначение при генерации календаря)',
+  })
+  @IsOptional()
+  @IsEnum(TournamentMatchOfficialsProfile)
+  matchOfficialsProfile?: TournamentMatchOfficialsProfile;
 
   @ApiPropertyOptional({ example: 6 })
   @IsOptional()

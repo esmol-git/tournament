@@ -16,12 +16,25 @@ export function intervalsOverlapMs(
   return a0 < b1 && b0 < a1;
 }
 
+function normalizePitchNumber(pitchNumber: number | null | undefined): number {
+  const n = Number(pitchNumber);
+  return Number.isInteger(n) && n >= 1 ? n : 1;
+}
+
+function venuePitchKey(
+  stadiumId: string,
+  pitchNumber: number | null | undefined,
+): string {
+  return `${stadiumId}:${normalizePitchNumber(pitchNumber)}`;
+}
+
 type MatchSlice = {
   id: string;
   startTime: Date;
   homeTeamId: string;
   awayTeamId: string;
   stadiumId: string | null;
+  pitchNumber?: number | null;
   homeTeam: { name: string };
   awayTeam: { name: string };
   tournament: { name: string } | null;
@@ -31,9 +44,13 @@ function teamLabel(m: MatchSlice, tid: string): string {
   return m.homeTeamId === tid ? m.homeTeam.name : m.awayTeam.name;
 }
 
+function pitchLabel(pitchNumber: number | null | undefined): string {
+  const n = normalizePitchNumber(pitchNumber);
+  return n > 1 ? ` (поле ${n})` : '';
+}
+
 /**
- * Предупреждения о пересечении слотов (команда / площадка) с другими матчами тенанта.
- * Длительность матча задаётся в минутах (как в турнире); для пересечений используется одинаковый слот.
+ * Предупреждения о пересечении слотов (команда / площадка+поле) с другими матчами тенанта.
  */
 export async function collectScheduleWarningsForMatch(
   prisma: PrismaService,
@@ -44,6 +61,7 @@ export async function collectScheduleWarningsForMatch(
     awayTeamId: string;
     excludeMatchId?: string;
     stadiumId: string | null | undefined;
+    pitchNumber?: number | null;
     durationMinutes: number;
   },
 ): Promise<string[]> {
@@ -109,6 +127,7 @@ export async function collectScheduleWarningsForMatch(
       ? String(opts.stadiumId).trim()
       : null;
   if (sid) {
+    const ourPitch = normalizePitchNumber(opts.pitchNumber);
     const pitchCandidates = await prisma.match.findMany({
       where: {
         tenantId: opts.tenantId,
@@ -120,6 +139,7 @@ export async function collectScheduleWarningsForMatch(
       select: {
         id: true,
         startTime: true,
+        pitchNumber: true,
         homeTeam: { select: { name: true } },
         awayTeam: { select: { name: true } },
         tournament: { select: { name: true } },
@@ -130,11 +150,12 @@ export async function collectScheduleWarningsForMatch(
       const ps = p.startTime.getTime();
       const pe = ps + D;
       if (!intervalsOverlapMs(ourStart, ourEnd, ps, pe)) continue;
+      if (normalizePitchNumber(p.pitchNumber) !== ourPitch) continue;
       if (seenPitch.has(p.id)) continue;
       seenPitch.add(p.id);
       const trName = p.tournament?.name ?? 'Свободный матч';
       warnings.push(
-        `Площадка пересекается по времени с матчем: ${p.homeTeam.name} — ${p.awayTeam.name} (турнир «${trName}»).`,
+        `Площадка${pitchLabel(ourPitch)} пересекается по времени с матчем: ${p.homeTeam.name} — ${p.awayTeam.name} (турнир «${trName}»).`,
       );
     }
   }
@@ -142,10 +163,6 @@ export async function collectScheduleWarningsForMatch(
   return warnings;
 }
 
-/**
- * После массового создания матчей турнира — предупреждения для каждого нового матча
- * (пересечения между собой и с другими турнирами / свободными матчами).
- */
 export async function collectScheduleWarningsAfterCalendarGeneration(
   prisma: PrismaService,
   tournamentId: string,
@@ -162,6 +179,7 @@ export async function collectScheduleWarningsAfterCalendarGeneration(
       homeTeamId: true,
       awayTeamId: true,
       stadiumId: true,
+      pitchNumber: true,
       homeTeam: { select: { name: true } },
       awayTeam: { select: { name: true } },
       tournament: { select: { name: true } },
@@ -209,6 +227,7 @@ export async function collectScheduleWarningsAfterCalendarGeneration(
       homeTeamId: true,
       awayTeamId: true,
       stadiumId: true,
+      pitchNumber: true,
       homeTeam: { select: { name: true } },
       awayTeam: { select: { name: true } },
       tournament: { select: { name: true } },
@@ -242,13 +261,18 @@ export async function collectScheduleWarningsAfterCalendarGeneration(
         );
       }
 
-      if (m.stadiumId && o.stadiumId && m.stadiumId === o.stadiumId) {
-        const key = `stadium:${pair}`;
+      if (
+        m.stadiumId &&
+        o.stadiumId &&
+        venuePitchKey(m.stadiumId, m.pitchNumber) ===
+          venuePitchKey(o.stadiumId, o.pitchNumber)
+      ) {
+        const key = `stadium:${pair}:${venuePitchKey(m.stadiumId, m.pitchNumber)}`;
         if (seenMsg.has(key)) continue;
         seenMsg.add(key);
         const trName = o.tournament?.name ?? 'Свободный матч';
         out.push(
-          `Площадка пересекается по времени с матчем: ${o.homeTeam.name} — ${o.awayTeam.name} (турнир «${trName}»).`,
+          `Площадка${pitchLabel(m.pitchNumber)} пересекается по времени с матчем: ${o.homeTeam.name} — ${o.awayTeam.name} (турнир «${trName}»).`,
         );
       }
     }

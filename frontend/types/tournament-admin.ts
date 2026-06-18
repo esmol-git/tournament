@@ -44,6 +44,7 @@ export interface TournamentDetails {
   dayStartTimeDefault: string
   dayStartTimeOverrides?: Record<string, string> | null
   venueMode?: 'SINGLE_VENUE' | 'MULTI_VENUE' | 'HOME_STADIUM'
+  matchOfficialsProfile?: 'MAIN_ONLY' | 'CREW_OF_3' | 'CREW_OF_3_WITH_VAR'
   playoffQualifiersPerGroup?: number
   minTeams: number
   maxTeams?: number | null
@@ -174,11 +175,12 @@ export interface TournamentDetails {
       city?: string | null
       address?: string | null
     } | null
+    pitchNumber?: number | null
     /** Матч на домашней площадке одной из команд (режим HOME_STADIUM). */
     isHomeVenue?: boolean
     matchReferees?: Array<{
       id: string
-      role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2'
+      role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2' | 'VAR'
       refereeId: string
       referee: {
         id: string

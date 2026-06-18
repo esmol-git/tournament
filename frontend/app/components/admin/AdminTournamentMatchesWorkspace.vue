@@ -19,6 +19,12 @@ import {
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
 import { isPlayoffLikeStage, type MatchStageUi } from '~/utils/matchStageLabel'
+import {
+  rolesForOfficialsProfile,
+  matchOfficialRoleLabel,
+  buildRefereeAssignmentsFromForm,
+  type MatchOfficialRole,
+} from '~/utils/matchOfficialsProfile'
 import { computed, reactive, ref, watch } from 'vue'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
@@ -152,6 +158,7 @@ const editMatchForm = reactive({
   mainRefereeId: '' as string,
   assistant1RefereeId: '' as string,
   assistant2RefereeId: '' as string,
+  varRefereeId: '' as string,
 })
 
 const tenantStadiumsList = ref<StadiumRow[]>([])
@@ -174,8 +181,12 @@ const bulkForm = reactive({
   stadiumId: '' as string,
   scheduleChangeReasonId: '' as string,
   scheduleChangeNote: '' as string,
-  /** unchanged | show — publishedOnPublic true | hide — false */
   bulkVisibility: 'unchanged' as 'unchanged' | 'show' | 'hide',
+  updateReferees: false,
+  mainRefereeId: '',
+  assistant1RefereeId: '',
+  assistant2RefereeId: '',
+  varRefereeId: '',
 })
 const bulkSelectedIds = computed(() => bulkSelectedMatches.value.map((m) => m.id))
 const bulkAllSelectableChecked = computed(
@@ -210,7 +221,21 @@ const bulkPreviewSummary = computed(() => {
   if (bulkForm.scheduleChangeNote.trim()) changes.push('комментарий')
   if (bulkForm.bulkVisibility === 'show') changes.push('показать на сайте')
   if (bulkForm.bulkVisibility === 'hide') changes.push('скрыть с сайта')
+  if (bulkForm.updateReferees) changes.push('назначение судей')
   return changes.length ? changes.join(', ') : 'нет изменений'
+})
+
+const bulkRefereeErrors = computed(() => {
+  if (!bulkForm.updateReferees) return ''
+  const ids = [
+    bulkForm.mainRefereeId,
+    bulkForm.assistant1RefereeId,
+    bulkForm.assistant2RefereeId,
+    bulkForm.varRefereeId,
+  ].filter((id) => id.trim())
+  if (!ids.length) return 'Укажите хотя бы одного судью или снимите галочку «Обновить судей».'
+  if (ids.length !== new Set(ids).size) return 'Один судья не может быть назначен дважды.'
+  return ''
 })
 
 const matchStadiumSelectOptions = computed(() => {
@@ -245,31 +270,30 @@ const hasTournamentRefereePool = computed(
   () => (effectiveTournament.value?.tournamentReferees?.length ?? 0) > 0,
 )
 
+const tournamentOfficialRoles = computed(() =>
+  rolesForOfficialsProfile(effectiveTournament.value?.matchOfficialsProfile),
+)
+
+const showOfficialRole = (role: MatchOfficialRole) =>
+  tournamentOfficialRoles.value.includes(role)
+
 function formatMatchRefereesShort(m: MatchRow): string {
   const items = m.matchReferees ?? []
   if (!items.length) return ''
   const main = items.find((r) => r.role === 'MAIN')
+  const varRef = items.find((r) => r.role === 'VAR')
   if (main) {
     const initial = main.referee.firstName?.trim().charAt(0)
-    return initial
+    const mainLabel = initial
       ? `${main.referee.lastName} ${initial}.`
       : main.referee.lastName
+    return varRef ? `${mainLabel} + VAR` : mainLabel
   }
   return items.map((r) => r.referee.lastName).join(', ')
 }
 
 function buildMatchRefereeAssignments(form: typeof editMatchForm) {
-  const rows: Array<{ refereeId: string; role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2' }> = []
-  if (form.mainRefereeId.trim()) {
-    rows.push({ refereeId: form.mainRefereeId.trim(), role: 'MAIN' })
-  }
-  if (form.assistant1RefereeId.trim()) {
-    rows.push({ refereeId: form.assistant1RefereeId.trim(), role: 'ASSISTANT_1' })
-  }
-  if (form.assistant2RefereeId.trim()) {
-    rows.push({ refereeId: form.assistant2RefereeId.trim(), role: 'ASSISTANT_2' })
-  }
-  return rows
+  return buildRefereeAssignmentsFromForm(form, tournamentOfficialRoles.value)
 }
 
 function populateEditMatchReferees(m: MatchRow) {
@@ -277,6 +301,7 @@ function populateEditMatchReferees(m: MatchRow) {
   editMatchForm.mainRefereeId = byRole.get('MAIN') ?? ''
   editMatchForm.assistant1RefereeId = byRole.get('ASSISTANT_1') ?? ''
   editMatchForm.assistant2RefereeId = byRole.get('ASSISTANT_2') ?? ''
+  editMatchForm.varRefereeId = byRole.get('VAR') ?? ''
 }
 
 async function ensureMatchStadiumOptionsLoaded() {
@@ -542,6 +567,7 @@ async function confirmDeleteManualMatchWs() {
 const canEditMatchSchedule = computed(
   () => !!token.value && effectiveTournament.value?.status !== 'ARCHIVED',
 )
+const bulkHasRefereePatch = computed(() => bulkForm.updateReferees)
 const bulkHasSchedulePatch = computed(() => {
   if (bulkForm.shiftMinutes !== null && Number.isFinite(Number(bulkForm.shiftMinutes)) && Number(bulkForm.shiftMinutes) !== 0) {
     return true
@@ -556,7 +582,10 @@ const bulkHasVisibilityPatch = computed(
 )
 const canRunBulkUpdate = computed(() => {
   if (!canEditMatchSchedule.value || bulkSelectedIds.value.length === 0 || bulkSaving.value) return false
-  if (!bulkHasSchedulePatch.value && !bulkHasVisibilityPatch.value) return false
+  if (bulkRefereeErrors.value) return false
+  if (!bulkHasSchedulePatch.value && !bulkHasVisibilityPatch.value && !bulkHasRefereePatch.value) {
+    return false
+  }
   if (bulkHasSchedulePatch.value) {
     if (bulkSelectedMatches.value.some((m) => isMatchEditLocked(m.status))) return false
   }
@@ -784,6 +813,7 @@ const editMatchErrors = computed(() => ({
         editMatchForm.mainRefereeId,
         editMatchForm.assistant1RefereeId,
         editMatchForm.assistant2RefereeId,
+        editMatchForm.varRefereeId,
       ].filter((id) => id.trim())
       return ids.length !== new Set(ids).size
         ? 'Один судья не может быть назначен дважды.'
@@ -1108,6 +1138,11 @@ const clearBulkForm = () => {
   bulkForm.scheduleChangeReasonId = ''
   bulkForm.scheduleChangeNote = ''
   bulkForm.bulkVisibility = 'unchanged'
+  bulkForm.updateReferees = false
+  bulkForm.mainRefereeId = ''
+  bulkForm.assistant1RefereeId = ''
+  bulkForm.assistant2RefereeId = ''
+  bulkForm.varRefereeId = ''
 }
 const toggleBulkSelectAll = (checked: boolean) => {
   bulkSelectedMatches.value = checked ? [...visibleMatchesSorted.value] : []
@@ -1139,12 +1174,16 @@ const submitBulkUpdate = async () => {
   } else if (bulkForm.bulkVisibility === 'hide') {
     body.publishedOnPublic = false
   }
+  if (bulkForm.updateReferees) {
+    body.referees = buildRefereeAssignmentsFromForm(bulkForm, tournamentOfficialRoles.value)
+  }
   const hasPatch =
     body.shiftMinutes !== undefined ||
     body.stadiumId !== undefined ||
     body.scheduleChangeReasonId !== undefined ||
     body.scheduleChangeNote !== undefined ||
-    body.publishedOnPublic !== undefined
+    body.publishedOnPublic !== undefined ||
+    body.referees !== undefined
   if (!hasPatch) {
     toast.add({
       severity: 'warn',
@@ -1367,6 +1406,67 @@ defineExpose({
             <label class="mb-1 block text-xs text-muted-color">Комментарий</label>
             <InputText v-model="bulkForm.scheduleChangeNote" class="w-full" />
           </div>
+        </div>
+        <div
+          v-if="hasTournamentRefereePool"
+          class="mt-3 rounded-lg border border-surface-200 dark:border-surface-600 bg-surface-0/60 dark:bg-surface-900/40 p-3"
+        >
+          <label class="flex items-center gap-2 text-sm">
+            <Checkbox v-model="bulkForm.updateReferees" binary />
+            {{ t('admin.match_officials.bulk_update_referees') }}
+          </label>
+          <p class="mt-1 text-[11px] text-muted-color">
+            {{ t('admin.match_officials.bulk_update_referees_hint') }}
+          </p>
+          <div v-if="bulkForm.updateReferees" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div v-if="showOfficialRole('MAIN')">
+              <label class="mb-1 block text-xs text-muted-color">{{ matchOfficialRoleLabel('MAIN', t) }}</label>
+              <Select
+                v-model="bulkForm.mainRefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+              />
+            </div>
+            <div v-if="showOfficialRole('ASSISTANT_1')">
+              <label class="mb-1 block text-xs text-muted-color">{{ matchOfficialRoleLabel('ASSISTANT_1', t) }}</label>
+              <Select
+                v-model="bulkForm.assistant1RefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+              />
+            </div>
+            <div v-if="showOfficialRole('ASSISTANT_2')">
+              <label class="mb-1 block text-xs text-muted-color">{{ matchOfficialRoleLabel('ASSISTANT_2', t) }}</label>
+              <Select
+                v-model="bulkForm.assistant2RefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+              />
+            </div>
+            <div v-if="showOfficialRole('VAR')">
+              <label class="mb-1 block text-xs text-muted-color">{{ matchOfficialRoleLabel('VAR', t) }}</label>
+              <Select
+                v-model="bulkForm.varRefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+              />
+            </div>
+          </div>
+          <p v-if="bulkRefereeErrors" class="mt-2 text-[11px] text-red-500">{{ bulkRefereeErrors }}</p>
+        </div>
+        <div class="mt-3 flex flex-wrap items-end gap-2">
           <Button
             label="Применить к выбранным"
             icon="pi pi-bolt"
@@ -1440,7 +1540,12 @@ defineExpose({
         <Column header="Площадка" style="min-width: 7rem">
           <template #body="{ data }">
             <div class="flex flex-wrap items-center gap-1">
-              <span v-if="data.stadium?.name">{{ data.stadium.name }}</span>
+              <span v-if="data.stadium?.name">
+                {{ data.stadium.name
+                }}<template v-if="data.pitchNumber">
+                  · {{ t('admin.tournament_page.pitch_n', { n: data.pitchNumber }) }}</template
+                >
+              </span>
               <span v-else class="text-muted-color">—</span>
               <Tag
                 v-if="data.isHomeVenue"
@@ -1901,9 +2006,12 @@ defineExpose({
           <p v-if="!hasTournamentRefereePool" class="text-[11px] text-muted-color">
             Добавьте судей в разделе «Инфраструктура» турнира, чтобы назначать их на матчи.
           </p>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label class="text-sm block mb-1">Главный</label>
+          <p v-else class="text-[11px] text-muted-color">
+            {{ t('admin.match_officials.edit_hint') }}
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div v-if="showOfficialRole('MAIN')">
+              <label class="text-sm block mb-1">{{ matchOfficialRoleLabel('MAIN', t) }}</label>
               <Select
                 v-model="editMatchForm.mainRefereeId"
                 :options="matchRefereeSelectOptions"
@@ -1915,8 +2023,8 @@ defineExpose({
                 :disabled="editMatchSaving || !hasTournamentRefereePool"
               />
             </div>
-            <div>
-              <label class="text-sm block mb-1">Помощник 1</label>
+            <div v-if="showOfficialRole('ASSISTANT_1')">
+              <label class="text-sm block mb-1">{{ matchOfficialRoleLabel('ASSISTANT_1', t) }}</label>
               <Select
                 v-model="editMatchForm.assistant1RefereeId"
                 :options="matchRefereeSelectOptions"
@@ -1928,10 +2036,23 @@ defineExpose({
                 :disabled="editMatchSaving || !hasTournamentRefereePool"
               />
             </div>
-            <div>
-              <label class="text-sm block mb-1">Помощник 2</label>
+            <div v-if="showOfficialRole('ASSISTANT_2')">
+              <label class="text-sm block mb-1">{{ matchOfficialRoleLabel('ASSISTANT_2', t) }}</label>
               <Select
                 v-model="editMatchForm.assistant2RefereeId"
+                :options="matchRefereeSelectOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                show-clear
+                placeholder="Не назначен"
+                :disabled="editMatchSaving || !hasTournamentRefereePool"
+              />
+            </div>
+            <div v-if="showOfficialRole('VAR')">
+              <label class="text-sm block mb-1">{{ matchOfficialRoleLabel('VAR', t) }}</label>
+              <Select
+                v-model="editMatchForm.varRefereeId"
                 :options="matchRefereeSelectOptions"
                 option-label="label"
                 option-value="value"

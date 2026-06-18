@@ -18,6 +18,7 @@ import {
   TournamentEligibilityProfile,
   TournamentRosterPlayerStatus,
   TournamentVenueMode,
+  TournamentMatchOfficialsProfile,
   UserRole,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -46,6 +47,13 @@ import { CreateNewsTagDto } from './dto/create-news-tag.dto';
 import { UpdateNewsTagDto } from './dto/update-news-tag.dto';
 import { TournamentTemplatesService } from '../tournament-templates/tournament-templates.service';
 import { collectScheduleWarningsAfterCalendarGeneration } from '../matches/schedule-conflict.util';
+import {
+  VenueSlotAssigner,
+  assignRefereesForMatch,
+  expandStadiumsToVenueSlots,
+  minRefereesRequiredForParallelSlots,
+  rolesForOfficialsProfile,
+} from './calendar-resource-assigner';
 
 @Injectable()
 export class TournamentsService {
@@ -653,27 +661,71 @@ export class TournamentsService {
     return [];
   }
 
-  private assignMatchStadium(params: {
-    venueMode: TournamentVenueMode;
-    pool: string[];
-    homeTeamId: string;
-    homeStadiumByTeamId: Map<string, string | null>;
-    slotIndex: number;
-  }): string | null {
-    const { venueMode, pool, homeTeamId, homeStadiumByTeamId, slotIndex } =
-      params;
-    if (!pool.length) return null;
+  private async autoAssignRefereesAfterCalendar(
+    tx: Prisma.TransactionClient,
+    params: {
+      tournamentId: string;
+      tenantId: string;
+      profile: TournamentMatchOfficialsProfile;
+      slotDurationMs: number;
+    },
+  ): Promise<string[]> {
+    const { tournamentId, tenantId, profile, slotDurationMs } = params;
+    const requiredRoles = rolesForOfficialsProfile(profile);
+    if (!requiredRoles.length) return [];
 
-    const homeStadiumId = homeStadiumByTeamId.get(homeTeamId) ?? null;
-    const homeInPool = !!(homeStadiumId && pool.includes(homeStadiumId));
+    const refereeLinks = await tx.tournamentReferee.findMany({
+      where: { tournamentId },
+      orderBy: { sortOrder: 'asc' },
+      select: { refereeId: true },
+    });
+    const refereePool = refereeLinks.map((r) => r.refereeId);
+    if (!refereePool.length) {
+      return [
+        'В турнире не задан пул судей — бригады на матчи не назначены. Добавьте судей в «Инфраструктуре» и перегенерируйте календарь или назначьте вручную.',
+      ];
+    }
 
-    if (venueMode === TournamentVenueMode.HOME_STADIUM && homeInPool) {
-      return homeStadiumId;
+    const matches = await tx.match.findMany({
+      where: { tournamentId },
+      orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+      select: { id: true, startTime: true },
+    });
+
+    const busyUntil = new Map<string, number>();
+    const poolCursor = { index: 0 };
+    const warnings: string[] = [];
+
+    for (const match of matches) {
+      const assignments = assignRefereesForMatch({
+        requiredRoles,
+        refereePool,
+        refereeBusyUntil: busyUntil,
+        startMs: match.startTime.getTime(),
+        slotDurationMs,
+        poolCursor,
+      });
+
+      if (assignments.length < requiredRoles.length) {
+        warnings.push(
+          `Не хватило свободных судей для полной бригады на матч ${match.startTime.toISOString()} (назначено ${assignments.length} из ${requiredRoles.length}).`,
+        );
+      }
+
+      await tx.matchReferee.deleteMany({ where: { matchId: match.id } });
+      if (assignments.length) {
+        await tx.matchReferee.createMany({
+          data: assignments.map((a) => ({
+            tenantId,
+            matchId: match.id,
+            refereeId: a.refereeId,
+            role: a.role,
+          })),
+        });
+      }
     }
-    if (venueMode === TournamentVenueMode.SINGLE_VENUE) {
-      return pool[0];
-    }
-    return pool[slotIndex % pool.length];
+
+    return warnings;
   }
 
   isHomeVenueMatch(
@@ -3050,6 +3102,9 @@ export class TournamentsService {
           dayStartTimeOverrides:
             (dto.dayStartTimeOverrides as any) ?? undefined,
           venueMode: dto.venueMode ?? TournamentVenueMode.MULTI_VENUE,
+          matchOfficialsProfile:
+            dto.matchOfficialsProfile ??
+            TournamentMatchOfficialsProfile.CREW_OF_3,
           minTeams: dto.minTeams ?? 2,
           maxTeams: enrollment.maxTeams,
           enrollmentMode: enrollment.enrollmentMode,
@@ -3971,6 +4026,9 @@ export class TournamentsService {
               ? null
               : (dto.dayStartTimeOverrides as any),
           ...(dto.venueMode !== undefined ? { venueMode: dto.venueMode } : {}),
+          ...(dto.matchOfficialsProfile !== undefined
+            ? { matchOfficialsProfile: dto.matchOfficialsProfile }
+            : {}),
           minTeams: dto.minTeams,
           ...(dto.maxTeams !== undefined ? { maxTeams: dto.maxTeams } : {}),
           ...(dto.enrollmentMode !== undefined
@@ -4635,8 +4693,39 @@ export class TournamentsService {
     const silverStart = new Date(baseMs + slotMs * 2);
 
     const venuePool = this.buildVenueStadiumPool(tournament);
-    const goldStadium = venuePool[0] ?? null;
-    const silverStadium = venuePool[1] ?? venuePool[0] ?? null;
+    const stadiumPitchRows = venuePool.length
+      ? await this.prisma.stadium.findMany({
+          where: { id: { in: venuePool } },
+          select: { id: true, pitchCount: true },
+        })
+      : [];
+    const pitchCountByStadiumId = new Map(
+      stadiumPitchRows.map((row) => [row.id, row.pitchCount]),
+    );
+    const venueSlots = expandStadiumsToVenueSlots(
+      venuePool,
+      pitchCountByStadiumId,
+    );
+    const venueAssigner = new VenueSlotAssigner({
+      slots: venueSlots,
+      venueMode: tournament.venueMode ?? TournamentVenueMode.MULTI_VENUE,
+      homeStadiumByTeamId: new Map(),
+    });
+    const slotDurationMs =
+      ((tournament.matchDurationMinutes ?? 50) +
+        (tournament.matchBreakMinutes ?? 10)) *
+      60 *
+      1000;
+    const goldVenue = venueAssigner.assign({
+      homeTeamId: groupA.first,
+      startMs: goldStart.getTime(),
+      slotDurationMs,
+    });
+    const silverVenue = venueAssigner.assign({
+      homeTeamId: groupA.second,
+      startMs: silverStart.getTime(),
+      slotDurationMs,
+    });
 
     await this.prisma.match.createMany({
       data: [
@@ -4648,7 +4737,8 @@ export class TournamentsService {
           stage: MatchStage.GOLD_CUP,
           roundNumber: 1,
           startTime: goldStart,
-          stadiumId: goldStadium,
+          stadiumId: goldVenue.stadiumId,
+          pitchNumber: goldVenue.pitchNumber,
         },
         {
           tenantId: tournament.tenantId,
@@ -4658,12 +4748,25 @@ export class TournamentsService {
           stage: MatchStage.SILVER_CUP,
           roundNumber: 1,
           startTime: silverStart,
-          stadiumId: silverStadium,
+          stadiumId: silverVenue.stadiumId,
+          pitchNumber: silverVenue.pitchNumber,
         },
       ],
     });
 
-    return { success: true, created: 2 };
+    const refereeWarnings = await this.autoAssignRefereesAfterCalendar(
+      this.prisma,
+      {
+        tournamentId,
+        tenantId: tournament.tenantId,
+        profile:
+          tournament.matchOfficialsProfile ??
+          TournamentMatchOfficialsProfile.CREW_OF_3,
+        slotDurationMs,
+      },
+    );
+
+    return { success: true, created: 2, scheduleWarnings: refereeWarnings };
   }
 
   async setTeamGroup(
@@ -6029,11 +6132,21 @@ export class TournamentsService {
       playoffRound?: PlayoffRound | null;
       startTime: Date;
       stadiumId?: string | null;
+      pitchNumber?: number | null;
     }[] = [];
 
     const venueMode =
       tournament.venueMode ?? TournamentVenueMode.MULTI_VENUE;
     const venueStadiumPool = this.buildVenueStadiumPool(tournament);
+    const stadiumPitchRows = venueStadiumPool.length
+      ? await this.prisma.stadium.findMany({
+          where: { id: { in: venueStadiumPool } },
+          select: { id: true, pitchCount: true },
+        })
+      : [];
+    const pitchCountByStadiumId = new Map(
+      stadiumPitchRows.map((row) => [row.id, row.pitchCount]),
+    );
     const homeStadiumRows = await this.prisma.team.findMany({
       where: { id: { in: teams } },
       select: { id: true, homeStadiumId: true },
@@ -6041,18 +6154,47 @@ export class TournamentsService {
     const homeStadiumByTeamId = new Map(
       homeStadiumRows.map((t) => [t.id, t.homeStadiumId]),
     );
-    let venueSlotCounter = 0;
-    const nextMatchStadiumId = (homeTeamId: string) => {
-      const stadiumId = this.assignMatchStadium({
-        venueMode,
-        pool: venueStadiumPool,
+    const venueSlots = expandStadiumsToVenueSlots(
+      venueStadiumPool,
+      pitchCountByStadiumId,
+    );
+    const venueAssigner = new VenueSlotAssigner({
+      slots: venueSlots,
+      venueMode,
+      homeStadiumByTeamId,
+    });
+    const slotDurationMs =
+      (matchDurationMinutes + matchBreakMinutes) * 60 * 1000;
+    const assignVenueForMatch = (homeTeamId: string, startTime: Date) =>
+      venueAssigner.assign({
         homeTeamId,
-        homeStadiumByTeamId,
-        slotIndex: venueSlotCounter,
+        startMs: startTime.getTime(),
+        slotDurationMs,
       });
-      venueSlotCounter += 1;
-      return stadiumId;
-    };
+    if (
+      venueSlots.length > 0 &&
+      simultaneousMatches > venueAssigner.totalSlots
+    ) {
+      throw new BadRequestException(
+        `Параллельных матчей (${simultaneousMatches}) больше, чем доступно полей на площадках турнира (${venueAssigner.totalSlots}). Уменьшите «параллельно» или добавьте площадки/поля в справочнике.`,
+      );
+    }
+
+    const officialsProfile =
+      tournament.matchOfficialsProfile ??
+      TournamentMatchOfficialsProfile.CREW_OF_3;
+    const refereePoolCount = await this.prisma.tournamentReferee.count({
+      where: { tournamentId },
+    });
+    const minReferees = minRefereesRequiredForParallelSlots(
+      officialsProfile,
+      simultaneousMatches,
+    );
+    if (refereePoolCount > 0 && refereePoolCount < minReferees) {
+      throw new BadRequestException(
+        `В пуле турнира ${refereePoolCount} судей, а для ${simultaneousMatches} параллельных матчей и состава «${officialsProfile}» нужно минимум ${minReferees}. Добавьте судей в инфраструктуре или уменьшите параллельность.`,
+      );
+    }
 
     const roundsPerDay = dto.roundsPerDay ?? 1;
     if (!Number.isInteger(roundsPerDay) || roundsPerDay < 1) {
@@ -6683,6 +6825,7 @@ export class TournamentsService {
             const startTime = new Date(
               cursorMs + wave * slotMinutes * 60 * 1000,
             );
+            const venue = assignVenueForMatch(m.homeTeamId, startTime);
             matchesToCreate.push({
               tenantId: tournament.tenantId,
               tournamentId: tournament.id,
@@ -6693,7 +6836,8 @@ export class TournamentsService {
               groupId: m.groupId ?? null,
               playoffRound: m.playoffRound ?? null,
               startTime,
-              stadiumId: nextMatchStadiumId(m.homeTeamId),
+              stadiumId: venue.stadiumId,
+              pitchNumber: venue.pitchNumber,
             });
             lastMatchStart = startTime;
             matchIndex += 1;
@@ -6761,6 +6905,7 @@ export class TournamentsService {
 
           for (const m of slotSet) {
             const startTime = new Date(cursorMs);
+            const venue = assignVenueForMatch(m.homeTeamId, startTime);
             matchesToCreate.push({
               tenantId: tournament.tenantId,
               tournamentId: tournament.id,
@@ -6771,7 +6916,8 @@ export class TournamentsService {
               groupId: m.groupId ?? null,
               playoffRound: m.playoffRound ?? null,
               startTime,
-              stadiumId: nextMatchStadiumId(m.homeTeamId),
+              stadiumId: venue.stadiumId,
+              pitchNumber: venue.pitchNumber,
             });
             lastMatchStart = startTime;
 
@@ -6853,7 +6999,19 @@ export class TournamentsService {
       }
 
       const created = await tx.match.createMany({ data: matchesToCreate });
-      return { created: created.count, deleted: deletedMatches };
+      const refereeWarnings = await this.autoAssignRefereesAfterCalendar(tx, {
+        tournamentId,
+        tenantId: tournament.tenantId,
+        profile:
+          tournament.matchOfficialsProfile ??
+          TournamentMatchOfficialsProfile.CREW_OF_3,
+        slotDurationMs,
+      });
+      return {
+        created: created.count,
+        deleted: deletedMatches,
+        refereeWarnings,
+      };
     });
 
     /** После вставки матчей — дата окончания турнира по факту из БД (надёжнее, чем только расчёт в памяти). */
@@ -6872,14 +7030,17 @@ export class TournamentsService {
     }
 
     await this.syncTournamentLifecycleStatus(tournamentId);
-    const scheduleWarnings =
-      await collectScheduleWarningsAfterCalendarGeneration(
+    const scheduleWarnings = [
+      ...(calendarTxResult.refereeWarnings ?? []),
+      ...(await collectScheduleWarningsAfterCalendarGeneration(
         this.prisma,
         tournamentId,
         tournament.tenantId,
         matchDurationMinutes,
-      );
-    return { ...calendarTxResult, scheduleWarnings };
+      )),
+    ];
+    const { refereeWarnings: _rw, ...calendarResult } = calendarTxResult;
+    return { ...calendarResult, scheduleWarnings };
   }
 
   async recomputeTable(tournamentId: string) {

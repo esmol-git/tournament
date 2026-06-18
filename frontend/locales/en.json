@@ -439,6 +439,20 @@
       "gold_cup": "Gold cup",
       "silver_cup": "Silver cup"
     },
+    "match_officials": {
+      "profile_label": "Officials crew per match",
+      "profile_hint": "When the calendar is generated, referees from the pool are assigned automatically; if there are not enough, you will get a warning — fill in manually on matches.",
+      "profile_main_only": "Main referee only",
+      "profile_crew_of_3": "Main + 2 assistants",
+      "profile_crew_with_var": "Crew of 3 + VAR inspector",
+      "role_main": "Main referee",
+      "role_assistant_1": "Assistant 1",
+      "role_assistant_2": "Assistant 2",
+      "role_var": "VAR inspector",
+      "edit_hint": "Crew size is set in tournament infrastructure; here you can override assignments for a specific match.",
+      "bulk_update_referees": "Assign the same crew to all selected matches",
+      "bulk_update_referees_hint": "Replaces referees on each selected match (including finished ones). Specify at least one referee."
+    },
     "teams": {
       "home_stadium": "Home venue",
       "home_stadium_hint": "Used in tournaments with the “Home stadiums” venue mode — this team's matches are scheduled here."
@@ -1131,7 +1145,11 @@
       "tournament_started_composition_hint": "The tournament has started: roster and groups are locked. Use technical results for no-shows or replace a team from the team row.",
       "composition_edit_forbidden_started_detail": "The tournament has started. Replace the team or record a technical result.",
       "venue_mode_label": "Venue mode",
-      "venue_mode_hint": "Single venue — all matches on the first listed field; multiple — rotate across fields; home — home team plays at its stadium when listed for the tournament.",
+      "venue_mode_hint": "Single venue — all matches on the first listed field; multiple — rotate across fields (stadium pitch count is respected); home — home team plays at its stadium when listed for the tournament.",
+      "pitch_n": "pitch {n}",
+      "stadium_pitches": "{n} pitches",
+      "calendar_referees_insufficient_summary": "Not enough referees to generate calendar",
+      "calendar_referees_insufficient_detail": "Pool has {have} referees but {need} are required for {parallel} parallel matches. Add referees in infrastructure or lower parallelism.",
       "venue_mode_single": "Single venue",
       "venue_mode_multi": "Multiple venues (rotation)",
       "venue_mode_home": "Teams' home stadiums",
