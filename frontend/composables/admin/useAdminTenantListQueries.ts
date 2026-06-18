@@ -17,6 +17,7 @@ function mapTeamRowToLite(row: TeamRow): TeamLite {
     name: row.name,
     slug: row.slug,
     category: row.category,
+    logoUrl: row.logoUrl,
   }
 }
 

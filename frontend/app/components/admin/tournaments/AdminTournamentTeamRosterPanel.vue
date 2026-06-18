@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useAuth } from '~/composables/useAuth'
 import { useApiUrl } from '~/composables/useApiUrl'
 import { getApiErrorMessage } from '~/utils/apiError'
+import { displayTeamNameForUi } from '~/utils/teamDisplayName'
+import AdminTournamentTeamLogo from '~/app/components/admin/tournaments/AdminTournamentTeamLogo.vue'
 import type { TournamentDetails } from '~/types/tournament-admin'
 
 type RosterCandidate = {
@@ -16,6 +18,7 @@ type RosterCandidate = {
     lastName: string
     birthDate?: string | null
     position?: string | null
+    photoUrl?: string | null
   }
 }
 
@@ -33,7 +36,7 @@ type RosterRow = {
 const props = defineProps<{
   tournamentId: string
   tournament: TournamentDetails
-  teams: Array<{ teamId: string; team: { id: string; name: string } }>
+  teams: Array<{ teamId: string; team: { id: string; name: string; logoUrl?: string | null } }>
   canManage: boolean
 }>()
 
@@ -112,7 +115,12 @@ const teamOptions = computed(() =>
   props.teams.map((tt) => ({
     label: tt.team.name,
     value: tt.teamId,
+    logoUrl: tt.team.logoUrl ?? null,
   })),
+)
+
+const selectedTeamOption = computed(() =>
+  teamOptions.value.find((o) => o.value === selectedTeamId.value) ?? null,
 )
 
 const selectedCount = computed(() => selectedPlayerIds.value.length)
@@ -474,6 +482,22 @@ async function downloadTemplate() {
   }
 }
 
+function importToastSummary(imported: number, skipped: number) {
+  if (imported === 0 && skipped > 0) {
+    return t('admin.tournament_roster.import_all_duplicates')
+  }
+  if (skipped > 0) {
+    return t('admin.tournament_roster.import_partial', { imported, skipped })
+  }
+  return t('admin.tournament_roster.import_success', { count: imported })
+}
+
+function importToastSeverity(imported: number, skipped: number) {
+  if (imported === 0 && skipped > 0) return 'info' as const
+  if (skipped > 0) return 'warn' as const
+  return 'success' as const
+}
+
 async function importCsv() {
   if (!token.value || !selectedTeamId.value || !props.canManage || !csvFile.value) return
   csvImporting.value = true
@@ -507,15 +531,9 @@ async function importCsv() {
     selectedPlayerIds.value = rosterItems.value.map((r) => r.playerId)
     importErrors.value = res.errors ?? []
     csvFile.value = null
-    const summary =
-      res.skipped > 0
-        ? t('admin.tournament_roster.import_partial', {
-            imported: res.imported,
-            skipped: res.skipped,
-          })
-        : t('admin.tournament_roster.import_success', { count: res.imported })
+    const summary = importToastSummary(res.imported, res.skipped)
     toast.add({
-      severity: res.skipped > 0 ? 'warn' : 'success',
+      severity: importToastSeverity(res.imported, res.skipped),
       summary,
       life: 6000,
     })
@@ -566,15 +584,9 @@ async function importXlsx() {
     selectedPlayerIds.value = rosterItems.value.map((r) => r.playerId)
     importErrors.value = res.errors ?? []
     xlsxFile.value = null
-    const summary =
-      res.skipped > 0
-        ? t('admin.tournament_roster.import_partial', {
-            imported: res.imported,
-            skipped: res.skipped,
-          })
-        : t('admin.tournament_roster.import_success', { count: res.imported })
+    const summary = importToastSummary(res.imported, res.skipped)
     toast.add({
-      severity: res.skipped > 0 ? 'warn' : 'success',
+      severity: importToastSeverity(res.imported, res.skipped),
       summary,
       life: 6000,
     })
@@ -650,31 +662,39 @@ onMounted(() => {
     class="rounded-xl border border-surface-200 bg-surface-0 p-4 dark:border-surface-700 dark:bg-surface-900"
   >
     <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
-          {{ t('admin.tournament_roster.title') }}
-        </h2>
-        <p class="mt-1 text-xs leading-relaxed text-muted-color">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-0">
+            {{ t('admin.tournament_roster.title') }}
+          </h2>
+          <span
+            v-if="rosterSummary?.items?.length"
+            class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium tabular-nums"
+            :class="
+              rosterSummary.allConfirmed
+                ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+            "
+          >
+            {{
+              t(
+                rosterSummary.allConfirmed
+                  ? 'admin.tournament_roster.rosters_confirmed_badge'
+                  : 'admin.tournament_roster.rosters_pending_badge',
+                {
+                  confirmed: rosterSummary.items.filter((i) => i.ok).length,
+                  total: rosterSummary.items.length,
+                },
+              )
+            }}
+          </span>
+        </div>
+        <p class="mt-1.5 text-xs leading-relaxed text-muted-color">
           {{ t('admin.tournament_roster.lead') }}
         </p>
       </div>
-      <Tag
-        v-if="rosterStatus === 'SUBMITTED'"
-        severity="success"
-        :value="t('admin.tournament_roster.status_submitted')"
-      />
-      <Tag
-        v-else-if="rosterSummary && !rosterSummary.allConfirmed && unconfirmedTeamsCount > 0"
-        severity="warn"
-        :value="t('admin.tournament_roster.unconfirmed_teams', { count: unconfirmedTeamsCount })"
-      />
-    </div>
-
-    <div
-      v-if="canManage && teams.length > 1 && rosterSummary?.requiresRoster"
-      class="mt-3 flex flex-wrap items-center gap-2"
-    >
       <Button
+        v-if="canManage && teams.length > 1 && rosterSummary?.requiresRoster"
         :label="t('admin.tournament_roster.confirm_all')"
         icon="pi pi-check-circle"
         size="small"
@@ -682,101 +702,155 @@ onMounted(() => {
         :disabled="rosterSummary.allConfirmed"
         @click="confirmAllRosters"
       />
-      <span v-if="rosterSummary.allConfirmed" class="text-xs text-muted-color">
-        {{ t('admin.tournament_roster.all_confirmed') }}
-      </span>
     </div>
 
-    <div v-if="!teams.length" class="mt-4 text-sm text-muted-color">
-      {{ t('admin.tournament_roster.no_teams') }}
+    <div v-if="!teams.length" class="mt-4 rounded-lg border border-dashed border-surface-300 px-4 py-8 text-center dark:border-surface-600">
+      <i class="pi pi-users mb-2 text-2xl text-muted-color" />
+      <p class="text-sm text-muted-color">{{ t('admin.tournament_roster.no_teams') }}</p>
     </div>
 
     <template v-else>
-      <div class="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-        <div class="flex flex-col gap-1">
-          <label class="text-xs text-muted-color">{{ t('admin.tournament_roster.pick_team') }}</label>
-          <Select
-            v-model="selectedTeamId"
-            :options="teamOptions"
-            option-label="label"
-            option-value="value"
-            class="w-full"
-          />
+      <div class="mt-4 flex flex-col gap-1">
+        <label class="text-[10px] font-medium uppercase tracking-wide text-muted-color">
+          {{ t('admin.tournament_roster.pick_team') }}
+        </label>
+        <Select
+          v-model="selectedTeamId"
+          :options="teamOptions"
+          option-label="label"
+          option-value="value"
+          class="w-full"
+        >
+          <template #option="{ option }">
+            <div class="flex items-center gap-2 py-0.5">
+              <AdminTournamentTeamLogo :logo-url="option.logoUrl" :name="option.label" size="sm" />
+              <span>{{ displayTeamNameForUi(option.label) }}</span>
+            </div>
+          </template>
+          <template #value="{ value }">
+            <div v-if="value" class="flex items-center gap-2">
+              <AdminTournamentTeamLogo
+                :logo-url="teamOptions.find((o) => o.value === value)?.logoUrl"
+                size="sm"
+              />
+              <span>{{
+                displayTeamNameForUi(teamOptions.find((o) => o.value === value)?.label ?? '')
+              }}</span>
+            </div>
+          </template>
+        </Select>
+      </div>
+
+      <div
+        v-if="selectedTeamOption"
+        class="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-surface-200 bg-surface-50/80 px-3 py-3 dark:border-surface-700 dark:bg-surface-900/50"
+      >
+        <AdminTournamentTeamLogo
+          :logo-url="selectedTeamOption.logoUrl"
+          :name="selectedTeamOption.label"
+          size="md"
+        />
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold text-surface-900 dark:text-surface-0">
+            {{ displayTeamNameForUi(selectedTeamOption.label) }}
+          </div>
+          <div class="mt-0.5 text-xs tabular-nums text-muted-color">{{ countLabel }}</div>
         </div>
-        <div class="text-sm font-medium tabular-nums text-surface-900 dark:text-surface-0">
-          {{ countLabel }}
-        </div>
+        <Tag
+          v-if="rosterStatus === 'SUBMITTED'"
+          severity="success"
+          :value="t('admin.tournament_roster.status_submitted')"
+        />
+        <Tag
+          v-else
+          severity="secondary"
+          :value="t('admin.tournament_roster.status_draft')"
+        />
       </div>
 
       <div
         v-if="canManage && selectedTeamId"
-        class="mt-3 flex flex-col gap-3 rounded-lg border border-dashed border-surface-300 p-3 dark:border-surface-600"
+        class="mt-3 rounded-xl border border-surface-200 bg-surface-50/60 p-3 dark:border-surface-700 dark:bg-surface-900/40"
       >
-        <div class="flex flex-wrap gap-2">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 class="text-xs font-semibold text-surface-900 dark:text-surface-0">
+              {{ t('admin.tournament_roster.import_section_title') }}
+            </h3>
+            <p class="mt-1 max-w-prose text-[11px] leading-relaxed text-muted-color">
+              {{ t('admin.tournament_roster.import_section_lead') }}
+            </p>
+          </div>
           <Button
             :label="t('admin.tournament_roster.download_template')"
             icon="pi pi-download"
             size="small"
-            outlined
+            text
             :loading="templateDownloading"
             @click="downloadTemplate"
           />
-          <label class="inline-flex cursor-pointer items-center gap-2">
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              class="hidden"
-              @change="onCsvFileChange"
-            />
-            <Button
-              as="span"
-              :label="csvFile?.name ?? t('admin.tournament_roster.pick_csv_file')"
-              icon="pi pi-file"
-              size="small"
-              outlined
-              severity="secondary"
-            />
-          </label>
-          <Button
-            :label="t('admin.tournament_roster.import_csv')"
-            icon="pi pi-upload"
-            size="small"
-            :loading="csvImporting"
-            :disabled="!csvFile"
-            @click="importCsv"
-          />
-          <label class="inline-flex cursor-pointer items-center gap-2">
-            <input
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              class="hidden"
-              @change="onXlsxFileChange"
-            />
-            <Button
-              as="span"
-              :label="xlsxFile?.name ?? t('admin.tournament_roster.pick_xlsx_file')"
-              icon="pi pi-file-excel"
-              size="small"
-              outlined
-              severity="secondary"
-            />
-          </label>
-          <Button
-            :label="t('admin.tournament_roster.import_xlsx')"
-            icon="pi pi-upload"
-            size="small"
-            :loading="xlsxImporting"
-            :disabled="!xlsxFile"
-            @click="importXlsx"
-          />
         </div>
-        <div class="flex items-center gap-2">
+
+        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+          <div class="flex flex-wrap items-center gap-2 rounded-lg border border-surface-200 bg-surface-0 px-2.5 py-2 dark:border-surface-600 dark:bg-surface-900">
+            <label class="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+              <input type="file" accept=".csv,text/csv" class="hidden" @change="onCsvFileChange" />
+              <Button
+                as="span"
+                :label="csvFile?.name ?? t('admin.tournament_roster.pick_csv_file')"
+                icon="pi pi-file"
+                size="small"
+                outlined
+                severity="secondary"
+                class="max-w-full truncate"
+              />
+            </label>
+            <Button
+              :label="t('admin.tournament_roster.import_csv')"
+              icon="pi pi-upload"
+              size="small"
+              :loading="csvImporting"
+              :disabled="!csvFile"
+              @click="importCsv"
+            />
+          </div>
+          <div class="flex flex-wrap items-center gap-2 rounded-lg border border-surface-200 bg-surface-0 px-2.5 py-2 dark:border-surface-600 dark:bg-surface-900">
+            <label class="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+              <input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                class="hidden"
+                @change="onXlsxFileChange"
+              />
+              <Button
+                as="span"
+                :label="xlsxFile?.name ?? t('admin.tournament_roster.pick_xlsx_file')"
+                icon="pi pi-file-excel"
+                size="small"
+                outlined
+                severity="secondary"
+                class="max-w-full truncate"
+              />
+            </label>
+            <Button
+              :label="t('admin.tournament_roster.import_xlsx')"
+              icon="pi pi-upload"
+              size="small"
+              :loading="xlsxImporting"
+              :disabled="!xlsxFile"
+              @click="importXlsx"
+            />
+          </div>
+        </div>
+
+        <div class="mt-2.5 flex items-start gap-2">
           <Checkbox v-model="createMissingPlayers" input-id="roster-create-missing" binary />
-          <label for="roster-create-missing" class="text-xs text-muted-color">
+          <label for="roster-create-missing" class="text-[11px] leading-relaxed text-muted-color">
             {{ t('admin.tournament_roster.import_create_missing') }}
           </label>
         </div>
-        <Message v-if="importErrors.length" severity="warn" :closable="false" class="text-xs">
+
+        <Message v-if="importErrors.length" severity="warn" :closable="false" class="mt-2 text-xs">
           <ul class="list-inside list-disc">
             <li v-for="err in importErrors.slice(0, 8)" :key="`${err.row}-${err.message}`">
               {{ err.row }}: {{ err.message }}
@@ -789,46 +863,80 @@ onMounted(() => {
         {{ loadError }}
       </Message>
 
-      <div v-else class="mt-3 overflow-x-auto">
-        <DataTable
-          :value="candidates"
-          :loading="loading"
-          data-key="playerId"
-          striped-rows
-          :empty-message="t('admin.tournament_roster.empty_candidates')"
+      <div v-else class="mt-3">
+        <div
+          v-if="loading"
+          class="flex items-center justify-center rounded-xl border border-surface-200 py-12 dark:border-surface-700"
         >
-          <Column style="width: 3rem">
-            <template #header>
-              <Checkbox
-                v-if="canManage"
-                :model-value="allEligibleSelected"
-                :indeterminate="selectAllIndeterminate"
-                :binary="true"
-                :disabled="!eligibleCandidates.length"
-                :aria-label="t('admin.tournament_roster.select_all_eligible')"
-                @update:model-value="toggleSelectAllEligible"
-              />
-            </template>
-            <template #body="{ data }">
-              <Checkbox
-                :model-value="selectedPlayerIds.includes(data.playerId)"
-                :binary="true"
-                :disabled="!canManage || !data.eligible || isPlayerDisqualified(data.playerId)"
-                @update:model-value="() => togglePlayer(data.playerId, data.eligible)"
-              />
-            </template>
-          </Column>
-          <Column :header="t('admin.tournament_roster.col_player')">
-            <template #body="{ data }">
-              <span
-                :class="[
+          <ProgressSpinner style="width: 2rem; height: 2rem" stroke-width="4" />
+        </div>
+
+        <div
+          v-else-if="!candidates.length"
+          class="rounded-lg border border-dashed border-surface-300 px-4 py-8 text-center dark:border-surface-600"
+        >
+          <i class="pi pi-user mb-2 text-2xl text-muted-color" />
+          <p class="text-sm text-muted-color">{{ t('admin.tournament_roster.empty_candidates') }}</p>
+        </div>
+
+        <div v-else class="space-y-1.5">
+          <div
+            v-if="canManage && eligibleCandidates.length"
+            class="flex items-center gap-2 rounded-lg border border-surface-200 bg-surface-50/50 px-3 py-2 dark:border-surface-700 dark:bg-surface-900/30"
+          >
+            <Checkbox
+              :model-value="allEligibleSelected"
+              :indeterminate="selectAllIndeterminate"
+              :binary="true"
+              :disabled="!eligibleCandidates.length"
+              :aria-label="t('admin.tournament_roster.select_all_eligible')"
+              @update:model-value="toggleSelectAllEligible"
+            />
+            <span class="text-xs text-muted-color">
+              {{ t('admin.tournament_roster.select_all_eligible') }}
+            </span>
+          </div>
+
+          <div
+            v-for="data in candidates"
+            :key="data.playerId"
+            class="flex flex-wrap items-center gap-3 rounded-xl border border-surface-200 bg-surface-0 px-3 py-2.5 transition-colors hover:border-surface-300 dark:border-surface-700 dark:bg-surface-900/30 dark:hover:border-surface-600"
+            :class="
+              selectedPlayerIds.includes(data.playerId) && data.eligible && !isPlayerDisqualified(data.playerId)
+                ? 'border-primary-200 bg-primary-50/30 dark:border-primary-800/50 dark:bg-primary-900/10'
+                : ''
+            "
+          >
+            <Checkbox
+              :model-value="selectedPlayerIds.includes(data.playerId)"
+              :binary="true"
+              :disabled="!canManage || !data.eligible || isPlayerDisqualified(data.playerId)"
+              @update:model-value="() => togglePlayer(data.playerId, data.eligible)"
+            />
+
+            <RemoteImage
+              :src="data.player.photoUrl"
+              :alt="playerLabel(data.player)"
+              placeholder-icon="user"
+              class="h-10 w-10 shrink-0 rounded-lg"
+              fit="cover"
+            />
+
+            <div class="min-w-0 flex-1">
+              <div
+                class="truncate text-sm font-medium"
+                :class="
                   data.eligible && !isPlayerDisqualified(data.playerId)
-                    ? ''
-                    : 'text-muted-color line-through',
-                ]"
+                    ? 'text-surface-900 dark:text-surface-0'
+                    : 'text-muted-color line-through'
+                "
               >
                 {{ playerLabel(data.player) }}
-              </span>
+              </div>
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-color">
+                <span>{{ t('admin.tournament_roster.col_birth_year') }}: {{ birthYear(data.player.birthDate) }}</span>
+                <span>{{ t('admin.tournament_roster.col_number') }}: {{ data.jerseyNumber ?? '—' }}</span>
+              </div>
               <span
                 v-if="rosterStatusByPlayer.get(data.playerId)?.sanctionNote"
                 class="mt-0.5 block text-xs text-red-500"
@@ -858,20 +966,9 @@ onMounted(() => {
                   })
                 }}
               </span>
-            </template>
-          </Column>
-          <Column :header="t('admin.tournament_roster.col_birth_year')" style="width: 6rem">
-            <template #body="{ data }">
-              {{ birthYear(data.player.birthDate) }}
-            </template>
-          </Column>
-          <Column :header="t('admin.tournament_roster.col_number')" style="width: 5rem">
-            <template #body="{ data }">
-              {{ data.jerseyNumber ?? '—' }}
-            </template>
-          </Column>
-          <Column :header="t('admin.tournament_roster.col_eligibility')">
-            <template #body="{ data }">
+            </div>
+
+            <div class="flex shrink-0 items-center gap-2">
               <Tag
                 v-if="isPlayerDisqualified(data.playerId)"
                 severity="danger"
@@ -882,16 +979,12 @@ onMounted(() => {
                 severity="success"
                 :value="t('admin.tournament_roster.eligible')"
               />
-              <span v-else class="text-xs text-red-500">{{ data.reason }}</span>
-            </template>
-          </Column>
-          <Column
-            v-if="canManage && showSanctionActions"
-            :header="t('admin.tournament_roster.col_sanction')"
-            style="width: 8rem"
-          >
-            <template #body="{ data }">
-              <div v-if="selectedPlayerIds.includes(data.playerId)" class="flex justify-end gap-1">
+              <span v-else class="max-w-[10rem] text-right text-xs text-red-500">{{ data.reason }}</span>
+
+              <div
+                v-if="canManage && showSanctionActions && selectedPlayerIds.includes(data.playerId)"
+                class="flex gap-1"
+              >
                 <Button
                   v-if="canDisqualifyPlayer(data.playerId)"
                   icon="pi pi-ban"
@@ -915,25 +1008,37 @@ onMounted(() => {
                   @click="setPlayerSanction(data.playerId, false)"
                 />
               </div>
-            </template>
-          </Column>
-        </DataTable>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div v-if="canManage && candidates.length" class="mt-4 flex flex-wrap justify-end gap-2">
-        <Button
-          :label="t('admin.tournament_roster.save')"
-          icon="pi pi-save"
-          outlined
-          :loading="saving"
-          @click="saveRoster"
-        />
-        <Button
-          :label="t('admin.tournament_roster.submit')"
-          icon="pi pi-check"
-          :loading="submitting"
-          @click="submitRoster"
-        />
+      <div
+        v-if="canManage && candidates.length"
+        class="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-surface-200 pt-4 dark:border-surface-700"
+      >
+        <span v-if="rosterSummary?.allConfirmed" class="text-xs text-muted-color">
+          {{ t('admin.tournament_roster.all_confirmed') }}
+        </span>
+        <span v-else-if="unconfirmedTeamsCount > 0" class="text-xs text-muted-color">
+          {{ t('admin.tournament_roster.unconfirmed_teams', { count: unconfirmedTeamsCount }) }}
+        </span>
+        <span v-else />
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button
+            :label="t('admin.tournament_roster.save')"
+            icon="pi pi-save"
+            outlined
+            :loading="saving"
+            @click="saveRoster"
+          />
+          <Button
+            :label="t('admin.tournament_roster.submit')"
+            icon="pi pi-check"
+            :loading="submitting"
+            @click="submitRoster"
+          />
+        </div>
       </div>
     </template>
   </div>

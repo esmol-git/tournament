@@ -37,6 +37,7 @@ const ROSTER_PLAYER_INCLUDE = {
       birthDate: true,
       gender: true,
       position: true,
+      photoUrl: true,
     },
   },
 } as const;
@@ -148,6 +149,35 @@ export class TournamentRostersService {
         `В составе должно быть не более ${max} игроков`,
       );
     }
+  }
+
+  private mergeImportedRosterPlayers(
+    existing: Array<{ playerId: string; jerseyNumber: number | null }>,
+    imported: Array<{ playerId: string; jerseyNumber?: number }>,
+  ): Array<{ playerId: string; jerseyNumber?: number }> {
+    const importedById = new Map(
+      imported.map((p) => [p.playerId, p] as const),
+    );
+    const merged: Array<{ playerId: string; jerseyNumber?: number }> = [];
+
+    for (const row of existing) {
+      const imp = importedById.get(row.playerId);
+      merged.push({
+        playerId: row.playerId,
+        ...(imp?.jerseyNumber != null
+          ? { jerseyNumber: imp.jerseyNumber }
+          : row.jerseyNumber != null
+            ? { jerseyNumber: row.jerseyNumber }
+            : {}),
+      });
+      importedById.delete(row.playerId);
+    }
+
+    for (const imp of importedById.values()) {
+      merged.push(imp);
+    }
+
+    return merged;
   }
 
   private assertRosterDeadline(deadline: Date | null) {
@@ -331,7 +361,7 @@ export class TournamentRostersService {
 
     this.assertRosterCount(
       playerIds.length,
-      tournament.rosterMinPlayers,
+      null,
       tournament.rosterMaxPlayers,
     );
 
@@ -487,6 +517,7 @@ export class TournamentRostersService {
             birthDate: true,
             gender: true,
             position: true,
+            photoUrl: true,
           },
         },
       },
@@ -575,6 +606,14 @@ export class TournamentRostersService {
       tournament.tenantId,
     );
 
+    const existingRosterRows = await this.prisma.tournamentTeamPlayer.findMany({
+      where: { tournamentId, teamId },
+      select: { playerId: true, jerseyNumber: true },
+    });
+    const existingRosterPlayerIds = new Set(
+      existingRosterRows.map((r) => r.playerId),
+    );
+
     const teamPlayers = await this.prisma.teamPlayer.findMany({
       where: { teamId, isActive: true, player: { isActive: true } },
       include: {
@@ -589,8 +628,19 @@ export class TournamentRostersService {
       },
     });
 
+    const tenantPlayers = await this.prisma.player.findMany({
+      where: { tenantId: tournament.tenantId, isActive: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        birthDate: true,
+      },
+    });
+
     const byKey = new Map<string, string>();
     const byNameOnly = new Map<string, string[]>();
+    const tenantByKey = new Map<string, string>();
     for (const tp of teamPlayers) {
       const key = normalizePersonKey(
         tp.player.lastName,
@@ -603,10 +653,16 @@ export class TournamentRostersService {
       arr.push(tp.player.id);
       byNameOnly.set(nameKey, arr);
     }
+    for (const p of tenantPlayers) {
+      const key = normalizePersonKey(p.lastName, p.firstName, p.birthDate);
+      if (!tenantByKey.has(key)) tenantByKey.set(key, p.id);
+    }
 
     const errors: Array<{ row: number; message: string }> = [];
     const rosterPlayers: { playerId: string; jerseyNumber?: number }[] = [];
     const usedPlayerIds = new Set<string>();
+    const usedPersonKeys = new Set<string>();
+    let skippedDuplicates = 0;
 
     for (const row of parsed) {
       const key = normalizePersonKey(
@@ -614,7 +670,17 @@ export class TournamentRostersService {
         row.firstName,
         row.birthDate,
       );
+
+      if (row.birthDate && usedPersonKeys.has(key)) {
+        skippedDuplicates += 1;
+        continue;
+      }
+
       let playerId = byKey.get(key);
+
+      if (!playerId && row.birthDate) {
+        playerId = tenantByKey.get(key);
+      }
 
       if (!playerId && !row.birthDate) {
         const nameKey = `${row.lastName.trim().toLowerCase()}|${row.firstName.trim().toLowerCase()}`;
@@ -633,21 +699,29 @@ export class TournamentRostersService {
 
       if (!playerId && createMissing) {
         try {
+          const existingTenantId = row.birthDate ? tenantByKey.get(key) : undefined;
           playerId = await this.prisma.$transaction(async (tx) => {
-            const player = await tx.player.create({
-              data: {
-                tenantId: tournament.tenantId,
-                lastName: row.lastName,
-                firstName: row.firstName,
-                birthDate: row.birthDate ?? undefined,
-                position: row.position ?? undefined,
-              },
+            const resolvedPlayerId =
+              existingTenantId ??
+              (
+                await tx.player.create({
+                  data: {
+                    tenantId: tournament.tenantId,
+                    lastName: row.lastName,
+                    firstName: row.firstName,
+                    birthDate: row.birthDate ?? undefined,
+                    position: row.position ?? undefined,
+                  },
+                })
+              ).id;
+
+            await tx.teamPlayer.deleteMany({
+              where: { playerId: resolvedPlayerId },
             });
-            await tx.teamPlayer.deleteMany({ where: { playerId: player.id } });
             await tx.teamPlayer.create({
               data: {
                 teamId,
-                playerId: player.id,
+                playerId: resolvedPlayerId,
                 jerseyNumber: row.jerseyNumber ?? undefined,
                 position: row.position ?? undefined,
                 isActive: true,
@@ -658,15 +732,16 @@ export class TournamentRostersService {
                 tx,
                 tournament.tenantId,
                 team.teamCategoryId,
-                player.id,
+                resolvedPlayerId,
               );
             }
-            return player.id;
+            return resolvedPlayerId;
           });
           byKey.set(key, playerId);
+          tenantByKey.set(key, playerId);
           const nameKey = `${row.lastName.trim().toLowerCase()}|${row.firstName.trim().toLowerCase()}`;
           const arr = byNameOnly.get(nameKey) ?? [];
-          arr.push(playerId);
+          if (!arr.includes(playerId)) arr.push(playerId);
           byNameOnly.set(nameKey, arr);
         } catch (e: unknown) {
           errors.push({
@@ -675,6 +750,49 @@ export class TournamentRostersService {
               e instanceof BadRequestException
                 ? String(e.message)
                 : 'Не удалось создать игрока',
+          });
+          continue;
+        }
+      } else if (
+        playerId &&
+        createMissing &&
+        !byKey.has(key) &&
+        row.birthDate
+      ) {
+        const linkPlayerId = playerId;
+        try {
+          await this.prisma.$transaction(async (tx) => {
+            await tx.teamPlayer.deleteMany({ where: { playerId: linkPlayerId } });
+            await tx.teamPlayer.create({
+              data: {
+                teamId,
+                playerId: linkPlayerId,
+                jerseyNumber: row.jerseyNumber ?? undefined,
+                position: row.position ?? undefined,
+                isActive: true,
+              },
+            });
+            if (team.teamCategoryId) {
+              await assertPlayerFitsTeamCategory(
+                tx,
+                tournament.tenantId,
+                team.teamCategoryId,
+                linkPlayerId,
+              );
+            }
+          });
+          byKey.set(key, linkPlayerId);
+          const nameKey = `${row.lastName.trim().toLowerCase()}|${row.firstName.trim().toLowerCase()}`;
+          const arr = byNameOnly.get(nameKey) ?? [];
+          if (!arr.includes(linkPlayerId)) arr.push(linkPlayerId);
+          byNameOnly.set(nameKey, arr);
+        } catch (e: unknown) {
+          errors.push({
+            row: row.rowNumber,
+            message:
+              e instanceof BadRequestException
+                ? String(e.message)
+                : 'Не удалось добавить игрока в команду',
           });
           continue;
         }
@@ -688,7 +806,18 @@ export class TournamentRostersService {
         continue;
       }
 
+      if (existingRosterPlayerIds.has(playerId)) {
+        skippedDuplicates += 1;
+        if (row.birthDate) usedPersonKeys.add(key);
+        continue;
+      }
+
       if (usedPlayerIds.has(playerId)) {
+        if (row.birthDate) {
+          skippedDuplicates += 1;
+          usedPersonKeys.add(key);
+          continue;
+        }
         errors.push({
           row: row.rowNumber,
           message: 'Дубликат игрока в файле',
@@ -748,6 +877,7 @@ export class TournamentRostersService {
       }
 
       usedPlayerIds.add(playerId);
+      if (row.birthDate) usedPersonKeys.add(key);
       rosterPlayers.push({
         playerId,
         ...(row.jerseyNumber != null ? { jerseyNumber: row.jerseyNumber } : {}),
@@ -755,22 +885,45 @@ export class TournamentRostersService {
     }
 
     if (!rosterPlayers.length) {
-      throw new BadRequestException({
-        message: 'Не удалось импортировать ни одного игрока',
+      if (errors.length) {
+        throw new BadRequestException({
+          message: 'Не удалось импортировать ни одного игрока',
+          errors,
+        });
+      }
+      const roster = await this.listForTeam(tournamentId, teamId, user);
+      return {
+        imported: 0,
+        skipped: skippedDuplicates,
         errors,
-      });
+        roster,
+      };
+    }
+
+    const mergedPlayers = this.mergeImportedRosterPlayers(
+      existingRosterRows,
+      rosterPlayers,
+    );
+
+    if (
+      tournament.rosterMaxPlayers != null &&
+      mergedPlayers.length > tournament.rosterMaxPlayers
+    ) {
+      throw new BadRequestException(
+        `В составе должно быть не более ${tournament.rosterMaxPlayers} игроков (после импорта: ${mergedPlayers.length})`,
+      );
     }
 
     const roster = await this.setForTeam(
       tournamentId,
       teamId,
-      { players: rosterPlayers },
+      { players: mergedPlayers },
       user,
     );
 
     return {
       imported: rosterPlayers.length,
-      skipped: errors.length,
+      skipped: skippedDuplicates + errors.length,
       errors,
       roster,
     };

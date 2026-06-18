@@ -5,6 +5,8 @@ import { useApiUrl } from '~/composables/useApiUrl'
 import { useAdminTenantTeamsAllQuery } from '~/composables/admin/useAdminTenantListQueries'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { formatUserListLabel } from '~/utils/userDisplayName'
+import { displayTeamNameForUi } from '~/utils/teamDisplayName'
+import AdminTournamentTeamLogo from '~/app/components/admin/tournaments/AdminTournamentTeamLogo.vue'
 import type { TournamentDetails } from '~/types/tournament-admin'
 
 export type TournamentRegistrationRow = {
@@ -131,7 +133,11 @@ const registeredTeamIds = computed(() => {
 const availableTeamOptions = computed(() =>
   catalogTeams.value
     .filter((team) => !registeredTeamIds.value.has(team.id))
-    .map((team) => ({ label: team.name, value: team.id })),
+    .map((team) => ({
+      label: team.name,
+      value: team.id,
+      logoUrl: team.logoUrl ?? null,
+    })),
 )
 
 function openAddDialog() {
@@ -377,7 +383,14 @@ onMounted(() => {
       >
         <Column :header="t('admin.tournament_registrations.col_team')">
           <template #body="{ data }">
-            {{ data.team?.name }}
+            <div class="flex items-center gap-2">
+              <AdminTournamentTeamLogo
+                :logo-url="data.team?.logoUrl"
+                :name="data.team?.name"
+                size="sm"
+              />
+              <span>{{ displayTeamNameForUi(data.team?.name ?? '') }}</span>
+            </div>
           </template>
         </Column>
         <Column :header="t('admin.tournament_registrations.col_status')" style="width: 9rem">
@@ -475,7 +488,15 @@ onMounted(() => {
             option-label="label"
             option-value="value"
             class="w-full"
-          />
+            filter
+          >
+            <template #option="{ option }">
+              <div class="flex items-center gap-2 py-0.5">
+                <AdminTournamentTeamLogo :logo-url="option.logoUrl" :name="option.label" size="sm" />
+                <span>{{ displayTeamNameForUi(option.label) }}</span>
+              </div>
+            </template>
+          </Select>
         </div>
         <div class="flex flex-col gap-1">
           <label class="text-xs text-muted-color">

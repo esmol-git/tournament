@@ -3403,7 +3403,7 @@ export class TournamentsService {
         tournamentTeams: {
           orderBy: { createdAt: 'asc' },
           include: {
-            team: { select: { id: true, name: true } },
+            team: { select: { id: true, name: true, logoUrl: true } },
             group: { select: { id: true, name: true, sortOrder: true } },
           },
         },
@@ -4879,11 +4879,13 @@ export class TournamentsService {
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
 
-    if (tournament.status !== TournamentStatus.DRAFT) {
+    if (tournament.status === TournamentStatus.ARCHIVED) {
       throw new BadRequestException(
-        'Can change team rating only for draft tournaments',
+        'Нельзя менять рейтинг команд в архивном турнире',
       );
     }
+
+    await this.assertCompositionEditAllowed(tournamentId);
 
     const hasEnteredResults = await this.prisma.match.findFirst({
       where: {

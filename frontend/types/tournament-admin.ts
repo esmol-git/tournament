@@ -70,7 +70,7 @@ export interface TournamentDetails {
   groups: { id: string; name: string; sortOrder: number }[]
   tournamentTeams: {
     teamId: string
-    team: { id: string; name: string }
+    team: { id: string; name: string; logoUrl?: string | null }
     group?: { id: string; name: string } | null
     rating?: number | null
     /** Порядок в колонке группы (для таблицы при равных очках). */
@@ -236,6 +236,7 @@ export interface TeamLite {
   name: string
   slug?: string | null
   category?: string | null
+  logoUrl?: string | null
 }
 
 export type MatchRow = TournamentDetails['matches'][number]
