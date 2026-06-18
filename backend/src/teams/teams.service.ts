@@ -324,6 +324,7 @@ export class TeamsService {
         },
         teamCategory: { select: { id: true, name: true } },
         region: { select: { id: true, name: true } },
+        homeStadium: { select: { id: true, name: true, city: true } },
       },
     });
 
@@ -351,6 +352,14 @@ export class TeamsService {
           : null,
         regionId: t.regionId,
         region: t.region ? { id: t.region.id, name: t.region.name } : null,
+        homeStadiumId: t.homeStadiumId,
+        homeStadium: t.homeStadium
+          ? {
+              id: t.homeStadium.id,
+              name: t.homeStadium.name,
+              city: t.homeStadium.city,
+            }
+          : null,
       })),
       total,
       page: pageResolved,
@@ -433,6 +442,19 @@ export class TeamsService {
       regionIdToSet = rg.id;
     }
 
+    let homeStadiumIdToSet: string | undefined = undefined;
+    const rawStadium = dto.homeStadiumId?.trim();
+    if (rawStadium) {
+      const st = await this.prisma.stadium.findFirst({
+        where: { id: rawStadium, tenantId },
+        select: { id: true },
+      });
+      if (!st) {
+        throw new BadRequestException('Стадион не найден');
+      }
+      homeStadiumIdToSet = st.id;
+    }
+
     const team = await this.prisma.team.create({
       data: {
         tenantId,
@@ -449,6 +471,7 @@ export class TeamsService {
         description: dto.description,
         ageGroupId: ageGroupIdToSet,
         regionId: regionIdToSet,
+        homeStadiumId: homeStadiumIdToSet,
       },
     });
 
@@ -544,6 +567,23 @@ export class TeamsService {
       }
     }
 
+    let homeStadiumForUpdate: string | null | undefined = undefined;
+    if (dto.homeStadiumId !== undefined) {
+      if (dto.homeStadiumId === null || dto.homeStadiumId === '') {
+        homeStadiumForUpdate = null;
+      } else {
+        const sid = String(dto.homeStadiumId).trim();
+        const st = await this.prisma.stadium.findFirst({
+          where: { id: sid, tenantId },
+          select: { id: true },
+        });
+        if (!st) {
+          throw new BadRequestException('Стадион не найден');
+        }
+        homeStadiumForUpdate = sid;
+      }
+    }
+
     const previousLogoUrl = team.logoUrl;
     const removeOldLogoFromS3 =
       !!previousLogoUrl &&
@@ -586,6 +626,9 @@ export class TeamsService {
           ? { teamCategoryId: nextTeamCategoryId }
           : {}),
         ...(regionForUpdate !== undefined ? { regionId: regionForUpdate } : {}),
+        ...(homeStadiumForUpdate !== undefined
+          ? { homeStadiumId: homeStadiumForUpdate }
+          : {}),
       },
     });
 

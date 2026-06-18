@@ -30,6 +30,7 @@ import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
 import { ReorderRoundDto } from './dto/reorder-round.dto';
 import { SetTeamGroupDto } from './dto/set-team-group.dto';
+import { ReplaceTeamDto } from './dto/replace-team.dto';
 import { SyncTeamsGroupLayoutDto } from './dto/sync-teams-group-layout.dto';
 import { SetTeamRatingDto } from './dto/set-team-rating.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
@@ -236,6 +237,22 @@ export class TournamentsController {
   @UseGuards(TournamentManageGuard)
   async removeTeam(@Param('id') id: string, @Param('teamId') teamId: string) {
     return this.tournamentsService.removeTeam(id, teamId);
+  }
+
+  @Post('tournaments/:id/teams/:teamId/replace')
+  @UseGuards(TournamentManageGuard)
+  async replaceTeam(
+    @Param('id') id: string,
+    @Param('teamId') teamId: string,
+    @Body() dto: ReplaceTeamDto,
+  ) {
+    return this.tournamentsService.replaceTeam(id, teamId, dto.newTeamId);
+  }
+
+  @Post('tournaments/:id/consolation-cups')
+  @UseGuards(TournamentManageGuard)
+  async generateConsolationCupFinals(@Param('id') id: string) {
+    return this.tournamentsService.generateConsolationCupFinals(id);
   }
 
   @Patch('tournaments/:id/teams/:teamId/group')

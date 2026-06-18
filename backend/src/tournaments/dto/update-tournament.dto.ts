@@ -22,6 +22,7 @@ import {
   TournamentEnrollmentMode,
   TournamentEligibilityProfile,
   TournamentGameFormat,
+  TournamentVenueMode,
 } from '@prisma/client';
 
 class TournamentAdminDto {
@@ -199,6 +200,14 @@ export class UpdateTournamentDto {
   @IsOptional()
   @IsObject()
   dayStartTimeOverrides?: Record<string, string> | null;
+
+  @ApiPropertyOptional({
+    enum: TournamentVenueMode,
+    description: 'Режим назначения площадок при генерации календаря',
+  })
+  @IsOptional()
+  @IsEnum(TournamentVenueMode)
+  venueMode?: TournamentVenueMode;
 
   @ApiPropertyOptional({ example: 6 })
   @IsOptional()

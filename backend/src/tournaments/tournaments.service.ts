@@ -17,6 +17,7 @@ import {
   TournamentEnrollmentMode,
   TournamentEligibilityProfile,
   TournamentRosterPlayerStatus,
+  TournamentVenueMode,
   UserRole,
 } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -589,19 +590,100 @@ export class TournamentsService {
   }
 
   /**
-   * Пока есть матчи (сгенерировано расписание), список команд и группы менять нельзя — иначе расходится с сеткой.
-   * Рейтинги в TournamentTeam править можно (с перегенерацией календаря), см. setTeamRating.
+   * Турнир считается начавшимся, если есть сыгранные/идущие матчи или технический результат.
    */
-  private async assertNoMatchesForTeamCompositionEdit(tournamentId: string) {
-    const any = await this.prisma.match.findFirst({
-      where: { tournamentId },
+  async hasTournamentStarted(tournamentId: string): Promise<boolean> {
+    const m = await this.prisma.match.findFirst({
+      where: {
+        tournamentId,
+        OR: [
+          {
+            status: {
+              in: [MatchStatus.PLAYED, MatchStatus.FINISHED, MatchStatus.LIVE],
+            },
+          },
+          { isTechnicalResult: true },
+          {
+            AND: [{ homeScore: { not: null } }, { awayScore: { not: null } }],
+          },
+        ],
+      },
       select: { id: true },
     });
-    if (any) {
+    return !!m;
+  }
+
+  private async assertTournamentNotStartedForCalendarRegeneration(
+    tournamentId: string,
+  ) {
+    if (await this.hasTournamentStarted(tournamentId)) {
       throw new BadRequestException(
-        'Нельзя менять состав команд и группы, пока есть матчи в расписании. Сначала очистите календарь.',
+        'Нельзя пересоздать календарь после начала турнира. Используйте замену команды или технический результат.',
       );
     }
+  }
+
+  private async assertCompositionEditAllowed(tournamentId: string) {
+    if (await this.hasTournamentStarted(tournamentId)) {
+      throw new BadRequestException(
+        'Нельзя менять состав после начала турнира. Замените команду в будущих матчах или зафиксируйте технический результат.',
+      );
+    }
+  }
+
+  /**
+   * Пока есть матчи (сгенерировано расписание), список команд и группы менять нельзя — иначе расходится с сеткой.
+   * Рейтинги в TournamentTeam править можно (с перегенерацией календаря), см. setTeamRating.
+   * @deprecated Используйте assertCompositionEditAllowed — состав можно менять до старта турнира даже при наличии календаря.
+   */
+  private async assertNoMatchesForTeamCompositionEdit(tournamentId: string) {
+    await this.assertCompositionEditAllowed(tournamentId);
+  }
+
+  private buildVenueStadiumPool(tournament: {
+    stadiumId: string | null;
+    tournamentStadiums?: Array<{ stadiumId: string; sortOrder: number }>;
+  }): string[] {
+    const fromLinks = (tournament.tournamentStadiums ?? [])
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((x) => x.stadiumId);
+    if (fromLinks.length) return fromLinks;
+    if (tournament.stadiumId) return [tournament.stadiumId];
+    return [];
+  }
+
+  private assignMatchStadium(params: {
+    venueMode: TournamentVenueMode;
+    pool: string[];
+    homeTeamId: string;
+    homeStadiumByTeamId: Map<string, string | null>;
+    slotIndex: number;
+  }): string | null {
+    const { venueMode, pool, homeTeamId, homeStadiumByTeamId, slotIndex } =
+      params;
+    if (!pool.length) return null;
+
+    const homeStadiumId = homeStadiumByTeamId.get(homeTeamId) ?? null;
+    const homeInPool = !!(homeStadiumId && pool.includes(homeStadiumId));
+
+    if (venueMode === TournamentVenueMode.HOME_STADIUM && homeInPool) {
+      return homeStadiumId;
+    }
+    if (venueMode === TournamentVenueMode.SINGLE_VENUE) {
+      return pool[0];
+    }
+    return pool[slotIndex % pool.length];
+  }
+
+  isHomeVenueMatch(
+    stadiumId: string | null | undefined,
+    homeTeamId: string,
+    homeStadiumByTeamId: Map<string, string | null>,
+  ): boolean {
+    if (!stadiumId) return false;
+    const homeStadiumId = homeStadiumByTeamId.get(homeTeamId);
+    return !!homeStadiumId && homeStadiumId === stadiumId;
   }
 
   /**
@@ -2535,6 +2617,74 @@ export class TournamentsService {
     );
   }
 
+  async listPublicStadiums(tenantSlug: string) {
+    const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
+    const rows = await this.prisma.stadium.findMany({
+      where: { tenantId: tenant.id },
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        city: true,
+        address: true,
+        surfaceType: true,
+        surface: true,
+        pitchCount: true,
+        capacity: true,
+        region: { select: { id: true, name: true } },
+        galleryImages: {
+          orderBy: { sortOrder: 'asc' },
+          take: 1,
+          select: { imageUrl: true },
+        },
+      },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      city: row.city,
+      address: row.address,
+      surfaceType: row.surfaceType,
+      surface: row.surface,
+      pitchCount: row.pitchCount,
+      capacity: row.capacity,
+      region: row.region,
+      previewImageUrl: row.galleryImages[0]?.imageUrl ?? null,
+    }));
+  }
+
+  async listPublicStadiumsCached(tenantSlug: string) {
+    return this.rememberPublic(
+      this.publicCacheKey('public-stadiums', tenantSlug),
+      60_000,
+      () => this.listPublicStadiums(tenantSlug),
+    );
+  }
+
+  async getPublicStadium(tenantSlug: string, stadiumId: string) {
+    const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
+    const row = await this.prisma.stadium.findFirst({
+      where: { id: stadiumId, tenantId: tenant.id },
+      include: {
+        region: { select: { id: true, name: true } },
+        galleryImages: {
+          orderBy: { sortOrder: 'asc' },
+          select: { id: true, imageUrl: true, caption: true, sortOrder: true },
+        },
+      },
+    });
+    if (!row) throw new NotFoundException('Stadium not found');
+    return row;
+  }
+
+  async getPublicStadiumCached(tenantSlug: string, stadiumId: string) {
+    return this.rememberPublic(
+      this.publicCacheKey('public-stadium', tenantSlug, stadiumId),
+      60_000,
+      () => this.getPublicStadium(tenantSlug, stadiumId),
+    );
+  }
+
   async listPublicTenantVideo(tenantSlug: string, limitRaw?: string | number) {
     const tenant = await this.resolveTenantForPublicOrThrow(tenantSlug);
     const parsed =
@@ -2899,6 +3049,7 @@ export class TournamentsService {
           dayStartTimeDefault: dto.dayStartTimeDefault ?? '12:00',
           dayStartTimeOverrides:
             (dto.dayStartTimeOverrides as any) ?? undefined,
+          venueMode: dto.venueMode ?? TournamentVenueMode.MULTI_VENUE,
           minTeams: dto.minTeams ?? 2,
           maxTeams: enrollment.maxTeams,
           enrollmentMode: enrollment.enrollmentMode,
@@ -3351,6 +3502,7 @@ export class TournamentsService {
         awayScore: { not: null },
       },
     });
+    const tournamentStarted = await this.hasTournamentStarted(id);
     const finalMatch = await this.prisma.match.findFirst({
       where: {
         tournamentId: id,
@@ -3395,8 +3547,30 @@ export class TournamentsService {
       }
     }
 
+    const homeStadiumByTeamId = new Map(
+      (
+        await this.prisma.team.findMany({
+          where: {
+            id: {
+              in: [...new Set(filteredMatches.map((m) => m.homeTeamId))],
+            },
+          },
+          select: { id: true, homeStadiumId: true },
+        })
+      ).map((row) => [row.id, row.homeStadiumId] as const),
+    );
+
+    const matchesAnnotated = filteredMatches.map((m) => ({
+      ...m,
+      isHomeVenue: this.isHomeVenueMatch(
+        m.stadiumId,
+        m.homeTeamId,
+        homeStadiumByTeamId,
+      ),
+    }));
+
     const matchesWithPlayers = (await this.attachPlayersToMatchEvents(
-      filteredMatches as unknown[],
+      matchesAnnotated as unknown[],
     )) as typeof filteredMatches;
 
     return {
@@ -3411,6 +3585,7 @@ export class TournamentsService {
         teamsExpectedTotal,
         matchesTotal: matchesTotalCount,
         matchesPlayedTotal,
+        tournamentStarted,
         championTeamName,
       },
     };
@@ -3795,6 +3970,7 @@ export class TournamentsService {
             dto.dayStartTimeOverrides === null
               ? null
               : (dto.dayStartTimeOverrides as any),
+          ...(dto.venueMode !== undefined ? { venueMode: dto.venueMode } : {}),
           minTeams: dto.minTeams,
           ...(dto.maxTeams !== undefined ? { maxTeams: dto.maxTeams } : {}),
           ...(dto.enrollmentMode !== undefined
@@ -4191,11 +4367,7 @@ export class TournamentsService {
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
 
-    if (tournament.status !== TournamentStatus.DRAFT) {
-      throw new BadRequestException('Can add teams only for draft tournaments');
-    }
-
-    await this.assertNoMatchesForTeamCompositionEdit(tournamentId);
+    await this.assertCompositionEditAllowed(tournamentId);
 
     const team = await this.prisma.team.findUnique({
       where: { id: teamId },
@@ -4245,18 +4417,253 @@ export class TournamentsService {
       select: { id: true, status: true },
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
-    if (tournament.status !== TournamentStatus.DRAFT) {
-      throw new BadRequestException(
-        'Can remove teams only for draft tournaments',
-      );
-    }
 
-    await this.assertNoMatchesForTeamCompositionEdit(tournamentId);
+    await this.assertCompositionEditAllowed(tournamentId);
 
     await this.prisma.tournamentTeam.deleteMany({
       where: { tournamentId, teamId },
     });
     return { success: true };
+  }
+
+  async replaceTeam(tournamentId: string, oldTeamId: string, newTeamId: string) {
+    if (oldTeamId === newTeamId) {
+      throw new BadRequestException('Команда-замена совпадает с исходной');
+    }
+
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { id: true, tenantId: true, ageGroupId: true },
+    });
+    if (!tournament) throw new BadRequestException('Tournament not found');
+
+    const oldTt = await this.prisma.tournamentTeam.findFirst({
+      where: { tournamentId, teamId: oldTeamId },
+      select: { id: true, groupId: true, rating: true },
+    });
+    if (!oldTt) {
+      throw new BadRequestException('Исходная команда не участвует в турнире');
+    }
+
+    const duplicate = await this.prisma.tournamentTeam.findFirst({
+      where: { tournamentId, teamId: newTeamId },
+      select: { teamId: true },
+    });
+    if (duplicate) {
+      throw new BadRequestException('Команда-замена уже в турнире');
+    }
+
+    const newTeam = await this.prisma.team.findUnique({
+      where: { id: newTeamId },
+      select: { id: true, tenantId: true, ageGroupId: true, rating: true },
+    });
+    if (!newTeam) throw new BadRequestException('Команда-замена не найдена');
+    if (newTeam.tenantId !== tournament.tenantId) {
+      throw new BadRequestException('Команда должна принадлежать той же организации');
+    }
+    if (
+      tournament.ageGroupId &&
+      newTeam.ageGroupId !== tournament.ageGroupId
+    ) {
+      throw new BadRequestException(
+        'Возрастная группа команды-замены не совпадает с турниром',
+      );
+    }
+
+    const replacedMatches = await this.prisma.$transaction(async (tx) => {
+      await tx.tournamentTeam.update({
+        where: { id: oldTt.id },
+        data: {
+          teamId: newTeamId,
+          rating: Math.min(5, Math.max(1, newTeam.rating ?? oldTt.rating ?? 3)),
+        },
+      });
+
+      const future = await tx.match.findMany({
+        where: {
+          tournamentId,
+          status: MatchStatus.SCHEDULED,
+          homeScore: null,
+          awayScore: null,
+          OR: [{ homeTeamId: oldTeamId }, { awayTeamId: oldTeamId }],
+        },
+        select: { id: true, homeTeamId: true, awayTeamId: true },
+      });
+
+      for (const m of future) {
+        await tx.match.update({
+          where: { id: m.id },
+          data: {
+            homeTeamId:
+              m.homeTeamId === oldTeamId ? newTeamId : m.homeTeamId,
+            awayTeamId:
+              m.awayTeamId === oldTeamId ? newTeamId : m.awayTeamId,
+          },
+        });
+      }
+
+      return future.length;
+    });
+
+    await this.recomputeTable(tournamentId);
+    return { success: true, replacedMatches };
+  }
+
+  /**
+   * Золотой / серебряный кубок: финалы между 1-м и 2-м местами двух групп (v1 — ровно 2 группы).
+   */
+  async generateConsolationCupFinals(tournamentId: string) {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      include: {
+        groups: { orderBy: { sortOrder: 'asc' } },
+        tournamentTeams: {
+          select: {
+            teamId: true,
+            groupId: true,
+            groupSortOrder: true,
+          },
+        },
+        tournamentStadiums: {
+          orderBy: { sortOrder: 'asc' },
+          select: { stadiumId: true, sortOrder: true },
+        },
+      },
+    });
+    if (!tournament) throw new BadRequestException('Tournament not found');
+
+    const groups = tournament.groups ?? [];
+    if (groups.length !== 2) {
+      throw new BadRequestException(
+        'Золотой и серебряный кубок сейчас поддерживаются для турнира ровно с 2 группами',
+      );
+    }
+
+    const existing = await this.prisma.match.count({
+      where: {
+        tournamentId,
+        stage: { in: [MatchStage.GOLD_CUP, MatchStage.SILVER_CUP] },
+      },
+    });
+    if (existing > 0) {
+      throw new BadRequestException(
+        'Матчи золотого/серебряного кубка уже созданы',
+      );
+    }
+
+    const points = {
+      win: tournament.pointsWin,
+      draw: tournament.pointsDraw,
+      loss: tournament.pointsLoss,
+    };
+
+    const placements: Array<{ first: string; second: string }> = [];
+
+    for (const group of groups) {
+      const teamIds = tournament.tournamentTeams
+        .filter((tt) => tt.groupId === group.id)
+        .map((tt) => tt.teamId);
+      if (teamIds.length < 2) {
+        throw new BadRequestException(
+          `В группе «${group.name}» должно быть минимум 2 команды`,
+        );
+      }
+
+      const groupMatches = await this.prisma.match.findMany({
+        where: {
+          tournamentId,
+          stage: MatchStage.GROUP,
+          groupId: group.id,
+        },
+        select: {
+          homeTeamId: true,
+          awayTeamId: true,
+          homeScore: true,
+          awayScore: true,
+          status: true,
+          startTime: true,
+        },
+      });
+
+      const unfinished = groupMatches.filter(
+        (m) =>
+          m.homeScore === null ||
+          m.awayScore === null ||
+          (m.status !== MatchStatus.PLAYED &&
+            m.status !== MatchStatus.FINISHED),
+      );
+      if (unfinished.length > 0) {
+        throw new BadRequestException(
+          `Сначала завершите все матчи группы «${group.name}»`,
+        );
+      }
+
+      const seedOrder = new Map(
+        tournament.tournamentTeams
+          .filter((tt) => tt.groupId === group.id)
+          .map((tt) => [tt.teamId, tt.groupSortOrder ?? 0] as const),
+      );
+      const standings = this.computeStandings(
+        teamIds,
+        groupMatches,
+        points,
+        seedOrder,
+      );
+      const first = standings[0]?.teamId;
+      const second = standings[1]?.teamId;
+      if (!first || !second) {
+        throw new BadRequestException(
+          `Не удалось определить места в группе «${group.name}»`,
+        );
+      }
+      placements.push({ first, second });
+    }
+
+    const [groupA, groupB] = placements;
+    const lastGroupTime = await this.prisma.match.aggregate({
+      where: { tournamentId, stage: MatchStage.GROUP },
+      _max: { startTime: true },
+    });
+    const slotMs =
+      ((tournament.matchDurationMinutes ?? 50) +
+        (tournament.matchBreakMinutes ?? 10)) *
+      60 *
+      1000;
+    const baseMs =
+      lastGroupTime._max.startTime?.getTime() ?? Date.now();
+    const goldStart = new Date(baseMs + slotMs);
+    const silverStart = new Date(baseMs + slotMs * 2);
+
+    const venuePool = this.buildVenueStadiumPool(tournament);
+    const goldStadium = venuePool[0] ?? null;
+    const silverStadium = venuePool[1] ?? venuePool[0] ?? null;
+
+    await this.prisma.match.createMany({
+      data: [
+        {
+          tenantId: tournament.tenantId,
+          tournamentId,
+          homeTeamId: groupA.first,
+          awayTeamId: groupB.first,
+          stage: MatchStage.GOLD_CUP,
+          roundNumber: 1,
+          startTime: goldStart,
+          stadiumId: goldStadium,
+        },
+        {
+          tenantId: tournament.tenantId,
+          tournamentId,
+          homeTeamId: groupA.second,
+          awayTeamId: groupB.second,
+          stage: MatchStage.SILVER_CUP,
+          roundNumber: 1,
+          startTime: silverStart,
+          stadiumId: silverStadium,
+        },
+      ],
+    });
+
+    return { success: true, created: 2 };
   }
 
   async setTeamGroup(
@@ -4270,13 +4677,7 @@ export class TournamentsService {
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
 
-    if (tournament.status !== TournamentStatus.DRAFT) {
-      throw new BadRequestException(
-        'Can change groups only for draft tournaments',
-      );
-    }
-
-    await this.assertNoMatchesForTeamCompositionEdit(tournamentId);
+    await this.assertCompositionEditAllowed(tournamentId);
 
     if (groupId) {
       const g = await this.prisma.tournamentGroup.findFirst({
@@ -4310,13 +4711,7 @@ export class TournamentsService {
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
 
-    if (tournament.status !== TournamentStatus.DRAFT) {
-      throw new BadRequestException(
-        'Can change groups only for draft tournaments',
-      );
-    }
-
-    await this.assertNoMatchesForTeamCompositionEdit(tournamentId);
+    await this.assertCompositionEditAllowed(tournamentId);
 
     const tteams = await this.prisma.tournamentTeam.findMany({
       where: { tournamentId },
@@ -5499,7 +5894,13 @@ export class TournamentsService {
   async generateCalendar(tournamentId: string, dto: GenerateCalendarDto) {
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: tournamentId },
-      include: { tournamentTeams: { select: { teamId: true, rating: true } } },
+      include: {
+        tournamentTeams: { select: { teamId: true, rating: true } },
+        tournamentStadiums: {
+          orderBy: { sortOrder: 'asc' },
+          select: { stadiumId: true, sortOrder: true },
+        },
+      },
     });
     if (!tournament) throw new BadRequestException('Tournament not found');
     await this.assertTournamentAutomationAllowed(tournament.tenantId);
@@ -5627,7 +6028,31 @@ export class TournamentsService {
       groupId?: string | null;
       playoffRound?: PlayoffRound | null;
       startTime: Date;
+      stadiumId?: string | null;
     }[] = [];
+
+    const venueMode =
+      tournament.venueMode ?? TournamentVenueMode.MULTI_VENUE;
+    const venueStadiumPool = this.buildVenueStadiumPool(tournament);
+    const homeStadiumRows = await this.prisma.team.findMany({
+      where: { id: { in: teams } },
+      select: { id: true, homeStadiumId: true },
+    });
+    const homeStadiumByTeamId = new Map(
+      homeStadiumRows.map((t) => [t.id, t.homeStadiumId]),
+    );
+    let venueSlotCounter = 0;
+    const nextMatchStadiumId = (homeTeamId: string) => {
+      const stadiumId = this.assignMatchStadium({
+        venueMode,
+        pool: venueStadiumPool,
+        homeTeamId,
+        homeStadiumByTeamId,
+        slotIndex: venueSlotCounter,
+      });
+      venueSlotCounter += 1;
+      return stadiumId;
+    };
 
     const roundsPerDay = dto.roundsPerDay ?? 1;
     if (!Number.isInteger(roundsPerDay) || roundsPerDay < 1) {
@@ -5886,13 +6311,7 @@ export class TournamentsService {
         throw new BadRequestException('Not enough teams to split into groups');
       }
 
-      // We prefer equal group sizes. For MVP require divisibility.
-      if (teams.length % expected !== 0) {
-        throw new BadRequestException(
-          'Teams count must be divisible by groupCount',
-        );
-      }
-
+      // Неравные группы допустимы — распределение задаётся в админке или эвристикой ниже.
       const groupStage = await this.prisma.$transaction(async (tx) => {
         const existingGroups = await tx.tournamentGroup.findMany({
           where: { tournamentId },
@@ -5933,7 +6352,7 @@ export class TournamentsService {
           },
         });
 
-        const size = tts.length / expected;
+        const size = Math.floor(tts.length / expected);
 
         const ratingByTeamId: Record<string, number> = Object.fromEntries(
           tts.map((tt) => [tt.teamId, tt.rating ?? 3]),
@@ -5960,7 +6379,7 @@ export class TournamentsService {
         );
         const canUseExistingAssignments =
           assignedCount === tts.length &&
-          bucketsFromExisting.every((b) => b.length === size);
+          bucketsFromExisting.every((b) => b.length > 0);
 
         if (canUseExistingAssignments) {
           return {
@@ -5988,9 +6407,9 @@ export class TournamentsService {
           buckets[i % expected].push(sortedTts[i].teamId);
         }
 
-        if (buckets.some((x) => x.length !== size)) {
+        if (buckets.some((x) => x.length === 0)) {
           throw new BadRequestException(
-            'Unable to split teams into equal groups',
+            'Unable to split teams into groups — assign groups manually',
           );
         }
 
@@ -6274,6 +6693,7 @@ export class TournamentsService {
               groupId: m.groupId ?? null,
               playoffRound: m.playoffRound ?? null,
               startTime,
+              stadiumId: nextMatchStadiumId(m.homeTeamId),
             });
             lastMatchStart = startTime;
             matchIndex += 1;
@@ -6351,6 +6771,7 @@ export class TournamentsService {
               groupId: m.groupId ?? null,
               playoffRound: m.playoffRound ?? null,
               startTime,
+              stadiumId: nextMatchStadiumId(m.homeTeamId),
             });
             lastMatchStart = startTime;
 
@@ -6405,6 +6826,12 @@ export class TournamentsService {
       if (existingCount > 0 && !replaceExisting) {
         throw new BadRequestException(
           'Calendar already exists. Delete it first or set replaceExisting=true',
+        );
+      }
+
+      if (existingCount > 0 && replaceExisting) {
+        await this.assertTournamentNotStartedForCalendarRegeneration(
+          tournamentId,
         );
       }
 

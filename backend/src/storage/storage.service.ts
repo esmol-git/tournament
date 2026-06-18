@@ -21,6 +21,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import type { Readable } from 'node:stream';
+import { Readable as NodeReadable } from 'node:stream';
 
 function truthyEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
@@ -110,6 +111,20 @@ function s3ErrorMeta(e: unknown): { code: string; message: string } {
   return { code, message };
 }
 
+async function s3BodyToNodeStream(body: unknown): Promise<Readable> {
+  if (body instanceof NodeReadable) {
+    return body;
+  }
+  const blob = body as {
+    transformToByteArray?: () => Promise<Uint8Array>;
+  };
+  if (typeof blob.transformToByteArray === 'function') {
+    const bytes = await blob.transformToByteArray();
+    return NodeReadable.from(Buffer.from(bytes));
+  }
+  throw new InternalServerErrorException('Unsupported S3 response body');
+}
+
 /** JSON политики для MinIO / S3: анонимный GetObject. */
 function publicReadPolicyJson(
   bucket: string,
@@ -149,14 +164,25 @@ export class StorageService implements OnModuleInit {
   private readonly publicPolicyApplied = new Set<string>();
 
   constructor(private readonly config: ConfigService) {
-    const endpoint = this.config.get<string>('S3_ENDPOINT')?.trim();
+    const endpointRaw = this.config.get<string>('S3_ENDPOINT')?.trim();
+    const endpoint = endpointRaw ? hrefWithScheme(endpointRaw) : undefined;
     const accessKeyId = this.config.get<string>('S3_ACCESS_KEY')?.trim();
     const secretAccessKey = this.config.get<string>('S3_SECRET_KEY')?.trim();
     const region = this.config.get<string>('S3_REGION')?.trim() || 'us-east-1';
 
+    if (endpoint) {
+      try {
+        new URL(endpoint);
+      } catch {
+        throw new InternalServerErrorException(
+          `S3_ENDPOINT is not a valid URL: "${endpointRaw}". Use e.g. http://127.0.0.1:9000`,
+        );
+      }
+    }
+
     this.client = new S3Client({
       region,
-      endpoint: endpoint || undefined,
+      endpoint,
       credentials:
         accessKeyId && secretAccessKey
           ? { accessKeyId, secretAccessKey }
@@ -408,16 +434,24 @@ export class StorageService implements OnModuleInit {
       if (!res.Body) {
         throw new NotFoundException('File not found');
       }
+      const stream = await s3BodyToNodeStream(res.Body);
       return {
-        stream: res.Body as Readable,
+        stream,
         contentType: res.ContentType ?? 'application/octet-stream',
         contentLength: res.ContentLength,
       };
     } catch (e: unknown) {
       const meta = s3ErrorMeta(e);
-      if (meta.code === 'NoSuchKey' || meta.code === 'NotFound') {
+      if (
+        meta.code === 'NoSuchKey' ||
+        meta.code === 'NotFound' ||
+        meta.code === 'NotFoundException'
+      ) {
         throw new NotFoundException('File not found');
       }
+      this.logger.error(
+        `S3 GetObject failed (key=${key}): ${meta.code} ${meta.message}`,
+      );
       throw e;
     }
   }

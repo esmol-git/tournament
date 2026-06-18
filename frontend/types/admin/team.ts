@@ -11,6 +11,8 @@ export interface TeamRow {
   teamCategory?: { id: string; name: string } | null
   regionId?: string | null
   region?: { id: string; name: string } | null
+  homeStadiumId?: string | null
+  homeStadium?: { id: string; name: string; city?: string | null } | null
   logoUrl: string | null
   coachName: string | null
   playersCount: number

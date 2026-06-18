@@ -8,6 +8,9 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TournamentTemplatesService } from '../../tournament-templates/tournament-templates.service';
 import { CreateStadiumDto } from './dto/create-stadium.dto';
 import { UpdateStadiumDto } from './dto/update-stadium.dto';
+import { CreateStadiumGalleryImageDto } from './dto/create-stadium-gallery-image.dto';
+import { UpdateStadiumGalleryImageDto } from './dto/update-stadium-gallery-image.dto';
+import { ReorderStadiumGalleryDto } from './dto/reorder-stadium-gallery.dto';
 
 @Injectable()
 export class StadiumsService {
@@ -22,6 +25,10 @@ export class StadiumsService {
       orderBy: { name: 'asc' },
       include: {
         region: { select: { id: true, name: true, code: true } },
+        galleryImages: {
+          orderBy: { sortOrder: 'asc' },
+          select: { id: true, imageUrl: true, caption: true, sortOrder: true },
+        },
       },
     });
   }
@@ -133,6 +140,122 @@ export class StadiumsService {
       });
     }
     await this.prisma.stadium.delete({ where: { id } });
+    return { success: true };
+  }
+
+  listGallery(tenantId: string, stadiumId: string) {
+    return this.prisma.stadiumGalleryImage.findMany({
+      where: { tenantId, stadiumId },
+      orderBy: { sortOrder: 'asc' },
+    });
+  }
+
+  async createGalleryImage(
+    tenantId: string,
+    stadiumId: string,
+    dto: CreateStadiumGalleryImageDto,
+  ) {
+    const stadium = await this.prisma.stadium.findFirst({
+      where: { id: stadiumId, tenantId },
+      select: { id: true },
+    });
+    if (!stadium) throw new NotFoundException('Stadium not found');
+
+    const maxSort = await this.prisma.stadiumGalleryImage.aggregate({
+      where: { stadiumId },
+      _max: { sortOrder: true },
+    });
+    const sortOrder =
+      dto.sortOrder !== undefined
+        ? dto.sortOrder
+        : (maxSort._max.sortOrder ?? -1) + 1;
+
+    return this.prisma.stadiumGalleryImage.create({
+      data: {
+        tenantId,
+        stadiumId,
+        imageUrl: dto.imageUrl.trim(),
+        caption: dto.caption?.trim() || null,
+        sortOrder,
+      },
+    });
+  }
+
+  async updateGalleryImage(
+    tenantId: string,
+    stadiumId: string,
+    imageId: string,
+    dto: UpdateStadiumGalleryImageDto,
+  ) {
+    const row = await this.prisma.stadiumGalleryImage.findFirst({
+      where: { id: imageId, stadiumId, tenantId },
+    });
+    if (!row) throw new NotFoundException('Gallery image not found');
+
+    return this.prisma.stadiumGalleryImage.update({
+      where: { id: imageId },
+      data: {
+        ...(dto.imageUrl !== undefined
+          ? { imageUrl: dto.imageUrl.trim() }
+          : {}),
+        ...(dto.caption !== undefined
+          ? { caption: dto.caption?.trim() || null }
+          : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+  }
+
+  async deleteGalleryImage(
+    tenantId: string,
+    stadiumId: string,
+    imageId: string,
+  ) {
+    const row = await this.prisma.stadiumGalleryImage.findFirst({
+      where: { id: imageId, stadiumId, tenantId },
+      select: { id: true },
+    });
+    if (!row) throw new NotFoundException('Gallery image not found');
+    await this.prisma.stadiumGalleryImage.delete({ where: { id: imageId } });
+    return { success: true };
+  }
+
+  async reorderGallery(
+    tenantId: string,
+    stadiumId: string,
+    dto: ReorderStadiumGalleryDto,
+  ) {
+    const stadium = await this.prisma.stadium.findFirst({
+      where: { id: stadiumId, tenantId },
+      select: { id: true },
+    });
+    if (!stadium) throw new NotFoundException('Stadium not found');
+
+    const existing = await this.prisma.stadiumGalleryImage.findMany({
+      where: { stadiumId },
+      select: { id: true },
+    });
+    if (existing.length === 0) {
+      throw new BadRequestException('Gallery is empty');
+    }
+    if (existing.length !== dto.imageIds.length) {
+      throw new BadRequestException(
+        'imageIds must include every gallery image exactly once',
+      );
+    }
+    const set = new Set(existing.map((e) => e.id));
+    if (dto.imageIds.some((id) => !set.has(id))) {
+      throw new BadRequestException('Invalid image id in reorder list');
+    }
+
+    await this.prisma.$transaction(
+      dto.imageIds.map((id, sortOrder) =>
+        this.prisma.stadiumGalleryImage.update({
+          where: { id },
+          data: { sortOrder },
+        }),
+      ),
+    );
     return { success: true };
   }
 }

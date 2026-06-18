@@ -43,6 +43,7 @@ export interface TournamentDetails {
   simultaneousMatches: number
   dayStartTimeDefault: string
   dayStartTimeOverrides?: Record<string, string> | null
+  venueMode?: 'SINGLE_VENUE' | 'MULTI_VENUE' | 'HOME_STADIUM'
   playoffQualifiersPerGroup?: number
   minTeams: number
   maxTeams?: number | null
@@ -139,7 +140,7 @@ export interface TournamentDetails {
     /** Для оптимистичной блокировки при сохранении протокола (`ifMatchUpdatedAt`). */
     updatedAt?: string
     startTime: string
-    stage?: 'GROUP' | 'PLAYOFF'
+    stage?: 'GROUP' | 'PLAYOFF' | 'GOLD_CUP' | 'SILVER_CUP'
     roundNumber?: number
     groupId?: string | null
     playoffRound?:
@@ -173,6 +174,8 @@ export interface TournamentDetails {
       city?: string | null
       address?: string | null
     } | null
+    /** Матч на домашней площадке одной из команд (режим HOME_STADIUM). */
+    isHomeVenue?: boolean
     matchReferees?: Array<{
       id: string
       role: 'MAIN' | 'ASSISTANT_1' | 'ASSISTANT_2'
@@ -207,6 +210,7 @@ export interface TournamentDetails {
     teamsExpectedTotal: number
     matchesTotal: number
     matchesPlayedTotal: number
+    tournamentStarted?: boolean
     championTeamName: string | null
   }
 }

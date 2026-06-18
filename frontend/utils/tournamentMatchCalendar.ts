@@ -142,6 +142,10 @@ export function buildTourSectionsFromMatches(
           totalPlayoffTeams: options?.totalPlayoffTeams,
         })
       }
+    } else if (stage === 'GOLD_CUP') {
+      title = 'Золотой кубок · Финал'
+    } else if (stage === 'SILVER_CUP') {
+      title = 'Серебряный кубок · Финал'
     } else {
       title = `Тур ${rn || 1}`
     }
@@ -264,6 +268,8 @@ export function buildCalendarRoundsFromMatches(
         totalPlayoffTeams: options?.totalPlayoffTeams,
       })
     }
+    if (stage === 'GOLD_CUP') return 'Золотой кубок · Финал'
+    if (stage === 'SILVER_CUP') return 'Серебряный кубок · Финал'
     return `Тур ${rn || 1}`
   }
 

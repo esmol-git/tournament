@@ -11,6 +11,7 @@ import { PLAYER_POSITION_OPTIONS } from '~/constants/playerPositions'
 import type { AgeGroupRow } from '~/types/admin/age-group'
 import type { RegionRow } from '~/types/admin/region'
 import type { TeamCategoryRow } from '~/types/admin/team-category'
+import type { StadiumRow } from '~/types/admin/stadium'
 import type { TeamPlayerRow, TeamRow } from '~/types/admin/team'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { toYmdLocal as toYmd } from '~/utils/dateYmd'
@@ -86,9 +87,11 @@ const sortOrder = ref<number | null>(null)
 const ageGroupsList = ref<AgeGroupRow[]>([])
 const regionsList = ref<RegionRow[]>([])
 const teamCategoriesList = ref<TeamCategoryRow[]>([])
+const stadiumsList = ref<StadiumRow[]>([])
 const ageGroupsLoading = ref(false)
 const regionsLoading = ref(false)
 const teamCategoriesLoading = ref(false)
+const stadiumsLoading = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const showForm = ref(false)
@@ -109,6 +112,7 @@ const form = reactive({
   ageGroupId: '',
   teamCategoryId: '',
   regionId: '',
+  homeStadiumId: '',
 })
 const submitAttempted = ref(false)
 const teamRules = computed(() => ({
@@ -255,16 +259,22 @@ async function fetchAgeGroupsAndRegions() {
   if (!token.value) return
   const canBasic = hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_basic')
   const canStandard = hasSubscriptionFeature(subscriptionPlan.value, 'reference_directory_standard')
-  if (!canBasic && !canStandard) return
 
   ageGroupsLoading.value = canBasic
   regionsLoading.value = canStandard
   teamCategoriesLoading.value = canBasic
+  stadiumsLoading.value = true
   if (!canBasic) ageGroupsList.value = []
   if (!canBasic) teamCategoriesList.value = []
   if (!canStandard) regionsList.value = []
   try {
-    const parts: Promise<void>[] = []
+    const parts: Promise<void>[] = [
+      authFetch<StadiumRow[]>(apiUrl(`/tenants/${tenantId.value}/stadiums`), {
+        headers: { Authorization: `Bearer ${token.value}` },
+      }).then((rows) => {
+        stadiumsList.value = rows
+      }),
+    ]
     if (canBasic) {
       parts.push(
         authFetch<AgeGroupRow[]>(apiUrl(`/tenants/${tenantId.value}/age-groups`), {
@@ -295,10 +305,12 @@ async function fetchAgeGroupsAndRegions() {
     if (canBasic) ageGroupsList.value = []
     if (canBasic) teamCategoriesList.value = []
     if (canStandard) regionsList.value = []
+    stadiumsList.value = []
   } finally {
     ageGroupsLoading.value = false
     regionsLoading.value = false
     teamCategoriesLoading.value = false
+    stadiumsLoading.value = false
   }
 }
 
@@ -321,6 +333,17 @@ const regionSelectOptions = computed(() => [
     .map((r) => ({
       label: r.active ? r.name : `${r.name} (неактивен)`,
       value: r.id,
+    })),
+])
+
+const stadiumSelectOptions = computed(() => [
+  { label: 'Не указано', value: '' },
+  ...stadiumsList.value
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+    .map((s) => ({
+      label: s.city ? `${s.name} (${s.city})` : s.name,
+      value: s.id,
     })),
 ])
 
@@ -368,6 +391,7 @@ const openCreate = () => {
   form.ageGroupId = ''
   form.teamCategoryId = ''
   form.regionId = ''
+  form.homeStadiumId = ''
   v$.value.$reset()
   showForm.value = true
   void fetchAgeGroupsAndRegions()
@@ -382,6 +406,7 @@ const openEdit = (t: TeamRow) => {
   form.ageGroupId = t.ageGroupId ?? ''
   form.teamCategoryId = t.teamCategoryId ?? ''
   form.regionId = t.regionId ?? ''
+  form.homeStadiumId = t.homeStadiumId ?? ''
   form.coachName = t.coachName ?? ''
   form.coachPhone = ''
   form.coachEmail = ''
@@ -405,6 +430,7 @@ const saveTeam = async () => {
     const ag = form.ageGroupId.trim()
     const rg = form.regionId.trim()
     const tc = form.teamCategoryId.trim()
+    const hs = form.homeStadiumId.trim()
     const body: any = {
       name: form.name,
       rating: Math.min(5, Math.max(1, Number(form.rating || 3))),
@@ -421,11 +447,13 @@ const saveTeam = async () => {
             ageGroupId: ag || null,
             regionId: rg || null,
             teamCategoryId: tc || null,
+            homeStadiumId: hs || null,
           }
         : {
             ...(ag ? { ageGroupId: ag } : {}),
             ...(rg ? { regionId: rg } : {}),
             ...(tc ? { teamCategoryId: tc } : {}),
+            ...(hs ? { homeStadiumId: hs } : {}),
           }),
     }
 
@@ -1402,6 +1430,23 @@ async function confirmDeleteRosterPlayer() {
             />
             <label for="team_region">Регион</label>
           </FloatLabel>
+        </div>
+        <div class="md:col-span-3">
+          <FloatLabel variant="on" class="block max-w-md">
+            <Select
+              inputId="team_home_stadium"
+              v-model="form.homeStadiumId"
+              :options="stadiumSelectOptions"
+              option-label="label"
+              option-value="value"
+              class="w-full"
+              :loading="stadiumsLoading"
+            />
+            <label for="team_home_stadium">{{ t('admin.teams.home_stadium') }}</label>
+          </FloatLabel>
+          <p class="mt-1 text-xs leading-snug text-muted-color">
+            {{ t('admin.teams.home_stadium_hint') }}
+          </p>
         </div>
         <p class="md:col-span-3 text-xs leading-snug text-muted-color">
           Возрастная группа — для фильтров и заявки команды в турнир (если у турнира задана группа).

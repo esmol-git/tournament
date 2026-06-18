@@ -46,4 +46,7 @@ export const publicTenantQueryKeys = {
   tenantVideoFeed: (slug: string, limit: number) =>
     ['public', 'tenant', slug, 'media', 'video', limit] as const,
   mediaFeed: (slug: string) => ['public', 'tenant', slug, 'media', 'feed'] as const,
+  stadiums: (slug: string) => ['public', 'tenant', slug, 'stadiums'] as const,
+  stadiumDetail: (slug: string, stadiumId: string) =>
+    ['public', 'tenant', slug, 'stadium', stadiumId] as const,
 }

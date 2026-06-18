@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, ValidateIf } from 'class-validator';
+import { IsEnum, IsOptional, IsString, ValidateIf } from 'class-validator';
+import { TournamentVenueMode } from '@prisma/client';
 
 export class UpdateTeamDto {
   @ApiPropertyOptional()
@@ -38,6 +39,15 @@ export class UpdateTeamDto {
   @ValidateIf((_, v) => v !== null && v !== undefined)
   @IsString()
   regionId?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Домашняя площадка команды',
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsString()
+  homeStadiumId?: string | null;
 
   @ApiPropertyOptional({
     nullable: true,

@@ -25,6 +25,7 @@ import {
   buildTourSectionsFromMatches,
   formatPublicCalendarDateLabel,
 } from '~/utils/tournamentMatchCalendar'
+import { matchStageLabel } from '~/utils/matchStageLabel'
 import { isMatchCountedInPublicStandings } from '~/utils/publicTournamentStandingsMatch'
 import { formatMatchScoreDisplay, statusLabel } from '~/utils/tournamentAdminUi'
 import { buildPlayoffSlotLabels } from '~/utils/playoffSlotResolver'
@@ -40,6 +41,7 @@ definePageMeta({
 })
 
 const { fetchTournamentDetail, fetchRoster, fetchTable } = usePublicTournamentFetch()
+const { t } = useI18n()
 const queryClient = useQueryClient()
 
 const { ensureTenantResolved, tenantNotFound } = usePublicTenantContext()
@@ -257,7 +259,7 @@ function matchMetaLabel(m: TournamentDetails['matches'][number]) {
     const gName = m.groupId ? groupNameById.value[m.groupId] : ''
     return gName ? `${time} · ${gName}` : `${time} · Группа`
   }
-  return `${time}${m.stage ? ` · ${m.stage === 'GROUP' ? 'Группа' : 'Плей-офф'}` : ''}`
+  return `${time}${m.stage ? ` · ${matchStageLabel(m.stage, t)}` : ''}`
 }
 
 const calendarSections = computed<Array<{ key: string; title: string; dateLabel: string; matches: TournamentDetails['matches'] }>>(() =>
@@ -418,7 +420,7 @@ const selectedMatchSummary = computed(() => {
 const selectedMatchStageLabel = computed(() => {
   const m = selectedMatchForStats.value
   if (!m) return '—'
-  return m.stage === 'PLAYOFF' ? 'Плей-офф' : 'Группа'
+  return matchStageLabel(m.stage, t)
 })
 
 const selectedMatchFacts = computed(() => {

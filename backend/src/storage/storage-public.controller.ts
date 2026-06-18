@@ -1,14 +1,14 @@
 import {
   Controller,
   Get,
+  Logger,
   NotFoundException,
   Req,
   Res,
-  UseInterceptors,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
-import { PublicHttpCacheInterceptor } from '../public/public-http-cache.interceptor';
+import { pipeline } from 'node:stream/promises';
 import { StorageService } from './storage.service';
 
 /**
@@ -16,9 +16,10 @@ import { StorageService } from './storage.service';
  * Нужна, когда отдельный поддомен files.* недоступен из браузера клиента.
  */
 @ApiTags('public-files')
-@UseInterceptors(PublicHttpCacheInterceptor)
 @Controller('public/files')
 export class StoragePublicController {
+  private readonly logger = new Logger(StoragePublicController.name);
+
   constructor(private readonly storage: StorageService) {}
 
   @Get('*')
@@ -48,13 +49,13 @@ export class StoragePublicController {
       res.setHeader('Content-Length', String(contentLength));
     }
 
-    stream.on('error', () => {
+    try {
+      await pipeline(stream, res);
+    } catch (e) {
+      this.logger.warn(`S3 stream failed for key=${rawKey}: ${e}`);
       if (!res.headersSent) {
-        res.status(500).end();
-      } else {
-        res.end();
+        throw e;
       }
-    });
-    stream.pipe(res);
+    }
   }
 }

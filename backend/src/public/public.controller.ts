@@ -209,4 +209,19 @@ export class PublicController {
   ) {
     return this.tournaments.listPublicTenantVideoCached(tenantSlug, limit);
   }
+
+  @Get('stadiums')
+  @ApiOperation({ summary: 'Публичный список площадок организации' })
+  async listStadiums(@Param('tenantSlug') tenantSlug: string) {
+    return this.tournaments.listPublicStadiumsCached(tenantSlug);
+  }
+
+  @Get('stadiums/:stadiumId')
+  @ApiOperation({ summary: 'Публичная карточка площадки' })
+  async getStadium(
+    @Param('tenantSlug') tenantSlug: string,
+    @Param('stadiumId') stadiumId: string,
+  ) {
+    return this.tournaments.getPublicStadiumCached(tenantSlug, stadiumId);
+  }
 }

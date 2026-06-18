@@ -122,6 +122,7 @@ model Tenant {
   newsTags    NewsTag[]
   tournamentNewsTags TournamentNewsTag[]
   tournamentGalleryImages TournamentGalleryImage[]
+  stadiumGalleryImages    StadiumGalleryImage[]
   stadiums    Stadium[]
   referees    Referee[]
   refereeCategories RefereeCategory[]
@@ -562,9 +563,29 @@ model Stadium {
   tournamentTemplates TournamentTemplate[]
   tournamentStadiumLinks TournamentStadium[]
   matches     Match[]
+  galleryImages StadiumGalleryImage[]
+  homeTeams   Team[]
 
   @@index([tenantId, name])
   @@index([tenantId, regionId])
+}
+
+/// Фото стадиона: множественная загрузка, порядок, подпись.
+model StadiumGalleryImage {
+  id        String   @id @default(cuid())
+  tenantId  String
+  stadiumId String
+  imageUrl  String
+  caption   String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stadium Stadium @relation(fields: [stadiumId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, stadiumId, sortOrder])
+  @@index([tenantId, createdAt])
 }
 
 /// Площадки турнира (несколько стадионов); порядок — для отображения, первый дублирует `Tournament.stadiumId`.
@@ -783,6 +804,8 @@ model Tournament {
   simultaneousMatches  Int @default(1)
   dayStartTimeDefault  String @default("12:00") // HH:mm
   dayStartTimeOverrides Json?                   // { "0": "10:00", "6": "12:00" }
+  /// Режим назначения площадок при генерации календаря.
+  venueMode   TournamentVenueMode @default(MULTI_VENUE)
   minTeams    Int      @default(2)
   /// Максимум команд (заявки + ручное добавление). null — только системный лимит.
   maxTeams    Int?
@@ -963,6 +986,8 @@ model Team {
   teamCategoryId String?
   ageGroupId   String?
   regionId     String?
+  /// Домашняя площадка команды (для режима HOME_STADIUM в турнире).
+  homeStadiumId String?
   coachName    String?
   coachPhone   String?
   coachEmail   String?
@@ -980,6 +1005,7 @@ model Team {
   teamCategory TeamCategory? @relation(fields: [teamCategoryId], references: [id], onDelete: SetNull)
   ageGroup     AgeGroup?    @relation(fields: [ageGroupId], references: [id], onDelete: SetNull)
   region       Region?      @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  homeStadium  Stadium?     @relation(fields: [homeStadiumId], references: [id], onDelete: SetNull)
   admins       TeamAdmin[]
   players      TeamPlayer[]
   tournamentTeams TournamentTeam[]
@@ -994,6 +1020,7 @@ model Team {
   @@index([tenantId, ageGroupId])
   @@index([tenantId, teamCategoryId])
   @@index([tenantId, regionId])
+  @@index([tenantId, homeStadiumId])
 }
 
 model TeamCategory {
@@ -1420,6 +1447,12 @@ enum TournamentFormat {
   MANUAL
 }
 
+enum TournamentVenueMode {
+  SINGLE_VENUE
+  MULTI_VENUE
+  HOME_STADIUM
+}
+
 enum TournamentStatus {
   DRAFT
   ACTIVE
@@ -1474,6 +1507,8 @@ enum MatchEventType {
 enum MatchStage {
   GROUP
   PLAYOFF
+  GOLD_CUP
+  SILVER_CUP
 }
 
 /// Стадии плей-офф (в т.ч. ROUND_OF_16 / QUARTERFINAL для больших сеток)

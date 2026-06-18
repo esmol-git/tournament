@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "MatchStage" ADD VALUE 'GOLD_CUP';
+ALTER TYPE "MatchStage" ADD VALUE 'SILVER_CUP';

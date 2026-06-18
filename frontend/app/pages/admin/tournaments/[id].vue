@@ -117,6 +117,7 @@ const infrastructureForm = ref({
   ageGroupId: null as string | null,
   refereeIds: [] as string[],
   stadiumIds: [] as string[],
+  venueMode: 'MULTI_VENUE' as 'SINGLE_VENUE' | 'MULTI_VENUE' | 'HOME_STADIUM',
 })
 const infrastructureOptions = ref({
   seasons: [] as Array<{ id: string; name: string; active?: boolean | null }>,
@@ -632,6 +633,7 @@ const fetchTournament = async () => {
       ageGroupId: res.ageGroup?.id ?? null,
       refereeIds: (res.tournamentReferees ?? []).map((x) => x.refereeId),
       stadiumIds: (res.tournamentStadiums ?? []).map((x) => x.stadiumId),
+      venueMode: (res.venueMode as typeof infrastructureForm.value.venueMode) ?? 'MULTI_VENUE',
     }
 
     if (showGroupBucketsFor(res)) {
@@ -1165,6 +1167,11 @@ const hasAnyEnteredResults = computed(() => {
   return ms.some((m) => m.homeScore !== null && m.awayScore !== null && (m.status === 'PLAYED' || m.status === 'FINISHED'))
 })
 
+const tournamentStarted = computed(
+  () =>
+    tournament.value?.summary?.tournamentStarted === true || hasAnyEnteredResults.value,
+)
+
 /**
  * Есть матчи в турнире в БД (расписание есть), независимо от текущих фильтров календаря.
  * Нельзя использовать только matches.length: при dateFrom/dateTo API отдаёт пустой список,
@@ -1215,57 +1222,26 @@ const calendarReadinessItems = computed((): { id: string; ok: boolean; label: st
   })
 
   if (showGroupBuckets.value) {
-    const eg = expectedGroupSize.value
     const gc = expectedGroupCount.value
-    const divisible = eg !== null && tc > 0
+    const tts = tourn.tournamentTeams ?? []
+
+    const allAssignedFromServer =
+      tts.length > 0 && tts.every((tt) => !!tt.group?.id)
+    const allAssignedFromColumns =
+      tts.length > 0 &&
+      groupColumns.value.length >= gc &&
+      tts.every((tt) =>
+        groupColumns.value.some((col) => col.teams.some((x) => x.teamId === tt.teamId)),
+      )
+    const distributionOk =
+      (allAssignedFromServer || allAssignedFromColumns) && !groupLayoutUnsaved.value
 
     items.push({
-      id: 'groups_divisible',
-      ok: divisible,
-      label: t('admin.tournament_page.readiness_groups_divisible', {
-        teams: tc,
-        groups: gc,
-      }),
-    })
-
-    let distributionOk = false
-    if (divisible && eg !== null && gc >= 1) {
-      const tts = tourn.tournamentTeams ?? []
-      const groupsSorted = (tourn.groups ?? [])
-        .slice()
-        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      const slice = groupsSorted.slice(0, gc)
-      if (slice.length >= gc && tts.length === gc * eg) {
-        const counts = new Map<string, number>()
-        let allHaveGroup = true
-        for (const tt of tts) {
-          const gid = tt.group?.id
-          if (!gid) {
-            allHaveGroup = false
-            break
-          }
-          counts.set(gid, (counts.get(gid) ?? 0) + 1)
-        }
-        if (allHaveGroup) {
-          distributionOk = slice.every((g) => (counts.get(g.id) ?? 0) === eg)
-        } else if (isGroupColumnsBalanced(groupColumns.value, eg)) {
-          const cols = groupColumns.value.slice(0, gc)
-          const assigned = new Set(cols.flatMap((c) => c.teams.map((tt) => tt.teamId)))
-          distributionOk =
-            assigned.size === tts.length &&
-            cols.every((c) => c.teams.length === eg)
-        }
-      }
-    }
-
-    items.push({
-      id: 'groups_balanced',
-      ok: distributionOk && !groupLayoutUnsaved.value,
+      id: 'groups_assigned',
+      ok: distributionOk,
       label: groupLayoutUnsaved.value
         ? t('admin.tournament_page.readiness_groups_unsaved')
-        : t('admin.tournament_page.readiness_groups_balanced', {
-            perGroup: eg ?? '—',
-          }),
+        : t('admin.tournament_page.readiness_groups_assigned', { groups: gc }),
     })
   }
 
@@ -1534,6 +1510,7 @@ async function saveInfrastructure() {
         ageGroupId: infrastructureForm.value.ageGroupId || null,
         refereeIds: infrastructureForm.value.refereeIds,
         stadiumIds: infrastructureForm.value.stadiumIds,
+        venueMode: infrastructureForm.value.venueMode,
       },
     })
     await fetchTournament()
@@ -1574,18 +1551,21 @@ const canEditTournament = computed(
     !modPolicy.value.locksTournamentPublishingAndDraftStructure,
 )
 
-// Группы — только до появления матчей (как и состав команд).
+// Группы — до начала турнира (после старта — только замена команды или тех. результат).
 const canEditGroups = computed(
   () =>
     showGroupBuckets.value &&
     canEditTournament.value &&
-    !hasAnyEnteredResults.value &&
-    !hasScheduleMatches.value,
+    !tournamentStarted.value,
 )
 
-/** Добавление/удаление команд — только пока нет матчей. */
+/** Добавление/удаление команд — до начала турнира. */
 const canEditTeamComposition = computed(
-  () => canEditTournament.value && !hasAnyEnteredResults.value && !hasScheduleMatches.value,
+  () => canEditTournament.value && !tournamentStarted.value,
+)
+
+const canReplaceTeam = computed(
+  () => canEditTournament.value && hasScheduleMatches.value && tournamentStarted.value,
 )
 
 /** Рейтинги для сетки — пока нет введённых результатов; при наличии матчей сработает перегенерация календаря. */
@@ -1693,7 +1673,7 @@ const infrastructureReferenceFieldsLocked = computed(
 // Если календарь уже сгенерирован (есть матчи), то при правках состава/групп
 // нужно пересоздавать расписание, иначе матчи будут соответствовать старой структуре.
 const shouldRegenerateCalendar = computed(
-  () => (tournament.value?.matches?.length ?? 0) > 0 && !hasAnyEnteredResults.value,
+  () => hasScheduleMatches.value && !tournamentStarted.value,
 )
 
 const teamCount = computed(() => tournament.value?.tournamentTeams?.length ?? 0)
@@ -1845,23 +1825,10 @@ const saveGroupLayout = async () => {
   }
 }
 
-/** При равном делении (expectedGroupSize) не даём переполнить группу; обмен — только между «полными» списками. */
-const checkGroupMove = (evt: any) => {
+/** Неравные группы допустимы — ограничений по размеру нет. */
+const checkGroupMove = () => {
   if (!canEditGroups.value || groupingSaving.value) return false
-  const size = expectedGroupSize.value
-  if (!size) return true
-  const relatedContext = evt?.relatedContext
-  const draggedContext = evt?.draggedContext
-  // Если vuedraggable не передал list, не блокируем — иначе нельзя исправить уже «сломанный» состав; баланс ловим в onGroupChange.
-  if (!relatedContext?.list || !draggedContext?.list) return true
-  const destList = relatedContext.list as TournamentTeamRow[]
-  const srcList = draggedContext.list as TournamentTeamRow[]
-  if (destList === srcList) return true
-  const destLen = destList.length
-  const srcLen = srcList.length
-  if (destLen < size) return true
-  if (destLen === size && srcLen === size) return true
-  return false
+  return true
 }
 
 const snapshotPreDrag = () => {
@@ -2004,9 +1971,11 @@ const saveTeams = async () => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.composition_edit_forbidden_summary'),
-      detail: hasScheduleMatches.value
-        ? t('admin.tournament_page.composition_edit_forbidden_schedule_detail')
-        : t('admin.tournament_page.composition_edit_forbidden_status_detail'),
+      detail: hasScheduleMatches.value && tournamentStarted.value
+        ? t('admin.tournament_page.composition_edit_forbidden_started_detail')
+        : hasScheduleMatches.value
+          ? t('admin.tournament_page.composition_edit_forbidden_schedule_detail')
+          : t('admin.tournament_page.composition_edit_forbidden_status_detail'),
       life: 6000,
     })
     savingTeams.value = false
@@ -2060,6 +2029,77 @@ const saveTeams = async () => {
     savingTeams.value = false
   }
 }
+
+const replaceTeamDialogOpen = ref(false)
+const replaceTeamSourceId = ref<string | null>(null)
+const replaceTeamTargetId = ref<string | null>(null)
+const replaceTeamSaving = ref(false)
+
+const replaceTeamSourceName = computed(() => {
+  const id = replaceTeamSourceId.value
+  if (!id) return ''
+  return (
+    tournament.value?.tournamentTeams?.find((tt) => tt.teamId === id)?.team?.name ?? id
+  )
+})
+
+const replaceTeamOptions = computed(() =>
+  allTeams.value
+    .filter(
+      (team) =>
+        !tournament.value?.tournamentTeams?.some((tt) => tt.teamId === team.id),
+    )
+    .map((team) => ({ label: team.name, value: team.id })),
+)
+
+function openReplaceTeamDialog(teamId: string) {
+  replaceTeamSourceId.value = teamId
+  replaceTeamTargetId.value = null
+  replaceTeamDialogOpen.value = true
+}
+
+async function confirmReplaceTeam() {
+  if (!token.value || !replaceTeamSourceId.value || !replaceTeamTargetId.value) return
+  replaceTeamSaving.value = true
+  try {
+    const res = await authFetch<{ replacedMatches: number }>(
+      apiUrl(
+        `/tournaments/${tournamentId.value}/teams/${replaceTeamSourceId.value}/replace`,
+      ),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token.value}` },
+        body: { newTeamId: replaceTeamTargetId.value },
+      },
+    )
+    replaceTeamDialogOpen.value = false
+    await fetchTournament()
+    await fetchTable()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.replace_team_success_summary'),
+      detail: t('admin.tournament_page.replace_team_success_detail', {
+        count: res.replacedMatches ?? 0,
+      }),
+      life: 4000,
+    })
+  } catch (e: unknown) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.replace_team_error_summary'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 6000,
+    })
+  } finally {
+    replaceTeamSaving.value = false
+  }
+}
+
+const venueModeOptions = computed(() => [
+  { label: t('admin.tournament_page.venue_mode_single'), value: 'SINGLE_VENUE' },
+  { label: t('admin.tournament_page.venue_mode_multi'), value: 'MULTI_VENUE' },
+  { label: t('admin.tournament_page.venue_mode_home'), value: 'HOME_STADIUM' },
+])
 
 const fetchTable = async () => {
   if (!token.value) return
@@ -2618,6 +2658,20 @@ const canShowPlayoffFromGroupsPanel = computed(
       isGroupsPlusPlayoffFamily(tournament.value?.format ?? '')),
 )
 
+const canShowConsolationCupsPanel = computed(
+  () =>
+    !modPolicy.value.locksCalendarAndPlayoffAutomation &&
+    canTournamentAutomation.value &&
+    isGroupedFormat.value &&
+    (tournament.value?.groups?.length ?? 0) === 2,
+)
+
+const hasConsolationCupMatches = computed(() =>
+  (tournament.value?.matches ?? []).some(
+    (m) => m.stage === 'GOLD_CUP' || m.stage === 'SILVER_CUP',
+  ),
+)
+
 const generatePlayoff = async () => {
   if (!token.value) return
   if (modPolicy.value.locksCalendarAndPlayoffAutomation) return
@@ -2647,6 +2701,43 @@ const generatePlayoff = async () => {
     toast.add({
       severity: 'error',
       summary: t('admin.tournament_page.playoff_create_error_summary'),
+      detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
+      life: 6000,
+    })
+  } finally {
+    calendarSaving.value = false
+  }
+}
+
+const generateConsolationCups = async () => {
+  if (!token.value) return
+  if (modPolicy.value.locksCalendarAndPlayoffAutomation) return
+  if (!canTournamentAutomation.value) {
+    toast.add({
+      severity: 'warn',
+      summary: t('admin.settings.subscription.title'),
+      detail: t('admin.settings.subscription.features.tournament_automation'),
+      life: 6000,
+    })
+    return
+  }
+  calendarSaving.value = true
+  try {
+    await authFetch(apiUrl(`/tournaments/${tournamentId.value}/consolation-cups`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}` },
+    })
+    await fetchTournament()
+    toast.add({
+      severity: 'success',
+      summary: t('admin.tournament_page.consolation_cups_created_summary'),
+      detail: t('admin.tournament_page.consolation_cups_created_detail'),
+      life: 3000,
+    })
+  } catch (e: any) {
+    toast.add({
+      severity: 'error',
+      summary: t('admin.tournament_page.consolation_cups_create_error_summary'),
       detail: getApiErrorMessage(e, t('admin.errors.request_failed')),
       life: 6000,
     })
@@ -4058,6 +4149,27 @@ onMounted(async () => {
             />
           </div>
         </div>
+        <div
+          v-if="canShowConsolationCupsPanel && !hasConsolationCupMatches"
+          class="mb-4 rounded-xl border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/50 p-4"
+        >
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="text-sm">
+              <span class="font-medium text-surface-900 dark:text-surface-0">{{ t('admin.tournament_page.consolation_cups_title') }}</span>
+              <p class="mt-1 text-xs text-muted-color">
+                {{ t('admin.tournament_page.consolation_cups_hint') }}
+              </p>
+            </div>
+            <Button
+              :label="t('admin.tournament_page.generate_consolation_cups')"
+              icon="pi pi-trophy"
+              severity="secondary"
+              :loading="calendarSaving"
+              class="shrink-0"
+              @click="generateConsolationCups"
+            />
+          </div>
+        </div>
         <AdminTournamentMatchesWorkspace
           ref="matchesWorkspaceRef"
           embedded
@@ -4315,6 +4427,14 @@ onMounted(async () => {
               <p class="mt-1.5 text-xs leading-relaxed text-muted-color">
                 {{ t('admin.tournament_page.teams_tab_participants_lead') }}
               </p>
+              <Message
+                v-if="tournamentStarted"
+                severity="warn"
+                :closable="false"
+                class="mt-3 w-full text-sm"
+              >
+                {{ t('admin.tournament_page.tournament_started_composition_hint') }}
+              </Message>
 
               <AdminDataState
                 class="mt-3"
@@ -4472,6 +4592,16 @@ onMounted(async () => {
                             <div class="text-sm truncate">{{ displayTeamNameForUi(tt.team.name) }}</div>
                           </div>
                           <div class="flex shrink-0 items-center gap-1.5">
+                            <Button
+                              v-if="canReplaceTeam"
+                              icon="pi pi-sync"
+                              text
+                              rounded
+                              size="small"
+                              severity="secondary"
+                              :title="t('admin.tournament_page.replace_team_action')"
+                              @click="openReplaceTeamDialog(tt.teamId)"
+                            />
                             <span class="hidden sm:inline text-[10px] uppercase tracking-wide text-muted-color whitespace-nowrap">
                               {{ t('admin.tournament_page.teams_tab_seed_label') }}
                             </span>
@@ -4509,6 +4639,16 @@ onMounted(async () => {
                       <div class="text-sm truncate">{{ displayTeamNameForUi(tt.team.name) }}</div>
                     </div>
                     <div class="flex items-center gap-2 sm:gap-3">
+                      <Button
+                        v-if="canReplaceTeam"
+                        icon="pi pi-sync"
+                        text
+                        rounded
+                        size="small"
+                        severity="secondary"
+                        :title="t('admin.tournament_page.replace_team_action')"
+                        @click="openReplaceTeamDialog(tt.teamId)"
+                      />
                       <div class="flex items-center gap-1.5">
                         <span class="text-[10px] uppercase tracking-wide text-muted-color whitespace-nowrap">
                           {{ t('admin.tournament_page.teams_tab_seed_label') }}
@@ -4711,6 +4851,22 @@ onMounted(async () => {
                 </div>
               </template>
             </MultiSelect>
+            <div class="mt-4">
+              <label class="mb-1.5 block text-sm font-medium text-surface-900 dark:text-surface-0">
+                {{ t('admin.tournament_page.venue_mode_label') }}
+              </label>
+              <Select
+                v-model="infrastructureForm.venueMode"
+                :options="venueModeOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                :disabled="infrastructureReferenceFieldsLocked"
+              />
+              <p class="mt-1.5 text-xs leading-relaxed text-muted-color">
+                {{ t('admin.tournament_page.venue_mode_hint') }}
+              </p>
+            </div>
             <p
               v-if="infrastructureReferenceFieldsLocked"
               class="mt-2.5 text-xs leading-relaxed text-muted-color"
@@ -4728,6 +4884,41 @@ onMounted(async () => {
       :message="deleteManualMatchMessage"
       @confirm="confirmDeleteManualMatch"
     />
+
+    <Dialog
+      v-model:visible="replaceTeamDialogOpen"
+      modal
+      :header="t('admin.tournament_page.replace_team_dialog_title')"
+      :style="{ width: '28rem', maxWidth: '95vw' }"
+    >
+      <p class="text-sm text-muted-color">
+        {{ t('admin.tournament_page.replace_team_dialog_lead', { team: replaceTeamSourceName }) }}
+      </p>
+      <Select
+        v-model="replaceTeamTargetId"
+        :options="replaceTeamOptions"
+        option-label="label"
+        option-value="value"
+        class="mt-3 w-full"
+        filter
+        :placeholder="t('admin.tournament_page.replace_team_placeholder')"
+      />
+      <template #footer>
+        <Button
+          :label="t('admin.tournament_registrations.cancel')"
+          text
+          :disabled="replaceTeamSaving"
+          @click="replaceTeamDialogOpen = false"
+        />
+        <Button
+          :label="t('admin.tournament_page.replace_team_confirm')"
+          icon="pi pi-check"
+          :loading="replaceTeamSaving"
+          :disabled="!replaceTeamTargetId || replaceTeamSaving"
+          @click="confirmReplaceTeam"
+        />
+      </template>
+    </Dialog>
 
     <Dialog
       :visible="calendarDialog"
@@ -5075,8 +5266,19 @@ onMounted(async () => {
               {{ t('admin.tournament_page.replace_existing_calendar_hint') }}
             </div>
           </div>
-          <ToggleSwitch v-model="calendarForm.replaceExisting" />
+          <ToggleSwitch
+            v-model="calendarForm.replaceExisting"
+            :disabled="tournamentStarted"
+          />
         </div>
+        <Message
+          v-if="tournamentStarted"
+          severity="warn"
+          :closable="false"
+          class="w-full text-sm"
+        >
+          {{ t('admin.tournament_page.calendar_regenerate_blocked_started') }}
+        </Message>
       </div>
       <template #footer>
         <div v-if="isManualFormat" class="flex justify-end gap-2">

@@ -12,6 +12,9 @@ import type { StadiumSurfaceType } from '~/utils/stadiumSurfaceType'
 import { getApiErrorMessage } from '~/utils/apiError'
 import { MIN_SKELETON_DISPLAY_MS } from '~/utils/minimumLoadingDelay'
 import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListState'
+import AdminStadiumGalleryPanel from '~/app/components/admin/AdminStadiumGalleryPanel.vue'
+import StadiumDetailDialog from '~/app/components/admin/StadiumDetailDialog.vue'
+import ImageCarousel from '~/app/components/admin/ImageCarousel.vue'
 
 definePageMeta({
   layout: 'admin',
@@ -204,6 +207,13 @@ const save = async () => {
 const deleteDialogVisible = ref(false)
 const deleteTarget = ref<StadiumRow | null>(null)
 const deleteSaving = ref(false)
+const detailVisible = ref(false)
+const detailStadium = ref<StadiumRow | null>(null)
+
+const openDetail = (row: StadiumRow) => {
+  detailStadium.value = row
+  detailVisible.value = true
+}
 
 const openDeleteDialog = (row: StadiumRow) => {
   deleteTarget.value = row
@@ -342,8 +352,16 @@ onMounted(() => {
         </Column>
         <Column field="city" header="Город" />
         <Column field="address" header="Адрес" />
-        <Column header="" style="width: 8rem" body-class="!text-end">
+        <Column header="" style="width: 10rem" body-class="!text-end">
           <template #body="{ data }">
+            <Button
+              icon="pi pi-eye"
+              text
+              rounded
+              severity="secondary"
+              :aria-label="t('admin.stadiums.view')"
+              @click="openDetail(data)"
+            />
             <Button icon="pi pi-pencil" text rounded severity="secondary" @click="openEdit(data)" />
             <Button icon="pi pi-trash" text rounded severity="danger" @click="openDeleteDialog(data)" />
           </template>
@@ -356,7 +374,7 @@ onMounted(() => {
       modal
       block-scroll
       :header="isEdit ? 'Редактировать стадион' : 'Новый стадион'"
-      :style="{ width: 'min(30rem, 100vw - 2rem)' }"
+      :style="{ width: isEdit ? 'min(44rem, 100vw - 2rem)' : 'min(30rem, 100vw - 2rem)' }"
     >
       <div class="flex flex-col gap-3">
         <div>
@@ -440,6 +458,17 @@ onMounted(() => {
             placeholder="Произвольный текст"
           />
         </div>
+        <div v-if="isEdit && editing" class="border-t border-surface-200 pt-4 dark:border-surface-700">
+          <h3 class="mb-3 text-sm font-semibold text-surface-900 dark:text-surface-0">
+            {{ t('admin.stadiums.gallery_section') }}
+          </h3>
+          <ImageCarousel
+            v-if="(editing.galleryImages?.length ?? 0) > 1"
+            :images="editing.galleryImages ?? []"
+            class="mb-4"
+          />
+          <AdminStadiumGalleryPanel :stadium-id="editing.id" />
+        </div>
         <div class="flex justify-end gap-2 pt-2">
           <Button type="button" label="Отмена" text @click="showForm = false" />
           <Button type="button" label="Сохранить" icon="pi pi-check" :loading="saving" :disabled="saving || (submitAttempted && !canSave)" @click="save" />
@@ -476,5 +505,7 @@ onMounted(() => {
         </div>
       </template>
     </Dialog>
+
+    <StadiumDetailDialog v-model:visible="detailVisible" :stadium="detailStadium" />
   </section>
 </template>

@@ -10,4 +10,5 @@ export interface StadiumRow {
   pitchCount: number | null
   capacity: number | null
   note: string | null
+  galleryImages?: import('~/types/admin/stadium-gallery').StadiumGalleryImageRow[]
 }

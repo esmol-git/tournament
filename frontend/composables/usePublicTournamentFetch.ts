@@ -148,6 +148,24 @@ export type PublicOrganizationTeamItem = {
   tournaments: string[]
 }
 
+export type PublicStadiumListItem = {
+  id: string
+  name: string
+  city: string | null
+  address: string | null
+  surfaceType?: string | null
+  surface: string | null
+  pitchCount: number | null
+  capacity: number | null
+  region?: { id: string; name: string } | null
+  previewImageUrl: string | null
+}
+
+export type PublicStadiumDetail = PublicStadiumListItem & {
+  note?: string | null
+  galleryImages: PublicGalleryImageItem[]
+}
+
 export type PublicOrganizationPlayerStatsRow = {
   tournamentId: string
   tournamentName: string
@@ -397,6 +415,26 @@ export function usePublicTournamentFetch() {
     })
   }
 
+  async function fetchStadiums(tenantSlug: string) {
+    return queryClient.fetchQuery({
+      queryKey: publicTenantQueryKeys.stadiums(tenantSlug),
+      staleTime: PUBLIC_STALE_MEDIUM_MS,
+      queryFn: async () => {
+        return await $fetch<PublicStadiumListItem[]>(`${base(tenantSlug)}/stadiums`)
+      },
+    })
+  }
+
+  async function fetchStadium(tenantSlug: string, stadiumId: string) {
+    return queryClient.fetchQuery({
+      queryKey: publicTenantQueryKeys.stadiumDetail(tenantSlug, stadiumId),
+      staleTime: PUBLIC_STALE_MEDIUM_MS,
+      queryFn: async () => {
+        return await $fetch<PublicStadiumDetail>(`${base(tenantSlug)}/stadiums/${stadiumId}`)
+      },
+    })
+  }
+
   return {
     base,
     loadAllTournaments,
@@ -414,5 +452,7 @@ export function usePublicTournamentFetch() {
     fetchOrganizationPlayers,
     fetchTenantGalleryFeed,
     fetchTenantVideoFeed,
+    fetchStadiums,
+    fetchStadium,
   }
 }

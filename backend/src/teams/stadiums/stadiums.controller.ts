@@ -23,6 +23,9 @@ import {
 } from '../../auth/subscription-plan-feature.guard';
 import { CreateStadiumDto } from './dto/create-stadium.dto';
 import { UpdateStadiumDto } from './dto/update-stadium.dto';
+import { CreateStadiumGalleryImageDto } from './dto/create-stadium-gallery-image.dto';
+import { UpdateStadiumGalleryImageDto } from './dto/update-stadium-gallery-image.dto';
+import { ReorderStadiumGalleryDto } from './dto/reorder-stadium-gallery.dto';
 import { StadiumsService } from './stadiums.service';
 
 @RequireSubscriptionPlanFeature('reference_directory_standard')
@@ -71,5 +74,55 @@ export class StadiumsController {
     @Req() _req: { user: JwtPayload },
   ) {
     return this.stadiumsService.delete(tenantId, id);
+  }
+
+  @Get('tenants/:tenantId/stadiums/:id/gallery')
+  async listGallery(
+    @Param('tenantId') tenantId: string,
+    @Param('id') id: string,
+  ) {
+    return this.stadiumsService.listGallery(tenantId, id);
+  }
+
+  @Post('tenants/:tenantId/stadiums/:id/gallery')
+  async createGalleryImage(
+    @Param('tenantId') tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: CreateStadiumGalleryImageDto,
+  ) {
+    return this.stadiumsService.createGalleryImage(tenantId, id, dto);
+  }
+
+  @Patch('tenants/:tenantId/stadiums/:id/gallery/reorder')
+  async reorderGallery(
+    @Param('tenantId') tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: ReorderStadiumGalleryDto,
+  ) {
+    return this.stadiumsService.reorderGallery(tenantId, id, dto);
+  }
+
+  @Patch('tenants/:tenantId/stadiums/:id/gallery/:imageId')
+  async updateGalleryImage(
+    @Param('tenantId') tenantId: string,
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+    @Body() dto: UpdateStadiumGalleryImageDto,
+  ) {
+    return this.stadiumsService.updateGalleryImage(
+      tenantId,
+      id,
+      imageId,
+      dto,
+    );
+  }
+
+  @Delete('tenants/:tenantId/stadiums/:id/gallery/:imageId')
+  async deleteGalleryImage(
+    @Param('tenantId') tenantId: string,
+    @Param('id') id: string,
+    @Param('imageId') imageId: string,
+  ) {
+    return this.stadiumsService.deleteGalleryImage(tenantId, id, imageId);
   }
 }

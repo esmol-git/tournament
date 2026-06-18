@@ -18,6 +18,7 @@ import {
   statusLabel,
   statusPillClass,
 } from '~/utils/tournamentAdminUi'
+import { isPlayoffLikeStage, type MatchStageUi } from '~/utils/matchStageLabel'
 import { computed, reactive, ref, watch } from 'vue'
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { useAdminAsyncState } from '~/composables/admin/useAdminAsyncState'
@@ -100,7 +101,7 @@ const manualMatchForm = reactive({
   groupId: '' as string,
   stadiumId: '' as string,
   /** Групповой этап или плей-офф (на вылет). */
-  matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
+  matchStage: 'GROUP' as MatchStageUi,
   /** Только для PLAYOFF; пусто — без уточнения раунда. */
   playoffRound: '' as
     | ''
@@ -118,6 +119,13 @@ const playoffRoundOptions = [
   { label: 'Полуфинал', value: 'SEMIFINAL' as const },
   { label: 'Финал', value: 'FINAL' as const },
   { label: 'За 3-е место', value: 'THIRD_PLACE' as const },
+]
+
+const manualMatchStageOptions = [
+  { label: 'Групповой этап', value: 'GROUP' as const },
+  { label: 'Плей-офф (на вылет)', value: 'PLAYOFF' as const },
+  { label: 'Золотой кубок', value: 'GOLD_CUP' as const },
+  { label: 'Серебряный кубок', value: 'SILVER_CUP' as const },
 ]
 
 const manualGroupStageRequiresGroup = computed(
@@ -139,7 +147,7 @@ const editMatchForm = reactive({
   roundNumber: 1,
   groupId: '' as string,
   stadiumId: '' as string,
-  matchStage: 'GROUP' as 'GROUP' | 'PLAYOFF',
+  matchStage: 'GROUP' as MatchStageUi,
   scheduleChangeReasonId: '' as string,
   mainRefereeId: '' as string,
   assistant1RefereeId: '' as string,
@@ -294,7 +302,7 @@ const groupSelectOptions = computed(() => {
 
 const groupSelectOptionsForEdit = computed(() => {
   const gs = (effectiveTournament.value?.groups ?? []).map((g) => ({ label: g.name, value: g.id }))
-  if (editMatchForm.matchStage === 'PLAYOFF') {
+  if (isPlayoffLikeStage(editMatchForm.matchStage) && editMatchForm.matchStage === 'PLAYOFF') {
     return [{ label: 'Без группы', value: '' }, ...gs]
   }
   if (manualGroupStageRequiresGroup.value) {
@@ -395,6 +403,12 @@ const submitManualMatch = async () => {
       if (manualMatchForm.playoffRound) {
         body.playoffRound = manualMatchForm.playoffRound
       }
+    } else if (
+      manualMatchForm.matchStage === 'GOLD_CUP' ||
+      manualMatchForm.matchStage === 'SILVER_CUP'
+    ) {
+      body.stage = manualMatchForm.matchStage
+      body.groupId = null
     } else {
       body.stage = 'GROUP'
       if (manualMatchForm.groupId) body.groupId = manualMatchForm.groupId
@@ -726,7 +740,10 @@ const openEditMatchDialog = async (m: MatchRow) => {
   editMatchForm.roundNumber = typeof m.roundNumber === 'number' ? m.roundNumber : 1
   editMatchForm.groupId = m.groupId ?? ''
   editMatchForm.stadiumId = m.stadiumId ?? ''
-  editMatchForm.matchStage = m.stage === 'PLAYOFF' ? 'PLAYOFF' : 'GROUP'
+  editMatchForm.matchStage =
+    m.stage === 'PLAYOFF' || m.stage === 'GOLD_CUP' || m.stage === 'SILVER_CUP'
+      ? m.stage
+      : 'GROUP'
   populateEditMatchReferees(m)
   editMatchSubmitAttempted.value = false
   editSmartSuggestionsRemote.value = null
@@ -1422,8 +1439,16 @@ defineExpose({
         </Column>
         <Column header="Площадка" style="min-width: 7rem">
           <template #body="{ data }">
-            <span v-if="data.stadium?.name">{{ data.stadium.name }}</span>
-            <span v-else class="text-muted-color">—</span>
+            <div class="flex flex-wrap items-center gap-1">
+              <span v-if="data.stadium?.name">{{ data.stadium.name }}</span>
+              <span v-else class="text-muted-color">—</span>
+              <Tag
+                v-if="data.isHomeVenue"
+                severity="success"
+                :value="t('admin.tournament_page.home_venue_badge')"
+                class="!text-[10px] !px-1"
+              />
+            </div>
           </template>
         </Column>
         <Column header="Судьи" style="min-width: 7rem">
@@ -1592,10 +1617,7 @@ defineExpose({
           <label class="text-sm block mb-1">Стадия</label>
           <Select
             v-model="manualMatchForm.matchStage"
-            :options="[
-              { label: 'Групповой этап', value: 'GROUP' },
-              { label: 'Плей-офф (на вылет)', value: 'PLAYOFF' },
-            ]"
+            :options="manualMatchStageOptions"
             option-label="label"
             option-value="value"
             class="w-full"

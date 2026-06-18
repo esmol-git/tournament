@@ -44,6 +44,14 @@ export class CreateTeamDto {
   @IsString()
   regionId?: string | null;
 
+  @ApiPropertyOptional({ description: 'Домашняя площадка команды' })
+  @IsOptional()
+  @ValidateIf(
+    (_, v) => v !== null && v !== undefined && String(v).trim() !== '',
+  )
+  @IsString()
+  homeStadiumId?: string | null;
+
   @ApiPropertyOptional({ example: 'https://...' })
   @IsOptional()
   @IsString()
