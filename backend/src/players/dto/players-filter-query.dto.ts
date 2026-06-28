@@ -1,7 +1,14 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Min,
+} from 'class-validator';
 
 export class PlayersFilterQueryDto {
   @ApiPropertyOptional({ description: 'Page number (1-based)', example: 1 })
@@ -114,4 +121,19 @@ export class PlayersFilterQueryDto {
   @IsOptional()
   @IsString()
   teamId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Only players not linked to any team',
+    example: true,
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === true || value === 'true' || value === '1' || value === 1)
+      return true;
+    if (value === false || value === 'false' || value === '0' || value === 0)
+      return false;
+    return undefined;
+  })
+  @IsBoolean()
+  withoutTeam?: boolean;
 }

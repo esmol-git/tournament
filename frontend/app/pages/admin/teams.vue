@@ -20,6 +20,10 @@ import { useAdminAsyncListState } from '~/composables/admin/useAdminAsyncListSta
 import AdminDataState from '~/app/components/admin/AdminDataState.vue'
 import { slugifyFromTitle } from '~/utils/slugify'
 import {
+  birthYearToDateRange,
+  inferBirthYearFromTeamName,
+} from '~/utils/teamBirthYear'
+import {
   hasSubscriptionFeature,
   tenantPlanLimitsFromAuthUser,
 } from '~/utils/subscriptionFeatures'
@@ -758,56 +762,135 @@ const editorJerseyNumber = ref<number | null>(null)
 const editorPosition = ref<string>('')
 
 const editorPickQuery = ref('')
+const editorPickBirthYear = ref<number | ''>('')
+const editorPickPosition = ref('')
+const editorPickOnlyFree = ref(true)
+const editorPickBirthYearAuto = ref(false)
 const editorPickLoading = ref(false)
-const editorPickPlayers = ref<
-  Array<{
-    id: string
-    firstName: string
-    lastName: string
-    birthDate: string | null
-    team?: { id: string; name: string } | null
-  }>
->([])
-const editorPickSelected = ref<
-  Array<{
-    id: string
-    firstName: string
-    lastName: string
-    birthDate: string | null
-    team?: { id: string; name: string } | null
-  }>
->([])
+const editorPickPage = ref(1)
+const editorPickFirst = ref(0)
+const editorPickPageSize = ref(25)
+const editorPickTotal = ref(0)
+const editorPickSortField = ref('lastName')
+const editorPickSortOrder = ref(1)
+type EditorPickPlayerRow = {
+  id: string
+  firstName: string
+  lastName: string
+  birthDate: string | null
+  position?: string | null
+  team?: { id: string; name: string } | null
+}
+const editorPickPlayers = ref<EditorPickPlayerRow[]>([])
+const editorPickSelected = ref<EditorPickPlayerRow[]>([])
 
-const fetchPickPlayers = async () => {
+const MIN_PICK_BIRTH_YEAR = 1950
+
+function maxPickBirthYear(): number {
+  return new Date().getFullYear() - 4
+}
+
+const editorPickBirthYearOptions = computed(() => {
+  const max = maxPickBirthYear()
+  const opts: { value: number | ''; label: string }[] = [{ value: '', label: 'Все годы' }]
+  for (let y = max; y >= MIN_PICK_BIRTH_YEAR; y -= 1) {
+    opts.push({ value: y, label: String(y) })
+  }
+  return opts
+})
+
+const editorPickPositionOptions = computed(() => [
+  { value: '', label: 'Все амплуа' },
+  ...PLAYER_POSITION_OPTIONS,
+])
+
+function resolveDefaultPickBirthYear(team: TeamRow): number | '' {
+  const fromName = inferBirthYearFromTeamName(team.name)
+  if (fromName != null) return fromName
+
+  const short = team.ageGroup?.shortLabel?.trim()
+  if (short && /^\d{4}$/.test(short)) {
+    const y = Number(short)
+    if (y >= MIN_PICK_BIRTH_YEAR && y <= maxPickBirthYear()) return y
+  }
+
+  const ag = ageGroupsList.value.find((row) => row.id === team.ageGroupId)
+  if (
+    ag?.minBirthYear != null &&
+    ag.maxBirthYear != null &&
+    ag.minBirthYear === ag.maxBirthYear
+  ) {
+    return ag.minBirthYear
+  }
+
+  return ''
+}
+
+function buildEditorPickParams(page: number): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    page,
+    pageSize: editorPickPageSize.value,
+    sortField: editorPickSortField.value,
+    sortOrder: editorPickSortOrder.value,
+    ...(editorPickQuery.value.trim() ? { name: editorPickQuery.value.trim() } : {}),
+    ...(editorPickPosition.value.trim()
+      ? { position: editorPickPosition.value.trim() }
+      : {}),
+  }
+  if (editorPickOnlyFree.value) {
+    params.withoutTeam = true
+  }
+  if (editorPickBirthYear.value !== '') {
+    const range = birthYearToDateRange(editorPickBirthYear.value)
+    params.birthDateFrom = range.birthDateFrom
+    params.birthDateTo = range.birthDateTo
+  }
+  return params
+}
+
+const onEditorPickOnlyFreeChange = () => {
+  editorPickSelected.value = []
+  void fetchPickPlayers(true)
+}
+
+const fetchPickPlayers = async (resetPage = false) => {
   if (!token.value || !rosterTeam.value) return
+  if (resetPage) {
+    editorPickPage.value = 1
+    editorPickFirst.value = 0
+  }
   editorPickLoading.value = true
   try {
     const res = await authFetch<{
-      items: Array<{
-        id: string
-        firstName: string
-        lastName: string
-        birthDate: string | null
-        team?: { id: string; name: string } | null
-      }>
+      items: EditorPickPlayerRow[]
       total: number
-    }>(
-      apiUrl(`/tenants/${tenantId.value}/players`),
-      {
-        headers: { Authorization: `Bearer ${token.value}` },
-        params: {
-          page: 1,
-          pageSize: 200,
-          ...(editorPickQuery.value.trim() ? { name: editorPickQuery.value.trim() } : {}),
-        },
-      },
-    )
-    editorPickPlayers.value = res.items.filter((p) => !p.team)
-    const allowed = new Set(editorPickPlayers.value.map((p) => p.id))
-    editorPickSelected.value = editorPickSelected.value.filter((p) => allowed.has(p.id))
+    }>(apiUrl(`/tenants/${tenantId.value}/players`), {
+      headers: { Authorization: `Bearer ${token.value}` },
+      params: buildEditorPickParams(editorPickPage.value),
+    })
+    editorPickPlayers.value = res.items
+    editorPickTotal.value = res.total
   } finally {
     editorPickLoading.value = false
   }
+}
+
+const onEditorPickPage = (event: { first?: number; rows?: number }) => {
+  const nextFirst = Number(event.first ?? 0)
+  const nextSizeCandidate = Number(event.rows ?? editorPickPageSize.value)
+  const nextSize = nextSizeCandidate > 0 ? nextSizeCandidate : editorPickPageSize.value
+  editorPickFirst.value = nextFirst
+  editorPickPageSize.value = nextSize
+  editorPickPage.value = Math.floor(nextFirst / nextSize) + 1
+  void fetchPickPlayers()
+}
+
+const onEditorPickSort = () => {
+  void fetchPickPlayers(true)
+}
+
+const runEditorPickSearch = () => {
+  void fetchPickPlayers(true)
 }
 
 const openAddRosterPlayer = async () => {
@@ -816,9 +899,22 @@ const openAddRosterPlayer = async () => {
   editorJerseyNumber.value = null
   editorPosition.value = ''
   editorPickQuery.value = ''
+  editorPickPosition.value = ''
+  editorPickOnlyFree.value = true
   editorPickSelected.value = []
   editorPickPlayers.value = []
-  await fetchPickPlayers()
+  editorPickTotal.value = 0
+  editorPickPage.value = 1
+  editorPickFirst.value = 0
+  editorPickPageSize.value = 25
+  editorPickSortField.value = 'lastName'
+  editorPickSortOrder.value = 1
+
+  const defaultYear = rosterTeam.value ? resolveDefaultPickBirthYear(rosterTeam.value) : ''
+  editorPickBirthYear.value = defaultYear
+  editorPickBirthYearAuto.value = defaultYear !== ''
+
+  await fetchPickPlayers(true)
   rosterEditorOpen.value = true
 }
 
@@ -844,6 +940,23 @@ const saveRosterPlayer = async () => {
         })
         return
       }
+      const currentTeamId = rosterTeam.value.id
+      const alreadyInRoster = editorPickSelected.value.filter((p) => p.team?.id === currentTeamId)
+      if (alreadyInRoster.length) {
+        toast.add({
+          severity: 'warn',
+          summary: 'Уже в этой команде',
+          detail:
+            alreadyInRoster.length === 1
+              ? `${alreadyInRoster[0]!.lastName} ${alreadyInRoster[0]!.firstName} уже в составе.`
+              : `Снять отметку с ${alreadyInRoster.length} игроков, которые уже в этой команде.`,
+          life: 4500,
+        })
+        return
+      }
+      const toTransfer = editorPickSelected.value.filter(
+        (p) => p.team?.id && p.team.id !== currentTeamId,
+      )
       const canBulk = hasSubscriptionFeature(subscriptionPlan.value, 'data_import_export')
       if (!canBulk) {
         let added = 0
@@ -858,7 +971,10 @@ const saveRosterPlayer = async () => {
         toast.add({
           severity: 'success',
           summary: 'Игроки добавлены в команду',
-          detail: `Добавлено: ${added}.`,
+          detail:
+            toTransfer.length > 0
+              ? `Добавлено: ${added}. Перенесено из другой команды: ${toTransfer.length}.`
+              : `Добавлено: ${added}.`,
           life: 3000,
         })
       } else {
@@ -884,7 +1000,10 @@ const saveRosterPlayer = async () => {
           toast.add({
             severity: 'success',
             summary: 'Игроки добавлены в команду',
-            detail: `Добавлено: ${bulkRes.added}.`,
+            detail:
+              toTransfer.length > 0
+                ? `Добавлено: ${bulkRes.added}. Перенесено из другой команды: ${toTransfer.length}.`
+                : `Добавлено: ${bulkRes.added}.`,
             life: 3000,
           })
         }
@@ -1704,60 +1823,165 @@ async function confirmDeleteRosterPlayer() {
       @update:visible="(v) => (rosterEditorOpen = v)"
       modal
       :header="rosterEditorMode === 'edit' ? 'Редактировать игрока в команде' : 'Добавить игрока в команду'"
-      :style="{ width: '44rem' }"
+      :style="{ width: 'min(52rem, calc(100vw - 2rem))' }"
       :contentStyle="{ paddingTop: '1.75rem' }"
     >
       <div class="space-y-4">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-if="rosterEditorMode === 'create'">
-            <FloatLabel variant="on" class="block">
-              <InputText v-model="editorPickQuery" class="w-full" placeholder="Поиск игрока по имени/фамилии" />
+        <template v-if="rosterEditorMode === 'create'">
+          <Message
+            v-if="editorPickBirthYearAuto && editorPickBirthYear !== ''"
+            severity="info"
+            :closable="false"
+            class="text-sm"
+          >
+            <template v-if="editorPickOnlyFree">
+              Показаны свободные игроки {{ editorPickBirthYear }} года рождения — подобрано по названию
+              команды. Смените год или сбросьте фильтр «Все годы».
+            </template>
+            <template v-else>
+              Показаны все игроки {{ editorPickBirthYear }} года рождения. «—» в колонке «Команда» —
+              свободен.
+            </template>
+          </Message>
+          <Message
+            v-else-if="!editorPickOnlyFree"
+            severity="warn"
+            :closable="false"
+            class="text-sm"
+          >
+            Показаны все игроки по фильтру. Если у игрока уже есть команда, при добавлении он перейдёт
+            в эту (у игрока может быть только одна команда).
+          </Message>
+
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12 lg:items-end">
+            <FloatLabel variant="on" class="min-w-0 lg:col-span-4">
+              <InputText
+                v-model="editorPickQuery"
+                class="w-full"
+                placeholder="Имя или фамилия"
+                @keyup.enter="runEditorPickSearch"
+              />
               <label>Поиск</label>
             </FloatLabel>
-            <Button
-              label="Найти"
-              icon="pi pi-search"
-              text
-              class="w-full mt-2"
-              @click="fetchPickPlayers"
+            <FloatLabel variant="on" class="min-w-0 lg:col-span-3">
+              <Select
+                v-model="editorPickBirthYear"
+                :options="editorPickBirthYearOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+                @update:model-value="editorPickBirthYearAuto = false"
+              />
+              <label>Год рождения</label>
+            </FloatLabel>
+            <FloatLabel variant="on" class="min-w-0 lg:col-span-3">
+              <Select
+                v-model="editorPickPosition"
+                :options="editorPickPositionOptions"
+                option-label="label"
+                option-value="value"
+                class="w-full"
+              />
+              <label>Амплуа</label>
+            </FloatLabel>
+            <div class="flex gap-2 lg:col-span-2">
+              <Button
+                label="Найти"
+                icon="pi pi-search"
+                class="w-full"
+                :loading="editorPickLoading"
+                @click="runEditorPickSearch"
+              />
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <InputSwitch
+              v-model="editorPickOnlyFree"
+              input-id="editor-pick-only-free"
+              @update:model-value="onEditorPickOnlyFreeChange"
             />
+            <label for="editor-pick-only-free" class="cursor-pointer text-sm text-surface-700 dark:text-surface-200">
+              Только свободные
+            </label>
+            <span class="text-xs text-muted-color">
+              (без команды; «—» в колонке «Команда»)
+            </span>
           </div>
 
-          <div v-if="rosterEditorMode === 'create'" class="md:col-span-2">
-            <DataTable
-              :value="editorPickPlayers"
-              v-model:selection="editorPickSelected"
-              dataKey="id"
-              selectionMode="multiple"
-              :loading="editorPickLoading"
-              size="small"
-              scrollable
-              scrollHeight="280px"
-              class="rounded-lg border border-surface-200 dark:border-surface-700"
-            >
-              <Column selectionMode="multiple" headerStyle="width: 3rem" />
-              <Column field="lastName" header="Фамилия" />
-              <Column field="firstName" header="Имя" />
-              <Column header="Дата рождения">
-                <template #body="{ data }">
-                  <span v-if="data.birthDate">{{ new Date(data.birthDate).toLocaleDateString() }}</span>
-                  <span v-else class="text-muted-color">—</span>
-                </template>
-              </Column>
-              <template #empty>
-                <div class="py-6 text-center text-sm text-muted-color">
-                  Нет игроков без команды по текущему поиску
-                </div>
+          <p v-if="editorPickSelected.length" class="text-xs text-muted-color">
+            Выбрано:
+            <span class="font-medium text-surface-800 dark:text-surface-100">{{ editorPickSelected.length }}</span>
+          </p>
+
+          <DataTable
+            :value="editorPickPlayers"
+            v-model:selection="editorPickSelected"
+            v-model:sort-field="editorPickSortField"
+            v-model:sort-order="editorPickSortOrder"
+            dataKey="id"
+            selectionMode="multiple"
+            :loading="editorPickLoading"
+            lazy
+            :paginator="editorPickTotal > 0"
+            :first="editorPickFirst"
+            :rows="editorPickPageSize"
+            :total-records="editorPickTotal"
+            :rows-per-page-options="[10, 25, 50, 100]"
+            paginator-template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
+            size="small"
+            class="rounded-lg border border-surface-200 dark:border-surface-700"
+            @page="onEditorPickPage"
+            @sort="onEditorPickSort"
+          >
+            <Column selectionMode="multiple" headerStyle="width: 3rem" />
+            <Column field="lastName" header="Фамилия" sortable />
+            <Column field="firstName" header="Имя" sortable />
+            <Column header="Дата рождения" sortable>
+              <template #body="{ data }">
+                <span v-if="data.birthDate">{{ new Date(data.birthDate).toLocaleDateString() }}</span>
+                <span v-else class="text-muted-color">—</span>
               </template>
-            </DataTable>
-          </div>
+            </Column>
+            <Column header="Амплуа">
+              <template #body="{ data }">
+                <span v-if="data.position">{{ data.position }}</span>
+                <span v-else class="text-muted-color">—</span>
+              </template>
+            </Column>
+            <Column header="Команда" style="min-width: 8rem">
+              <template #body="{ data }">
+                <span
+                  v-if="data.team?.name"
+                  :class="
+                    data.team.id === rosterTeam?.id
+                      ? 'text-muted-color'
+                      : 'text-surface-800 dark:text-surface-100'
+                  "
+                >
+                  {{ data.team.name }}
+                  <span v-if="data.team.id === rosterTeam?.id" class="text-xs text-muted-color">
+                    (эта команда)
+                  </span>
+                </span>
+                <span v-else class="text-muted-color">—</span>
+              </template>
+            </Column>
+            <template #empty>
+              <div class="py-6 text-center text-sm text-muted-color">
+                Нет свободных игроков по выбранным фильтрам. Измените год рождения или поиск.
+              </div>
+            </template>
+          </DataTable>
+        </template>
 
-          <FloatLabel variant="on" class="block" v-if="rosterEditorMode === 'edit'">
+        <div v-if="rosterEditorMode === 'edit'" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FloatLabel variant="on" class="block">
             <InputNumber v-model="editorJerseyNumber" class="w-full" placeholder="№" :min="0" />
             <label>Номер игрока</label>
           </FloatLabel>
 
-          <FloatLabel variant="on" class="block" v-if="rosterEditorMode === 'edit'">
+          <FloatLabel variant="on" class="block">
             <Select
               v-model="editorPosition"
               :options="positionOptions"

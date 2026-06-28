@@ -170,8 +170,11 @@ export class PlayersService {
     }
 
     const teamIdFilter = query.teamId?.trim();
+    const withoutTeam = query.withoutTeam === true;
 
-    if (actorRole === 'TEAM_ADMIN') {
+    if (withoutTeam) {
+      where.teamPlayers = { none: {} };
+    } else if (actorRole === 'TEAM_ADMIN') {
       where.teamPlayers = {
         some: {
           ...(teamIdFilter ? { teamId: teamIdFilter } : {}),

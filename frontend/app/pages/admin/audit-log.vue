@@ -1308,7 +1308,7 @@ onBeforeUnmount(() => {
             :page-link-size="paginatorPageLinkSize"
             :rows-per-page-options="[10, 25, 50, 100]"
             template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
-            :current-page-report-template="t('admin.audit_log.paginator_page_report')"
+            current-page-report-template="{first}–{last} из {totalRecords}"
             @page="onPage"
           />
         </div>
