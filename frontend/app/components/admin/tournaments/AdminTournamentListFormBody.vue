@@ -84,6 +84,7 @@ const show = (stepId: 'context' | 'about' | 'format' | 'enrollment' | 'review') 
         :format-field-hint-text="bindings.formatFieldHintText"
         :group-count-hint-text="bindings.groupCountHintText"
         :playoff-qualifiers-hint-text="bindings.playoffQualifiersHintText"
+        :playoff-best-third-hint-text="bindings.playoffBestThirdHintText"
         :min-teams-hint-text="bindings.minTeamsHintText"
         :group-count-min="bindings.groupCountMin"
         :group-count-max="bindings.groupCountMax"

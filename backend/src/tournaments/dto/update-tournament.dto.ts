@@ -91,12 +91,12 @@ export class UpdateTournamentDto {
   @ApiPropertyOptional({
     example: 1,
     description:
-      'Number of groups (0..8). For SINGLE_GROUP use 1. For PLAYOFF use 0.',
+      'Number of groups (0..12). For SINGLE_GROUP use 1. For PLAYOFF use 0.',
   })
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(8)
+  @Max(12)
   groupCount?: number;
 
   @ApiPropertyOptional({
@@ -109,6 +109,18 @@ export class UpdateTournamentDto {
   @Min(1)
   @Max(8)
   playoffQualifiersPerGroup?: number;
+
+  @ApiPropertyOptional({
+    required: false,
+    example: 8,
+    description:
+      'How many best third-placed teams advance across all groups (0 = disabled).',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(12)
+  playoffBestThirdPlaceCount?: number;
 
   @ApiPropertyOptional({ enum: TournamentStatus })
   @IsOptional()

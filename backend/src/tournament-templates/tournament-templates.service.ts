@@ -125,6 +125,7 @@ export class TournamentTemplatesService {
       format: template.format,
       groupCount: template.groupCount,
       playoffQualifiersPerGroup: template.playoffQualifiersPerGroup,
+      playoffBestThirdPlaceCount: template.playoffBestThirdPlaceCount,
       intervalDays: template.intervalDays,
       allowedDays: template.allowedDays ?? [],
       roundRobinCycles: template.roundRobinCycles,
@@ -274,6 +275,7 @@ export class TournamentTemplatesService {
           format: dto.format ?? TournamentFormat.SINGLE_GROUP,
           groupCount: dto.groupCount ?? 1,
           playoffQualifiersPerGroup: dto.playoffQualifiersPerGroup ?? 2,
+          playoffBestThirdPlaceCount: dto.playoffBestThirdPlaceCount ?? 0,
           intervalDays: dto.intervalDays ?? 7,
           allowedDays: dto.allowedDays ?? [],
           roundRobinCycles: dto.roundRobinCycles ?? 1,
@@ -341,6 +343,9 @@ export class TournamentTemplatesService {
       if (dto.groupCount !== undefined) data.groupCount = dto.groupCount;
       if (dto.playoffQualifiersPerGroup !== undefined) {
         data.playoffQualifiersPerGroup = dto.playoffQualifiersPerGroup;
+      }
+      if (dto.playoffBestThirdPlaceCount !== undefined) {
+        data.playoffBestThirdPlaceCount = dto.playoffBestThirdPlaceCount;
       }
       if (dto.intervalDays !== undefined) data.intervalDays = dto.intervalDays;
       if (dto.allowedDays !== undefined) data.allowedDays = dto.allowedDays;

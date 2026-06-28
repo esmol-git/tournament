@@ -112,7 +112,7 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(8)
+  @Max(12)
   groupCount?: number;
 
   @ApiProperty({
@@ -125,6 +125,18 @@ export class CreateTournamentDto {
   @Min(1)
   @Max(8)
   playoffQualifiersPerGroup?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 8,
+    description:
+      'How many best third-placed teams advance across all groups (0 = disabled).',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(12)
+  playoffBestThirdPlaceCount?: number;
 
   @ApiProperty({
     required: false,

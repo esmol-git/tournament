@@ -13,7 +13,11 @@ import {
 import type { Ref } from 'vue'
 import { computed, watch } from 'vue'
 
-export type TournamentFormNumericFieldKey = 'groupCount' | 'playoffQualifiersPerGroup' | 'minTeams'
+export type TournamentFormNumericFieldKey =
+  | 'groupCount'
+  | 'playoffQualifiersPerGroup'
+  | 'playoffBestThirdPlaceCount'
+  | 'minTeams'
 
 /**
  * Превью групп/плей-офф, подсказки календаря, цвет, синхронизирующие watch по полям формы турнира (список).
@@ -42,7 +46,7 @@ export function useAdminTournamentListFormUi(options: {
   })
 
   const groupCountMin = computed(() => (impliedGroupCount.value === null ? 1 : impliedGroupCount.value))
-  const groupCountMax = computed(() => (impliedGroupCount.value === null ? 8 : impliedGroupCount.value))
+  const groupCountMax = computed(() => (impliedGroupCount.value === null ? 12 : impliedGroupCount.value))
   const minTeamsMinValue = computed(() => (form.format === 'PLAYOFF' ? 4 : 2))
   const isPlayoffFormat = computed(() => form.format === 'PLAYOFF')
   const isGroupsPlusPlayoffFormat = computed(() => form.format === 'GROUPS_PLUS_PLAYOFF')
@@ -174,6 +178,16 @@ export function useAdminTournamentListFormUi(options: {
     t('admin.tournament_form.list_hint_playoff_qualifiers'),
   )
 
+  const playoffBestThirdHintText = computed(() =>
+    t('admin.tournament_form.list_hint_playoff_best_third'),
+  )
+
+  function playoffBestThirdSuffix(count: number) {
+    return count > 0
+      ? t('admin.tournament_form.list_preview_best_third_suffix', { count })
+      : ''
+  }
+
   const formatFieldHintText = computed(() => t('admin.tournament_form.list_hint_format_field'))
 
   const minTeamsHintText = computed(() =>
@@ -189,7 +203,8 @@ export function useAdminTournamentListFormUi(options: {
     if (form.format === 'MANUAL' && !manualPlayoffEnabled.value) return null
     const groups = Number(form.groupCount)
     const qualifiersPerGroup = Number(form.playoffQualifiersPerGroup)
-    const totalQualifiers = groups * qualifiersPerGroup
+    const bestThird = Number(form.playoffBestThirdPlaceCount ?? 0)
+    const totalQualifiers = groups * qualifiersPerGroup + bestThird
     const minTeamsNum = Number(form.minTeams)
     const gridOk =
       Number.isInteger(groups) &&
@@ -197,6 +212,10 @@ export function useAdminTournamentListFormUi(options: {
       Number.isInteger(qualifiersPerGroup) &&
       qualifiersPerGroup >= 1 &&
       qualifiersPerGroup <= 8 &&
+      Number.isInteger(bestThird) &&
+      bestThird >= 0 &&
+      bestThird <= 12 &&
+      (bestThird === 0 || bestThird <= groups) &&
       isPowerOfTwo(totalQualifiers) &&
       totalQualifiers <= maxTournamentTeams
     const teamsCoverPlayoff =
@@ -205,6 +224,7 @@ export function useAdminTournamentListFormUi(options: {
     return {
       groups,
       qualifiersPerGroup,
+      bestThird,
       totalQualifiers,
       minTeams: minTeamsNum,
       gridOk,
@@ -255,6 +275,7 @@ export function useAdminTournamentListFormUi(options: {
           perGroup,
           totalQ: playoff.totalQualifiers,
           qpg: playoff.qualifiersPerGroup,
+          bestThirdSuffix: playoffBestThirdSuffix(playoff.bestThird),
         }),
       }
     }
@@ -283,6 +304,7 @@ export function useAdminTournamentListFormUi(options: {
             total: playoff!.totalQualifiers,
             groups: playoff!.groups,
             qpg: playoff!.qualifiersPerGroup,
+            bestThirdSuffix: playoffBestThirdSuffix(playoff!.bestThird),
           })
         : t('admin.tournament_form.list_preview_playoff_bad_short', {
             total: playoff?.totalQualifiers ?? dash,
@@ -370,6 +392,7 @@ export function useAdminTournamentListFormUi(options: {
     tournamentCalendarColorTrimmed,
     groupCountHintText,
     playoffQualifiersHintText,
+    playoffBestThirdHintText,
     formatFieldHintText,
     minTeamsHintText,
     formatCalendarHint,

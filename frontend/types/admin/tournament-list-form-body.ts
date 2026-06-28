@@ -35,6 +35,7 @@ export type AdminTournamentListFormBodyBindings = {
   formatFieldHintText: string
   groupCountHintText: string
   playoffQualifiersHintText: string
+  playoffBestThirdHintText: string
   minTeamsHintText: string
   groupCountMin: number
   groupCountMax: number

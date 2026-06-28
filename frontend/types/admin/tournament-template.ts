@@ -9,6 +9,7 @@ export type TournamentTemplateRow = {
   format: TournamentFormat
   groupCount: number
   playoffQualifiersPerGroup: number
+  playoffBestThirdPlaceCount?: number
   intervalDays: number
   allowedDays: number[]
   roundRobinCycles: number

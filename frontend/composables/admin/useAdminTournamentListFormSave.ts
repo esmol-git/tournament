@@ -178,9 +178,19 @@ export function useAdminTournamentListFormSave(options: {
       (!Number.isInteger(form.playoffQualifiersPerGroup) ||
         form.playoffQualifiersPerGroup < 1 ||
         form.playoffQualifiersPerGroup > 8 ||
-        !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
+        !Number.isInteger(form.playoffBestThirdPlaceCount) ||
+        form.playoffBestThirdPlaceCount < 0 ||
+        form.playoffBestThirdPlaceCount > 12 ||
+        (form.playoffBestThirdPlaceCount > 0 &&
+          form.playoffBestThirdPlaceCount > form.groupCount) ||
+        !isPowerOfTwo(
+          form.groupCount * form.playoffQualifiersPerGroup +
+            form.playoffBestThirdPlaceCount,
+        ))
     ) {
-      const total = form.groupCount * form.playoffQualifiersPerGroup
+      const total =
+        form.groupCount * form.playoffQualifiersPerGroup +
+        form.playoffBestThirdPlaceCount
       formatError = t('admin.validation.tournament_playoff_grid_invalid', {
         groups: form.groupCount,
         qpg: form.playoffQualifiersPerGroup,
@@ -192,9 +202,19 @@ export function useAdminTournamentListFormSave(options: {
       (!Number.isInteger(form.playoffQualifiersPerGroup) ||
         form.playoffQualifiersPerGroup < 1 ||
         form.playoffQualifiersPerGroup > 8 ||
-        !isPowerOfTwo(form.groupCount * form.playoffQualifiersPerGroup))
+        !Number.isInteger(form.playoffBestThirdPlaceCount) ||
+        form.playoffBestThirdPlaceCount < 0 ||
+        form.playoffBestThirdPlaceCount > 12 ||
+        (form.playoffBestThirdPlaceCount > 0 &&
+          form.playoffBestThirdPlaceCount > form.groupCount) ||
+        !isPowerOfTwo(
+          form.groupCount * form.playoffQualifiersPerGroup +
+            form.playoffBestThirdPlaceCount,
+        ))
     ) {
-      const total = form.groupCount * form.playoffQualifiersPerGroup
+      const total =
+        form.groupCount * form.playoffQualifiersPerGroup +
+        form.playoffBestThirdPlaceCount
       formatError = t('admin.validation.tournament_manual_playoff_grid_invalid', {
         groups: form.groupCount,
         qpg: form.playoffQualifiersPerGroup,
@@ -267,6 +287,10 @@ export function useAdminTournamentListFormSave(options: {
         form.format === 'MANUAL' && !manualPlayoffEnabled.value
           ? undefined
           : form.playoffQualifiersPerGroup
+      const playoffBestThirdForBody =
+        form.format === 'MANUAL' && !manualPlayoffEnabled.value
+          ? undefined
+          : form.playoffBestThirdPlaceCount
 
       const body: Record<string, unknown> = {
         name,
@@ -276,6 +300,7 @@ export function useAdminTournamentListFormSave(options: {
         format: form.format,
         groupCount: form.format === 'PLAYOFF' ? 0 : form.groupCount,
         playoffQualifiersPerGroup: playoffQualifiersForBody,
+        playoffBestThirdPlaceCount: playoffBestThirdForBody,
         startsAt: toDateString(form.startsAt),
         endsAt: toDateString(form.endsAt),
         intervalDays: form.intervalDays,

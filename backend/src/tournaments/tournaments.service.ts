@@ -34,6 +34,13 @@ import { CreateTournamentDto } from './dto/create-tournament.dto';
 import { GenerateCalendarDto } from './dto/generate-calendar.dto';
 import { ReorderRoundDto } from './dto/reorder-round.dto';
 import { UpdateTournamentDto } from './dto/update-tournament.dto';
+import {
+  computePlayoffParticipantCount,
+  computeThirdPlaceStatsVsTopTwo,
+  MAX_TOURNAMENT_GROUP_COUNT,
+  rankBestThirdPlaceCandidates,
+  type ThirdPlaceCandidateStats,
+} from './playoff-qualifiers.util';
 import { recomputeTournamentCardSuspensions } from '../tournament-rosters/tournament-card-suspensions.util';
 import { MatchesFilterQueryDto } from './dto/matches-filter-query.dto';
 import { CreateTournamentNewsDto } from './dto/create-tournament-news.dto';
@@ -768,6 +775,7 @@ export class TournamentsService {
     format: TournamentFormat,
     groupCount: number,
     playoffQualifiersPerGroup: number,
+    playoffBestThirdPlaceCount = 0,
   ) {
     const expectedGroups = this.expectedGroupCountByFormat(format, groupCount);
     if (expectedGroups === null) return;
@@ -779,21 +787,37 @@ export class TournamentsService {
       );
     }
 
+    const bestThird = playoffBestThirdPlaceCount ?? 0;
+    if (!Number.isInteger(bestThird) || bestThird < 0 || bestThird > 12) {
+      throw new BadRequestException(
+        'playoffBestThirdPlaceCount must be an integer 0..12',
+      );
+    }
+    if (bestThird > 0 && bestThird > expectedGroups) {
+      throw new BadRequestException(
+        `playoffBestThirdPlaceCount (${bestThird}) cannot exceed group count (${expectedGroups})`,
+      );
+    }
+
     if (!Number.isInteger(expectedGroups) || expectedGroups < 1) {
       throw new BadRequestException(
         'For grouped playoff format groupCount must be >= 1',
       );
     }
 
-    const qualifiersCount = expectedGroups * k;
+    const qualifiersCount = computePlayoffParticipantCount(
+      expectedGroups,
+      k,
+      bestThird,
+    );
     if (!this.isPowerOfTwo(qualifiersCount)) {
       throw new BadRequestException(
-        `Невалидная сетка плей-офф: groups(${expectedGroups}) * qualifiersPerGroup(${k}) = ${qualifiersCount}. Количество участников плей-офф должно быть степенью двойки (4, 8, 16, ...).`,
+        `Невалидная сетка плей-офф: groups(${expectedGroups}) × qualifiersPerGroup(${k}) + bestThird(${bestThird}) = ${qualifiersCount}. Количество участников плей-офф должно быть степенью двойки (4, 8, 16, ...).`,
       );
     }
     this.assertPlayoffBracketSizeLimit(
       qualifiersCount,
-      `groups(${expectedGroups}) * qualifiersPerGroup(${k})`,
+      `groups(${expectedGroups}) × qualifiersPerGroup(${k}) + bestThird(${bestThird})`,
     );
   }
 
@@ -832,7 +856,10 @@ export class TournamentsService {
 
     let groupsForRule: number | null = null;
     if (format === TournamentFormat.MANUAL) {
-      groupsForRule = Math.min(8, Math.max(1, opts.groupCount ?? 1));
+      groupsForRule = Math.min(
+        MAX_TOURNAMENT_GROUP_COUNT,
+        Math.max(1, opts.groupCount ?? 1),
+      );
     } else {
       groupsForRule = this.expectedGroupCountByFormat(format, opts.groupCount);
     }
@@ -848,7 +875,7 @@ export class TournamentsService {
   }
 
   /**
-   * Для MANUAL создаёт недостающие `Группа A`… по `groupCount` (2–8).
+   * Для MANUAL создаёт недостающие `Группа A`… по `groupCount` (2–12).
    * Не зависит от наличия матчей — иначе при первом же матче группы переставали досоздаваться.
    */
   private async ensureManualGroupsIfNeeded(
@@ -857,7 +884,7 @@ export class TournamentsService {
     groupCount: number,
     existingGroups: { name: string }[],
   ) {
-    const gc = Math.min(8, Math.max(1, groupCount));
+    const gc = Math.min(MAX_TOURNAMENT_GROUP_COUNT, Math.max(1, groupCount));
     if (gc < 2) return;
 
     const names = Array.from(
@@ -887,10 +914,16 @@ export class TournamentsService {
     if (format === TournamentFormat.GROUPS_3) return 3;
     if (format === TournamentFormat.GROUPS_4) return 4;
     if (format === TournamentFormat.GROUPS_PLUS_PLAYOFF) {
-      return Math.min(8, Math.max(1, groupCount ?? 2));
+      return Math.min(
+        MAX_TOURNAMENT_GROUP_COUNT,
+        Math.max(1, groupCount ?? 2),
+      );
     }
     if (format === TournamentFormat.MANUAL) {
-      return Math.min(8, Math.max(1, groupCount ?? 1));
+      return Math.min(
+        MAX_TOURNAMENT_GROUP_COUNT,
+        Math.max(1, groupCount ?? 1),
+      );
     }
     return null;
   }
@@ -2988,6 +3021,7 @@ export class TournamentsService {
       tournamentFormat,
       dto.groupCount ?? 1,
       dto.playoffQualifiersPerGroup ?? 2,
+      dto.playoffBestThirdPlaceCount ?? 0,
     );
     if (
       this.shouldValidateMinTeamsVsGroupPlayoffQualifiers({
@@ -3088,6 +3122,7 @@ export class TournamentsService {
           format: tournamentFormat,
           groupCount: dto.groupCount ?? 1,
           playoffQualifiersPerGroup: dto.playoffQualifiersPerGroup ?? 2,
+          playoffBestThirdPlaceCount: dto.playoffBestThirdPlaceCount ?? 0,
           status: TournamentStatus.DRAFT,
           published: false,
           startsAt: startsAt ?? undefined,
@@ -3685,6 +3720,7 @@ export class TournamentsService {
         minTeams: true,
         groupCount: true,
         playoffQualifiersPerGroup: true,
+        playoffBestThirdPlaceCount: true,
         status: true,
         published: true,
       },
@@ -3808,6 +3844,9 @@ export class TournamentsService {
       dto.format ?? existing.format,
       dto.groupCount ?? existing.groupCount ?? 1,
       dto.playoffQualifiersPerGroup ?? existing.playoffQualifiersPerGroup ?? 2,
+      dto.playoffBestThirdPlaceCount ??
+        existing.playoffBestThirdPlaceCount ??
+        0,
     );
     const nextFormat = dto.format ?? existing.format;
     const nextGroupCount = dto.groupCount ?? existing.groupCount ?? 1;
@@ -4010,6 +4049,7 @@ export class TournamentsService {
           format: dto.format,
           groupCount: dto.groupCount,
           playoffQualifiersPerGroup: dto.playoffQualifiersPerGroup,
+          playoffBestThirdPlaceCount: dto.playoffBestThirdPlaceCount,
           status: dto.status,
           ...(dto.published !== undefined ? { published: dto.published } : {}),
           startsAt: startsAt,
@@ -5221,22 +5261,40 @@ export class TournamentsService {
     if (!groups.length) throw new BadRequestException('Groups not found');
 
     const k = t.playoffQualifiersPerGroup ?? 2;
+    const bestThirdCount = t.playoffBestThirdPlaceCount ?? 0;
     if (!Number.isInteger(k) || k < 1 || k > 8) {
       throw new BadRequestException(
         'playoffQualifiersPerGroup must be an integer 1..8',
       );
     }
-
-    const qualifiersCount = groups.length * k;
-    const isPowerOfTwo = (n: number) => n > 0 && (n & (n - 1)) === 0;
-    if (!isPowerOfTwo(qualifiersCount)) {
+    if (
+      !Number.isInteger(bestThirdCount) ||
+      bestThirdCount < 0 ||
+      bestThirdCount > 12
+    ) {
       throw new BadRequestException(
-        `Invalid playoff bracket: groups(${groups.length}) * qualifiersPerGroup(${k}) must be a power of two. Got ${qualifiersCount}.`,
+        'playoffBestThirdPlaceCount must be an integer 0..12',
+      );
+    }
+    if (bestThirdCount > 0 && bestThirdCount > groups.length) {
+      throw new BadRequestException(
+        `playoffBestThirdPlaceCount (${bestThirdCount}) cannot exceed group count (${groups.length})`,
+      );
+    }
+
+    const qualifiersCount = computePlayoffParticipantCount(
+      groups.length,
+      k,
+      bestThirdCount,
+    );
+    if (!this.isPowerOfTwo(qualifiersCount)) {
+      throw new BadRequestException(
+        `Invalid playoff bracket: groups(${groups.length}) × qualifiersPerGroup(${k}) + bestThird(${bestThirdCount}) must be a power of two. Got ${qualifiersCount}.`,
       );
     }
     this.assertPlayoffBracketSizeLimit(
       qualifiersCount,
-      `groups(${groups.length}) * qualifiersPerGroup(${k})`,
+      `groups(${groups.length}) × qualifiersPerGroup(${k}) + bestThird(${bestThirdCount})`,
     );
 
     const rounds = Math.round(Math.log2(qualifiersCount));
@@ -5246,6 +5304,17 @@ export class TournamentsService {
     // Compute top-K seeds per group (needs group results).
     const groupMatches = t.matches.filter((m) => m.stage === MatchStage.GROUP);
     const topSeedsByGroup: string[][] = [];
+    const thirdPlaceCandidates: ThirdPlaceCandidateStats[] = [];
+    const eligibleStatuses = new Set<MatchStatus>([
+      MatchStatus.PLAYED,
+      MatchStatus.FINISHED,
+    ]);
+    const pointsCfg = {
+      win: t.pointsWin,
+      draw: t.pointsDraw,
+      loss: t.pointsLoss,
+    };
+
     for (const g of groups) {
       const inGroup = t.tournamentTeams.filter((x) => x.groupId === g.id);
       const groupTeamIds = inGroup.map((x) => x.teamId);
@@ -5257,17 +5326,18 @@ export class TournamentsService {
           `Group ${g.name} has fewer teams than playoffQualifiersPerGroup`,
         );
       }
+      if (bestThirdCount > 0 && groupTeamIds.length < 3) {
+        throw new BadRequestException(
+          `Group ${g.name} must have at least 3 teams when playoffBestThirdPlaceCount is set`,
+        );
+      }
       const requiredPerGroup =
         (groupTeamIds.length * (groupTeamIds.length - 1)) / 2;
       const ms = groupMatches.filter((m) => m.groupId === g.id);
 
-      const eligible = new Set<MatchStatus>([
-        MatchStatus.PLAYED,
-        MatchStatus.FINISHED,
-      ]);
       const played = ms.filter(
         (m) =>
-          eligible.has(m.status) &&
+          eligibleStatuses.has(m.status) &&
           m.homeScore !== null &&
           m.awayScore !== null,
       ).length;
@@ -5292,7 +5362,7 @@ export class TournamentsService {
           awayScore: m.awayScore,
           status: m.status,
         })),
-        { win: t.pointsWin, draw: t.pointsDraw, loss: t.pointsLoss },
+        pointsCfg,
         seedMap,
       );
 
@@ -5302,14 +5372,61 @@ export class TournamentsService {
           `Unable to compute ${k} seeds for group ${g.name}`,
         );
       topSeedsByGroup.push(topK);
+
+      if (bestThirdCount > 0) {
+        const third = standings[2];
+        if (!third) {
+          throw new BadRequestException(
+            `Unable to compute third place for group ${g.name}`,
+          );
+        }
+        const topTwo = new Set(topK.slice(0, 2));
+        const vsTopTwo = computeThirdPlaceStatsVsTopTwo(
+          third.teamId,
+          ms.map((m) => ({
+            homeTeamId: m.homeTeamId,
+            awayTeamId: m.awayTeamId,
+            homeScore: m.homeScore,
+            awayScore: m.awayScore,
+            status: m.status,
+          })),
+          topTwo,
+          pointsCfg,
+          eligibleStatuses,
+        );
+        thirdPlaceCandidates.push({
+          teamId: third.teamId,
+          groupId: g.id,
+          groupName: g.name,
+          groupSortOrder: g.sortOrder ?? 0,
+          ...vsTopTwo,
+        });
+      }
     }
 
     // Build rank-major seeds array: rank1 of all groups, then rank2, etc.
     const seeds: string[] = [];
     for (let rank = 1; rank <= k; rank++) {
       for (let gi = 0; gi < groups.length; gi++) {
-        seeds.push(topSeedsByGroup[gi][rank - 1]);
+        seeds.push(topSeedsByGroup[gi]![rank - 1]!);
       }
+    }
+
+    if (bestThirdCount > 0) {
+      const rankedThirds = rankBestThirdPlaceCandidates(thirdPlaceCandidates);
+      const bestThirdTeamIds = rankedThirds
+        .slice(0, bestThirdCount)
+        .map((row) => row.teamId);
+      if (bestThirdTeamIds.length < bestThirdCount) {
+        throw new BadRequestException(
+          `Unable to select ${bestThirdCount} best third-placed teams`,
+        );
+      }
+      seeds.push(...bestThirdTeamIds);
+    }
+
+    if (seeds.length !== qualifiersCount) {
+      throw new BadRequestException('Unable to build playoff seeds');
     }
 
     // Update existing first knockout round teams if matches already exist.
@@ -6028,8 +6145,10 @@ export class TournamentsService {
     }
 
     const groupCount = (tournament as any).groupCount ?? 1;
-    if (!Number.isInteger(groupCount) || groupCount < 0 || groupCount > 8) {
-      throw new BadRequestException('groupCount must be 0..8');
+    if (!Number.isInteger(groupCount) || groupCount < 0 || groupCount > MAX_TOURNAMENT_GROUP_COUNT) {
+      throw new BadRequestException(
+        `groupCount must be 0..${MAX_TOURNAMENT_GROUP_COUNT}`,
+      );
     }
 
     const startSource =
@@ -6637,22 +6756,35 @@ export class TournamentsService {
         tournament.format === TournamentFormat.GROUPS_4
       ) {
         const k = tournament.playoffQualifiersPerGroup ?? 2;
+        const bestThirdCount = tournament.playoffBestThirdPlaceCount ?? 0;
         if (!Number.isInteger(k) || k < 1 || k > 8) {
           throw new BadRequestException(
             'playoffQualifiersPerGroup must be an integer 1..8',
           );
         }
-
-        const qualifiersCount = expected * k;
-        const isPowerOfTwo = (n: number) => n > 0 && (n & (n - 1)) === 0;
-        if (!isPowerOfTwo(qualifiersCount)) {
+        if (
+          !Number.isInteger(bestThirdCount) ||
+          bestThirdCount < 0 ||
+          bestThirdCount > 12
+        ) {
           throw new BadRequestException(
-            `Invalid playoff bracket: groups(${expected}) * qualifiersPerGroup(${k}) must be a power of two. Got ${qualifiersCount}.`,
+            'playoffBestThirdPlaceCount must be an integer 0..12',
+          );
+        }
+
+        const qualifiersCount = computePlayoffParticipantCount(
+          expected,
+          k,
+          bestThirdCount,
+        );
+        if (!this.isPowerOfTwo(qualifiersCount)) {
+          throw new BadRequestException(
+            `Invalid playoff bracket: groups(${expected}) × qualifiersPerGroup(${k}) + bestThird(${bestThirdCount}) must be a power of two. Got ${qualifiersCount}.`,
           );
         }
         this.assertPlayoffBracketSizeLimit(
           qualifiersCount,
-          `groups(${expected}) * qualifiersPerGroup(${k})`,
+          `groups(${expected}) × qualifiersPerGroup(${k}) + bestThird(${bestThirdCount})`,
         );
 
         const rounds = Math.round(Math.log2(qualifiersCount));
@@ -6669,6 +6801,17 @@ export class TournamentsService {
               throw new BadRequestException(
                 'Not enough teams in one of the groups for playoff placeholders',
               );
+            seeds.push(teamId);
+          }
+        }
+        if (bestThirdCount > 0) {
+          for (let gi = 0; gi < bestThirdCount; gi++) {
+            const teamId = groupStage.buckets[gi]?.[2];
+            if (!teamId) {
+              throw new BadRequestException(
+                'Not enough teams in one of the groups for best-third playoff placeholders',
+              );
+            }
             seeds.push(teamId);
           }
         }

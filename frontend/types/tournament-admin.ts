@@ -46,6 +46,7 @@ export interface TournamentDetails {
   venueMode?: 'SINGLE_VENUE' | 'MULTI_VENUE' | 'HOME_STADIUM'
   matchOfficialsProfile?: 'MAIN_ONLY' | 'CREW_OF_3' | 'CREW_OF_3_WITH_VAR'
   playoffQualifiersPerGroup?: number
+  playoffBestThirdPlaceCount?: number
   minTeams: number
   maxTeams?: number | null
   enrollmentMode?: TournamentEnrollmentMode

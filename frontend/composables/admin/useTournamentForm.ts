@@ -13,6 +13,7 @@ export type TournamentFormModel = {
   format: TournamentFormat
   groupCount: number
   playoffQualifiersPerGroup: number
+  playoffBestThirdPlaceCount: number
   status: TournamentStatus
   startsAt: Date | null
   endsAt: Date | null
@@ -60,6 +61,7 @@ export function buildDefaultTournamentForm(): TournamentFormModel {
     format: 'SINGLE_GROUP',
     groupCount: 1,
     playoffQualifiersPerGroup: 2,
+    playoffBestThirdPlaceCount: 0,
     status: 'DRAFT',
     startsAt: null,
     endsAt: null,
@@ -125,6 +127,7 @@ export function patchFormFromTournament(
   form.format = normalized.format
   form.groupCount = normalized.groupCount
   form.playoffQualifiersPerGroup = (res as any).playoffQualifiersPerGroup ?? 2
+  form.playoffBestThirdPlaceCount = (res as any).playoffBestThirdPlaceCount ?? 0
   form.status = res.status
   form.startsAt = res.startsAt ? new Date(res.startsAt) : null
   form.endsAt = res.endsAt ? new Date(res.endsAt) : null

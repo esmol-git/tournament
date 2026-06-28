@@ -17,6 +17,7 @@ defineProps<{
   formatFieldHintText: string
   groupCountHintText: string
   playoffQualifiersHintText: string
+  playoffBestThirdHintText: string
   minTeamsHintText: string
   groupCountMin: number
   groupCountMax: number
@@ -262,6 +263,34 @@ const { t } = useI18n()
               class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
               :aria-label="t('admin.tournament_form.hint_playoff_qualifiers_aria')"
               v-tooltip.top="adminTooltip(playoffQualifiersHintText)"
+              @click.prevent
+            >
+              <i class="pi pi-info-circle text-sm" aria-hidden="true" />
+            </button>
+          </label>
+        </FloatLabel>
+      </div>
+
+      <div
+        v-if="showPlayoffQualifiersField"
+        :class="form.format === 'MANUAL' ? 'md:col-start-2 md:row-start-3' : 'md:col-start-1 md:row-start-3'"
+      >
+        <FloatLabel variant="on" class="block">
+          <InputNumber
+            inputId="t_playoffBestThirdPlaceCount"
+            v-model="form.playoffBestThirdPlaceCount"
+            class="w-full"
+            :min="0"
+            :max="12"
+            @input="(e) => syncNumericField('playoffBestThirdPlaceCount', e?.value)"
+          />
+          <label for="t_playoffBestThirdPlaceCount" class="has-tooltip flex items-center gap-1.5">
+            <span>{{ t('admin.tournament_form.field_playoff_best_third') }}</span>
+            <button
+              type="button"
+              class="inline-flex shrink-0 rounded-full p-0.5 text-muted-color hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+              :aria-label="t('admin.tournament_form.hint_playoff_best_third_aria')"
+              v-tooltip.top="adminTooltip(playoffBestThirdHintText)"
               @click.prevent
             >
               <i class="pi pi-info-circle text-sm" aria-hidden="true" />

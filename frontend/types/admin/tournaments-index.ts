@@ -60,6 +60,7 @@ export interface TournamentDetails {
   format: TournamentFormat
   groupCount?: number
   playoffQualifiersPerGroup?: number
+  playoffBestThirdPlaceCount?: number
   status: TournamentStatus
   published?: boolean
   startsAt?: string | null

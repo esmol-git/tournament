@@ -38,7 +38,7 @@ export class CreateTournamentTemplateDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(8)
+  @Max(12)
   groupCount?: number;
 
   @ApiProperty({ required: false, example: 2 })
@@ -47,6 +47,13 @@ export class CreateTournamentTemplateDto {
   @Min(1)
   @Max(8)
   playoffQualifiersPerGroup?: number;
+
+  @ApiProperty({ required: false, example: 8 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(12)
+  playoffBestThirdPlaceCount?: number;
 
   @ApiProperty({ required: false, example: 7 })
   @IsOptional()

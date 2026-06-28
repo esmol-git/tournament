@@ -32,6 +32,7 @@ export function useAdminTournamentListFormBodyBindings(deps: {
   formatFieldHintText: ComputedRef<string>
   groupCountHintText: ComputedRef<string>
   playoffQualifiersHintText: ComputedRef<string>
+  playoffBestThirdHintText: ComputedRef<string>
   minTeamsHintText: ComputedRef<string>
   groupCountMin: ComputedRef<number>
   groupCountMax: ComputedRef<number>
@@ -93,6 +94,7 @@ export function useAdminTournamentListFormBodyBindings(deps: {
       formatFieldHintText: d.formatFieldHintText.value,
       groupCountHintText: d.groupCountHintText.value,
       playoffQualifiersHintText: d.playoffQualifiersHintText.value,
+      playoffBestThirdHintText: d.playoffBestThirdHintText.value,
       minTeamsHintText: d.minTeamsHintText.value,
       groupCountMin: d.groupCountMin.value,
       groupCountMax: d.groupCountMax.value,

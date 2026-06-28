@@ -665,6 +665,8 @@ model TournamentTemplate {
   format      TournamentFormat @default(SINGLE_GROUP)
   groupCount  Int      @default(1)
   playoffQualifiersPerGroup Int @default(2)
+  /// Сколько лучших команд с 3-го места групп дополнительно выходят в плей-офф (0 — только прямой выход из групп).
+  playoffBestThirdPlaceCount Int @default(0)
   intervalDays Int     @default(7)
   allowedDays  Int[]   @default([])
   roundRobinCycles     Int @default(1)
@@ -791,6 +793,8 @@ model Tournament {
   format      TournamentFormat @default(SINGLE_GROUP)
   groupCount  Int      @default(1)
   playoffQualifiersPerGroup Int @default(2)
+  /// Сколько лучших команд с 3-го места групп дополнительно выходят в плей-офф (0 — только прямой выход из групп).
+  playoffBestThirdPlaceCount Int @default(0)
   startsAt    DateTime?
   endsAt      DateTime?
   status      TournamentStatus @default(DRAFT)
