@@ -19,6 +19,7 @@
     "smoke:formats": "ts-node src/scripts/smoke-tournament-formats.ts",
     "seed:load-large": "ts-node src/scripts/seed-large-load.ts",
     "seed:world-cup-like": "ts-node src/scripts/seed-world-cup-like.ts",
+    "seed:world-cup-like:prod": "node dist/scripts/seed-world-cup-like.js",
     "seed:tournament-results": "ts-node src/scripts/seed-tournament-results.ts",
     "seed:spanish-cup-like": "ts-node src/scripts/seed-spanish-cup-like.ts",
     "seed:tenant-teams-players": "ts-node src/scripts/seed-tenant-teams-players.ts",
