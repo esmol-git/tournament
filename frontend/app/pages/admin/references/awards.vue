@@ -262,7 +262,7 @@ onMounted(() => {
       modal
       block-scroll
       :header="isEdit ? 'Редактировать награду' : 'Новая награда'"
-      :style="{ width: 'min(28rem, calc(100vw - 2rem))' }"
+      :style="{ width: 'min(26rem, calc(100vw - 2rem))' }"
     >
       <div class="flex flex-col gap-3">
         <div>
@@ -270,18 +270,29 @@ onMounted(() => {
           <InputText v-model="form.name" class="w-full" :invalid="showNameError" />
           <p v-if="showNameError" class="mt-0 text-[11px] leading-3 text-red-500">{{ formErrors.name }}</p>
         </div>
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label class="text-sm block mb-1">Код</label>
-            <div class="flex gap-2">
-              <InputText v-model="form.code" class="w-full" @input="codeTouched = true" />
-              <Button type="button" label="Сгенерировать" severity="secondary" outlined @click="generateCode" />
-            </div>
+        <div>
+          <label class="text-sm block mb-1">Код</label>
+          <div class="flex min-w-0 gap-2">
+            <InputText v-model="form.code" class="min-w-0 flex-1" @input="codeTouched = true" />
+            <Button
+              type="button"
+              label="Сгенерировать"
+              class="shrink-0"
+              severity="secondary"
+              outlined
+              @click="generateCode"
+            />
           </div>
-          <div>
-            <label class="text-sm block mb-1">Порядок в списке</label>
-            <InputNumber v-model="form.sortOrder" class="w-full" :min="0" :use-grouping="false" />
-          </div>
+        </div>
+        <div>
+          <label class="text-sm block mb-1">Порядок в списке</label>
+          <InputNumber
+            v-model="form.sortOrder"
+            class="w-full"
+            :min="0"
+            :use-grouping="false"
+            input-id="award_sort"
+          />
         </div>
         <div class="flex items-center gap-2">
           <ToggleSwitch v-model="form.active" input-id="award_active" />
@@ -291,7 +302,9 @@ onMounted(() => {
           <label class="text-sm block mb-1">Примечание</label>
           <Textarea v-model="form.note" class="w-full" rows="4" auto-resize />
         </div>
-        <div class="flex justify-end gap-2 pt-2">
+      </div>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
           <Button type="button" label="Отмена" text @click="showForm = false" />
           <Button
             type="button"
@@ -302,7 +315,7 @@ onMounted(() => {
             @click="save"
           />
         </div>
-      </div>
+      </template>
     </Dialog>
 
     <Dialog
